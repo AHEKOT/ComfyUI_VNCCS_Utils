@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from typing import Any
@@ -99,7 +100,7 @@ def _raise_if_interrupted() -> None:
         check()
 
 
-def _set_draw_progress(draw_id: str, stage: str, progress: float, step: int = 0, steps: int = 0, message: str | None = None) -> None:
+def _set_draw_progress(draw_id: str, stage: str, progress: float, step: int = 0, steps: int = 0, message: str | None = None, *, cancel_before_start: bool = False) -> None:
     # Every step and stage change is a checkpoint: a Stop (ComfyUI's interrupt flag) ends the draw here.
     if stage not in _TERMINAL_STAGES:
         _raise_if_interrupted()
@@ -114,9 +115,17 @@ def _set_draw_progress(draw_id: str, stage: str, progress: float, step: int = 0,
         "message": message + speed if stage == "sampling" and step else message,
         "updated_at": time.time(),
     }
+    if cancel_before_start:
+        payload["cancel_before_start"] = True
     with _DRAW_PROGRESS_LOCK:
         _DRAW_PROGRESS[draw_id] = payload
         _prune_draw_progress()
+
+
+def consume_draw_cancellation(draw_id: str) -> bool:
+    with _DRAW_PROGRESS_LOCK:
+        state = _DRAW_PROGRESS.get(draw_id)
+        return bool(state and state.pop("cancel_before_start", False))
 
 
 def _get_draw_progress(draw_id: str) -> dict[str, Any]:
@@ -136,6 +145,8 @@ def _get_draw_progress(draw_id: str) -> dict[str, Any]:
 _DRAW_RESULTS: dict[str, dict[str, Any]] = {}
 _DRAW_RESULTS_LOCK = threading.Lock()
 _DRAW_RESULTS_TTL_SECONDS = 60 * 60
+_DRAW_RESULTS_MAX = 256
+_DRAW_RESULTS_MAX_BYTES = 128 * 1024 * 1024
 
 
 def _prune_draw_results(now: float | None = None) -> None:
@@ -148,15 +159,24 @@ def _prune_draw_results(now: float | None = None) -> None:
             expired.append(draw_id)
     for draw_id in expired:
         _DRAW_RESULTS.pop(draw_id, None)
+    size = sum(result.get("size_bytes", 0) for result in _DRAW_RESULTS.values())
+    for draw_id in list(_DRAW_RESULTS):
+        if len(_DRAW_RESULTS) <= _DRAW_RESULTS_MAX and size <= _DRAW_RESULTS_MAX_BYTES:
+            break
+        size -= _DRAW_RESULTS.pop(draw_id).get("size_bytes", 0)
 
 
 def _store_draw_result(draw_id: str, result: dict[str, Any]) -> None:
     stored = dict(result)
+    stored["size_bytes"] = len(json.dumps(result, ensure_ascii=False).encode("utf-8"))
     with _DRAW_RESULTS_LOCK:
         _prune_draw_results()
         # "stored_at" is the TTL clock for this entry; _get_draw_result filters it out.
         stored["stored_at"] = time.time()
+        # Replacing an id makes it newest, too.
+        _DRAW_RESULTS.pop(str(draw_id), None)
         _DRAW_RESULTS[str(draw_id)] = stored
+        _prune_draw_results()
 
 
 def _get_draw_result(draw_id: str) -> dict[str, Any]:

@@ -2,9 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
-import * as THREE from "../web/three.module.js";
-import { POSE_HELP_CSS, buildPoseHelp } from "../web/vnccs_unicanvas_pose_help.mjs";
-import * as state from "../web/vnccs_unicanvas_pose_state.mjs";
+import * as THREE from "../web/vendor/three/three.module.js";
+import { POSE_HELP_CSS, buildPoseHelp } from "../web/unicanvas/pose_help.mjs";
+import * as state from "../web/unicanvas/pose_state.mjs";
 import { createScene } from "./helpers/pose_studio_scene.mjs";
 
 const noop = () => {};
@@ -33,7 +33,7 @@ class Element {
     }; }
     toDataURL() { return `image:${this.name || "canvas"}`; }
 }
-const source = fs.readFileSync(new URL("../web/vnccs_unicanvas_pose.mjs", import.meta.url), "utf8");
+const source = fs.readFileSync(new URL("../web/unicanvas/pose.mjs", import.meta.url), "utf8");
 const ucSource = fs.readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 function harness(studioClass = class {}) {
     const document = Object.assign(new Element("document"), { createElement: tag => new Element(tag), head: new Element(), getElementById: () => true });
@@ -89,9 +89,10 @@ function selectionHarness() {
     host.layers.push(raster);
     host.container.querySelectorAll = () => [];
     for (const name of ["syncCursorStyle", "renderToolSettings", "renderSamPanel", "updateSamControls", "updateHud", "updateContextCursor",
-        "updateToolPreviewOverlay", "updateLayerListActiveState", "syncActiveLayerControls", "renderLayerList"]) host[name] = noop;
+        "updateToolPreviewOverlay", "updateLayerListActiveState", "syncActiveLayerControls", "renderLayerList", "syncInteractionLock"]) host[name] = noop;
     host.toolNeedsCanvasRender = () => false;
-    host.getModelBase = () => "qwen_image_edit"; host.getInferenceSize = () => ({ width:512, height:512 });
+    host.getModelBase = () => "flux_klein"; host.getInferenceSize = () => ({ width:512, height:512 });
+    host.captureGenerationSettings = () => ({ settings: {}, modelBase: host.getModelBase(), inferenceSize: host.getInferenceSize() });
     host.drawBtn = { disabled:false };
     host.createLayerPixelSnapshot = item => ({ id: item.id, pose: JSON.parse(JSON.stringify(item.pose || null)) });
     host.restoreLayerPixelSnapshot = (item, snapshot) => { item.pose = JSON.parse(JSON.stringify(snapshot.pose)); calls.push(["restore", item.id]); };
@@ -101,7 +102,7 @@ function selectionHarness() {
     const calls = [];
     host.setStatus = message => calls.push(["status", message]);
     host.poseEditor = {
-        commit: () => calls.push(["commit"]),
+        commit: options => calls.push(["commit", options?.saveView]),
         setVisible: show => calls.push(["visible", show]), layout: noop,
         activate: async (selected, options) => calls.push(["activate", selected.id, options.show]),
         setCharacterOpen: open => calls.push(["character", open]),
@@ -122,6 +123,7 @@ test("selecting a pose layer only selects it; Edit pose enters and Save pose lea
     host.finishPoseEdit(true);
     assert.equal(host.tool, "move"); assert.equal(host.poseEditSession, null);
     assert.ok(calls.some(call => call[0] === "visible" && call[1] === false));
+    assert.equal(calls.filter(call => call[0] === "commit").at(-1)[1], false, "node mode keeps its existing capture framing");
     assert.equal(host.undoStack.length, 0, "an unchanged session adds no undo step");
 });
 
@@ -153,6 +155,26 @@ test("a pose edit session is one undo step on Save and fully restored on Cancel"
     assert.equal(host.undoStack.length, 1, "a canceled session adds no undo step");
 });
 
+test("standalone pose entry, Save and Cancel keep the workspace pan and zoom", () => {
+    const { host, layer, calls } = selectionHarness();
+    host.standalone = true;
+    host.centerBbox = () => { throw new Error("Standalone must never auto-frame a pose"); };
+    host.view = { x: -137, y: 83, scale: 0.73 }; host.intendedScale = 0.73;
+    const before = JSON.stringify([host.view, host.intendedScale, host.bbox]);
+    host.editPoseLayer(layer);
+    assert.equal(JSON.stringify([host.view, host.intendedScale, host.bbox]), before);
+    host.finishPoseEdit(true);
+    assert.equal(calls.filter(call => call[0] === "commit").at(-1)[1], true, "Save adopts the editing camera");
+    assert.equal(JSON.stringify([host.view, host.intendedScale, host.bbox]), before);
+    host.editPoseLayer(layer);
+    host.view = { x: 23, y: -41, scale: 1.2 }; host.intendedScale = 1.2;
+    const inspected = JSON.stringify([host.view, host.intendedScale, host.bbox]);
+    host.finishPoseEdit(false);
+    assert.equal(calls.filter(call => call[0] === "commit").at(-1)[1], false, "Cancel never adopts the editing camera");
+    assert.equal(JSON.stringify([host.view, host.intendedScale, host.bbox]), inspected,
+        "Cancel restores the pose, without resetting explicit workspace navigation");
+});
+
 test("invalid selection and an unfinished transform cannot change the current tool or layer", () => {
     const { host, layer, calls } = selectionHarness();
     host.setActiveLayer("missing");
@@ -174,9 +196,13 @@ test("Generate redirects a missing character to the pose picker without starting
 test("Generate reaches pose capture while the Pose tool is active and a character is selected", async () => {
     const { host, layer, raster, calls } = selectionHarness();
     layer.pose.character = { source:"layer", layerId:raster.id };
-    host.editPoseLayer(layer); await host.draw();
-    assert.equal(host.tool, "pose");
-    assert.ok(calls.some(call => call[0] === "generation" && call[1] === layer.id));
+    for (const model of ["flux_klein", "qwen_image21"]) {
+        host.getModelBase = () => model;
+        calls.length = 0;
+        host.editPoseLayer(layer); await host.draw();
+        assert.equal(host.tool, "pose");
+        assert.ok(calls.some(call => call[0] === "generation" && call[1] === layer.id), model);
+    }
     assert.equal(host.drawInProgress, false); assert.equal(host.drawBtn.disabled, false);
 });
 
@@ -261,6 +287,42 @@ test("pose controls stay inside the resized stage and never replace the generati
     assert.equal(editor.controls.inert, true);
 });
 
+test("standalone mounts its editor in the stage and uses stage-local coordinates", async () => {
+    const controlled = controlledStudio();
+    const { editor, host, layer } = harness(controlled.Studio);
+    host.standalone = true;
+    host.stageWrap = Object.assign(new Element(), host.stageWrap);
+    await editor.activate(layer);
+    assert.equal(editor.studio.container.parentElement, host.stageWrap);
+    for (const [width, height] of [[1000,800], [540,480]]) {
+        Object.assign(host.stageWrap, { clientWidth:width, clientHeight:height });
+        editor.layout();
+        for (const element of [editor.controls, editor.studio.canvasContainer]) {
+            assert.deepEqual([element.style.left, element.style.top, element.style.width, element.style.height],
+                ["0px", "0px", `${width}px`, `${height}px`]);
+        }
+    }
+    editor.release();
+    assert.equal(host.stageWrap.children.length, 0, "disposing leaves the existing stage intact");
+});
+
+test("standalone redraws the bbox above the pose viewport even when the pointer leaves", () => {
+    const { host } = selectionHarness();
+    delete host.updateToolPreviewOverlay;
+    host.standalone = true; host.poseEditor.visible = true; host.sam = {};
+    host.previewCanvas = Object.assign(new Element("canvas"), { width:1000, height:800 });
+    const ctx = host.previewCanvas.getContext("2d");
+    ctx.setTransform = noop; ctx.translate = noop; ctx.scale = noop;
+    let frames = 0;
+    host.drawBbox = () => frames++;
+    host.updateToolPreviewOverlay();
+    host.clearToolPreviewOverlay();
+    assert.equal(frames, 2, "clearing a cursor preview cannot remove the generation frame");
+    host.standalone = false;
+    host.updateToolPreviewOverlay(); host.clearToolPreviewOverlay();
+    assert.equal(frames, 2, "node mode keeps its existing render contract");
+});
+
 test("shared modal overlays lift their stacking context above the toolbox only while open", () => {
     const css = source.match(/const styles = `([\s\S]*?)`;/)[1];
     const base = css.match(/\.vnccs-unicanvas \.vnccs-uc-pose-root \{([^}]+)\}/)[1];
@@ -286,6 +348,64 @@ test("the character reference section previews layer references and clears them"
     assert.equal(layer.pose.character, null); assert.equal(editor.characterPreview.hidden, true);
     assert.equal(editor.characterClear.disabled, true);
 });
+
+function deferredCharacterSelection() {
+    const h = harness();
+    const requests = [];
+    h.context.fetch = url => new Promise(resolve => requests.push({ url, resolve }));
+    h.context.FileReader = class {
+        readAsDataURL(blob) { this.result = `data:${blob.name}`; this.onload(); }
+    };
+    h.host._vnccsCharacterList = [];
+    h.editor.layer = h.layer;
+    h.editor.buildCharacterMenu();
+    return { ...h, requests, complete(index, name) {
+        requests[index].resolve({ ok: true, blob: async () => ({ name }) });
+    } };
+}
+
+test("the latest character selection wins when earlier previews arrive later", async () => {
+    const { editor, layer, requests, complete } = deferredCharacterSelection();
+    const first = editor.pickVnccsCharacter("First");
+    const second = editor.pickVnccsCharacter("Second");
+    assert.equal(requests.length, 2);
+    complete(1, "Second"); await second;
+    complete(0, "First"); await first;
+    assert.equal(layer.pose.character.name, "Second");
+    assert.equal(layer.pose.character.dataURL, "data:Second");
+});
+
+for (const change of ["clear", "generation", "locked", "dispose"]) {
+    test(`a pending character preview cannot overwrite ${change}`, async () => {
+        const { editor, host, layer, complete } = deferredCharacterSelection();
+        const pending = editor.pickVnccsCharacter("First");
+        if (change === "clear") editor.characterClear.fire("click");
+        if (change === "generation") host._documentRevision = (host._documentRevision || 0) + 1;
+        if (change === "locked") host.editingBlocked = true;
+        if (change === "dispose") host._disposed = true;
+        complete(0, "First"); await pending;
+        assert.equal(layer.pose.character, null);
+    });
+}
+
+for (const change of ["newer upload", "clear"]) {
+    test(`a pending uploaded character cannot overwrite ${change}`, async () => {
+        const { editor, host, layer, context } = deferredCharacterSelection();
+        context.URL = { createObjectURL: file => file.name, revokeObjectURL() {} };
+        const decodes = [];
+        host.loadImage = () => new Promise(resolve => decodes.push(resolve));
+        const file = editor.characterMenu.children.find(child => child.tagName === "INPUT");
+        file.files = [{ name: "First.png" }];
+        const first = file.events.change[0]();
+        if (change === "newer upload") {
+            file.files = [{ name: "Second.png" }];
+            const second = file.events.change[0]();
+            decodes[1]({ width: 8, height: 8 }); await second;
+        } else editor.characterClear.fire("click");
+        decodes[0]({ width: 8, height: 8 }); await first;
+        assert.equal(layer.pose.character?.name || null, change === "clear" ? null : "Second.png");
+    });
+}
 
 test("image2 contains only lower visible image layers plus the selected character exactly once", async () => {
     const { host, layer } = harness();
@@ -542,7 +662,7 @@ test("the help popup illustrates every control it documents", () => {
     for (const label of ["Reset camera", "Cancel", "Save pose", "Shift"]) assert.ok(text.includes(label), label);
 });
 
-test("the generation box outline is hidden exactly while the editing view is shown", () => {
+test("node mode hides its generation box outline exactly while the editing view is shown", () => {
     const { editor, host, layer } = harness(); editor.layer = layer;
     assert.equal(editor.hidesBbox(), false, "not initialized");
     editor.initialized = true; editor.visible = true;
@@ -586,7 +706,9 @@ test("serialized pose, move history, node output and PSD use the same dedicated 
     assert.match(ucSource, /if \(snapshot.pose\) layer.pose = serializePose\(snapshot.pose\)/);
     assert.match(ucSource, /if \(layer.pose\) \{ layer.pose.rect.x \+= dx; layer.pose.rect.y \+= dy;/);
     assert.match(ucSource, /async exportPSD\(\) \{\s*try \{\s*await this.poseEditor\?\.flush\(\)/);
-    assert.match(ucSource, /isImageLayer\(layer\) && layer.visible/);
+    const psd = ucSource.slice(ucSource.indexOf("  async exportPSD() {"), ucSource.indexOf("  getLayersVisibleWorldRect(layers) {"));
+    assert.match(psd, /filter\(layer => isImageLayer\(layer\)\)/);
+    assert.match(psd, /hidden: layer.visible === false/);
     assert.match(ucSource, /pose_edit: poseRequest\?\.pose_edit/);
     assert.match(ucSource, /positive: poseRequest\.positive, denoise: 1/);
 });
@@ -649,6 +771,73 @@ function controlledStudio(load = async () => true) {
     }
     return { Studio, instances };
 }
+
+test("standalone Save bakes the wheel camera, persists it and reopens at the same size", async () => {
+    const controlled = controlledStudio();
+    const { Editor } = harness(controlled.Studio);
+    const { host, layer } = selectionHarness();
+    host.standalone = true;
+    host.layers = [layer];
+    host.stageWrap = Object.assign(new Element(), host.stageWrap);
+    const editor = host.poseEditor = new Editor(host);
+    host.editPoseLayer(layer);
+    await editor.ready;
+    const studio = controlled.instances[0];
+    const saved = JSON.stringify(layer.pose.viewport);
+    studio.viewer.camera.position.fromArray([1, 2, 1]);
+    studio.viewer.camera.zoom = 1.5;
+    studio.canvas.fire("wheel");
+    studio.host.onViewportRender();
+    assert.equal(JSON.stringify(layer.pose.viewport), saved, "navigation remains realtime without baking each wheel tick");
+    const captures = [];
+    studio.viewer.capture = (...args) => {
+        captures.push(JSON.stringify(editor.snapshotViewerCamera()));
+        return args[8].targetCanvas;
+    };
+    const zoomed = JSON.stringify(editor.snapshotViewerCamera());
+    host.finishPoseEdit(true);
+    assert.equal(JSON.stringify(layer.pose.viewport), zoomed);
+    assert.equal(captures.at(-1), zoomed, "the layer pixels use the same camera seen before Save");
+    assert.equal(JSON.stringify(host.undoStack.at(-1).after.pose.viewport), zoomed, "the session history includes the camera");
+    host.editPoseLayer(layer);
+    await editor.ready;
+    assert.equal(JSON.stringify(editor.snapshotViewerCamera()), zoomed, "reopening keeps the saved zoom");
+    studio.viewer.camera.position.fromArray([1, 2, 0.5]);
+    host.finishPoseEdit(false);
+    assert.equal(JSON.stringify(layer.pose.viewport), zoomed, "Cancel restores the last saved camera");
+    editor.release();
+});
+
+test("pose initialization hides intermediate frames until stage size and view offset are ready", async () => {
+    let finish;
+    const controlled = controlledStudio(() => new Promise(resolve => { finish = resolve; }));
+    const { editor, host, layer } = harness(controlled.Studio);
+    host.standalone = true;
+    host.stageWrap = Object.assign(new Element(), host.stageWrap);
+    const loading = editor.activate(layer);
+    await new Promise(setImmediate);
+    const studio = controlled.instances[0], camera = studio.viewer.camera;
+    assert.equal(studio.canvasContainer.style.visibility, "hidden");
+    const frames = [];
+    studio.viewer.renderer.render = () => frames.push({ visibility:studio.canvasContainer.style.visibility, aspect:camera.aspect, view:{...camera.view} });
+    camera.setViewOffset = (fullWidth, fullHeight, offsetX, offsetY, width, height) => {
+        camera.view = { enabled:true, fullWidth, fullHeight, offsetX, offsetY, width, height };
+    };
+    studio.performViewerResize = (width, height) => {
+        camera.aspect = width / height;
+        studio.viewer.renderer.render();
+        studio.host.onViewportRender();
+    };
+    studio.viewer.renderer.render();
+    finish();
+    await loading;
+    assert.ok(frames.length >= 2);
+    assert.ok(frames.every(frame => frame.visibility === "hidden"), "wrong loading frames are never visible");
+    assert.equal(studio.canvasContainer.style.visibility, "");
+    assert.equal(frames.at(-1).aspect, host.stageWrap.clientWidth / host.stageWrap.clientHeight);
+    assert.deepEqual(frames.at(-1).view, { enabled:true, fullWidth:750, fullHeight:600, offsetX:165, offsetY:-20, width:1000, height:800 });
+    editor.release();
+});
 
 test("deleting or switching a loading pose ignores old initialization and releases its editor", async () => {
     let finish;
@@ -725,6 +914,10 @@ test("generation reuses the Pose Studio prompt and leaves a rotated panorama cam
     assert.equal(result.positive, "Draw character from image2\nKeep the pose from image1\nAdditional instruction");
     assert.deepEqual(Object.keys(result.pose_edit), ["image1", "image2"]);
     assert.deepEqual(rendered, ["pose"]);
+    const pending = editor.generation(layer, { width: 128, height: 128 }, "Captured instruction");
+    host.settings.positive = "Next-run instruction";
+    const captured = await pending;
+    assert.equal(captured.positive, "Draw character from image2\nKeep the pose from image1\nCaptured instruction");
 });
 
 test("switching between pose layers restores each sidebar tab and scroll position", () => {

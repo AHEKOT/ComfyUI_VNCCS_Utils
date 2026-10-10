@@ -16,8 +16,7 @@ jobs:
           python-version: "3.11"
       - name: Install test dependencies
         run: |
-          python -m pip install numpy Pillow pytest
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy Pillow pytest pyyaml aiohttp 'dynamicprompts>=0.31,<1'
       - name: Run mandatory security scan
         run: python scripts/security_scan.py
       - name: Verify security scanner integrity

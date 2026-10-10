@@ -16,6 +16,7 @@ import folder_paths
 from .. import progress
 
 _MODEL_REPO = "ZhengPeng7/BiRefNet_lite"
+_MODEL_REVISION = "aa62cd87eafb9cc43056d08ef3615a14628b831d"
 _MODEL_DIR = os.path.join(folder_paths.models_dir, "birefnet", "BiRefNet_lite")
 _MODEL_LOCK = threading.Lock()
 _MODEL = None
@@ -46,6 +47,7 @@ def _ensure_snapshot():
         try:
             snapshot_download(
                 repo_id=_MODEL_REPO,
+                revision=_MODEL_REVISION,
                 local_dir=_MODEL_DIR,
                 tqdm_class=progress.SnapshotDownloadTqdm,
                 token=False,
@@ -55,7 +57,7 @@ def _ensure_snapshot():
                 "[SAM3DBody] Progress-aware BiRefNet download failed; "
                 f"retrying with the default downloader. Error: {progress_exc}"
             )
-            snapshot_download(repo_id=_MODEL_REPO, local_dir=_MODEL_DIR, token=False)
+            snapshot_download(repo_id=_MODEL_REPO, revision=_MODEL_REVISION, local_dir=_MODEL_DIR, token=False)
     if not os.path.isfile(os.path.join(_MODEL_DIR, "config.json")):
         raise RuntimeError(f"[SAM3DBody] BiRefNet download completed but config.json is missing under {_MODEL_DIR}")
     print("[SAM3DBody] BiRefNet lite download complete.")

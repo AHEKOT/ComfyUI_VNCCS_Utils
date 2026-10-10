@@ -1,12 +1,17 @@
 # VNCCS-Utils Project Rules
 
 Binding rules for the whole repository and every VNCCS-Utils widget: 3D Factory, Pose Studio,
-UniCanvas, Model Manager, Model Selector, and future interactive nodes.
+UniCanvas, and future interactive nodes.
 
 ## Realtime interaction is mandatory
 
 Every interactive control must show its effect continuously while the user interacts with it;
 the user must never have to release the mouse, pointer, pen, or key before seeing the result.
+
+Freezing during movement and jumping to the final position on release are strictly
+forbidden for anything the user moves: masks, layers, objects, joints, cameras,
+viewports, handles, panels, and timeline controls. The shared design contract for
+every existing and future widget is [Widget interaction design](docs/WIDGET_DESIGN.md).
 
 - Sliders, numeric scrubbing, color, angle and camera controls, gizmos, drag pads and
   timelines update visible state from `input`, `pointermove` or an equivalent continuous event.
@@ -23,6 +28,26 @@ the user must never have to release the mouse, pointer, pen, or key before seein
 
 A control that only reveals its result on release is a bug and must not be shipped.
 
+Pose Studio exception, approved by the owner: Background color controls exported
+captures and Pose Manager cards only. The Studio viewport keeps its fixed background.
+This is intentional; do not flag it or propose a viewport preview in future audits.
+
+## UniCanvas document architecture
+
+- Unaccepted generation results (staging) are transient. Never serialize them into
+  a canvas document, server state cache, workflow, or document catalog.
+- Generation is blocking from request preparation until completion or cancellation.
+  During generation, block document edits: layers, drawing, masks, transforms,
+  generation bbox, panorama camera, pose edits, undo/redo, imports, and document
+  create/open/rename/delete. Keep pan, zoom, Fit, scrolling, settings, generation
+  parameters, and other non-mutating UI available. Capture generation settings
+  before asynchronous preparation; later parameter edits apply to the next run.
+  Progress reporting and the Stop command remain available. Late asynchronous
+  editing callbacks must not mutate the document while generation is running.
+- Creating a canvas preserves the previous document. Each canvas has its own
+  durable state and output cache; model weights remain shared.
+- Document deletion must preserve immutable snapshots referenced by saved workflows.
+
 ## E2E tests (Playwright)
 
 `tests/e2e/` is the browser E2E suite for the UniCanvas UI; the only input is `COMFYUI_URL`,
@@ -37,7 +62,7 @@ The specs guard the standalone-tab smoke path, the measurement helper, the setti
 the pose edit session and backdrop, the standalone sidebar setting, `VNCSS Config` overrides,
 and the prompt guide; nothing calls GPU generation or downloads models. Geometric assertions
 read layer pixels and pose state through the read-only `window.__VNCCS_UC_E2E__` hook in
-`web/vnccs_unicanvas_modes.mjs`; `PW_CHROMIUM_PATH=<chrome>` reuses a preinstalled Chromium.
+`web/unicanvas/modes.mjs`; `PW_CHROMIUM_PATH=<chrome>` reuses a preinstalled Chromium.
 
 ## Test platform (Docker)
 

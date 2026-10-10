@@ -16,8 +16,9 @@ def load_unicanvas_package(parent, torch_module=None):
     The private parent keeps these copies apart from the real ``nodes.unicanvas``
     modules (so a stub torch never leaks into them), while the package's relative
     imports that reach nodes/ (for example ``...vncss_config``) still resolve.
-    ``torch_module`` replaces ``torch`` only while the package is imported, so the
-    suites also run on hosts without torch. Submodules are attributes of the
+    ``torch_module`` replaces ``torch`` only while the package is imported. Without
+    torch, an annotation-only stub keeps pure tests runnable; tensor calls still fail.
+    Submodules are attributes of the
     returned package (``package.render``, ``package.models.registry`` ...).
     """
     if parent not in sys.modules:
@@ -27,6 +28,9 @@ def load_unicanvas_package(parent, torch_module=None):
     name = f"{parent}.unicanvas"
     if name in sys.modules:
         return sys.modules[name]
+    if torch_module is None and importlib.util.find_spec("torch") is None:
+        torch_module = types.ModuleType("torch")
+        torch_module.Tensor = object
     previous_torch = sys.modules.get("torch")
     if torch_module is not None:
         sys.modules["torch"] = torch_module
@@ -37,6 +41,7 @@ def load_unicanvas_package(parent, torch_module=None):
         module = importlib.util.module_from_spec(spec)
         sys.modules[name] = module
         spec.loader.exec_module(module)
+        setattr(sys.modules[parent], "unicanvas", module)
         return module
     finally:
         if torch_module is not None:

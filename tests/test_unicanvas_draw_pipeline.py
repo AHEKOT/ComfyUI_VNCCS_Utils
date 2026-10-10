@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
-import torch
+from unittest import mock
+torch = pytest.importorskip("torch")
 from PIL import Image
 
 from nodes.unicanvas import draw, draw_pipeline
@@ -19,6 +20,29 @@ from nodes.unicanvas.models.capabilities import CANVAS_TASKS, STANDARD_TASKS, Mo
 
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = PromptGuide(hint="Describe it", guide="A test family that echoes what the pipeline hands it.")
+
+
+def test_interrupt_releases_draw_references_without_unloading_other_workflows(monkeypatch):
+    import comfy.model_management as management
+    from types import SimpleNamespace
+
+    cleanup, unload, empty = mock.Mock(), mock.Mock(), mock.Mock()
+    monkeypatch.setattr(management, "cleanup_models", cleanup, raising=False)
+    monkeypatch.setattr(management, "unload_all_models", unload, raising=False)
+    monkeypatch.setattr(management, "soft_empty_cache", empty, raising=False)
+    monkeypatch.setattr(draw_pipeline, "set_interrupt", lambda value: None)
+    monkeypatch.setattr(draw_pipeline, "_release_generation_sampling_refs", lambda *args: None)
+    monkeypatch.setattr(draw_pipeline, "_release_generation_state", lambda: None)
+    monkeypatch.setattr(draw_pipeline, "_set_draw_progress", lambda *args: None)
+    request = SimpleNamespace(settings={}, mode="inpaint", denoise=1, draw_id="interrupt-test")
+    pipeline = ImageDrawPipeline(SimpleNamespace(sampling_scratch_keys=()), request)
+    pipeline.ctx.model = pipeline.ctx.latent = pipeline.ctx.image_tensor = object()
+    pipeline.free_after_interrupt()
+    assert pipeline.ctx.model is pipeline.ctx.latent is pipeline.ctx.image_tensor is None
+    assert pipeline.ctx.result_images == []
+    cleanup.assert_called_once_with()
+    empty.assert_called_once_with(True)
+    unload.assert_not_called()
 
 
 def png(alpha=255, size=64):
@@ -94,9 +118,84 @@ def test_plugin_family_runs_through_the_default_pipeline(register):
     assert family.log == [("encode", "a cat"), ("encode", "blurry"), ("empty", 64, 64), ("sample", "M", 1.0)]
 
 
+@pytest.mark.parametrize("crop", [False, True])
+@pytest.mark.parametrize("channels", [3, 4])
+def test_graph_tensor_matches_final_saved_pixels_and_size(register, monkeypatch, crop, channels):
+    from types import SimpleNamespace
+    from nodes.unicanvas.crop_stitch import CropPlan
+    from nodes.unicanvas.imaging import _image_tensor_to_pil_list
+
+    saved = []
+    monkeypatch.setattr(draw_pipeline, "_save_temp_image", lambda image, prefix: saved.append(image.copy()) or {"filename": prefix})
+    request = SimpleNamespace(settings={}, mode="txt2img", denoise=1, draw_id="output", steps=1,
+                              payload={"return_tensor": True}, task=SimpleNamespace(key="text_to_image"))
+    pipeline = ImageDrawPipeline(EchoFamily(), request)
+    ctx = pipeline.ctx
+    ctx.decoded = torch.zeros(2, 64, 64, channels)
+    ctx.decoded[0, :, :, 0] = 1
+    ctx.decoded[1, :, :, 1] = 1
+    if channels == 4:
+        ctx.decoded[:, :, :, 3] = 1
+    ctx.result_images = _image_tensor_to_pil_list(ctx.decoded)
+    ctx.output_size = (128, 128)
+    if crop:
+        ctx.full_source_rgba = Image.new("RGBA", (128, 128), (0, 0, 255, 255))
+        ctx.crop_plan = CropPlan(box=(48, 48, 80, 80), full_size=(128, 128), work_size=(64, 64))
+    pipeline.fit_to_output()
+    result = pipeline.save_result()
+    returned = _image_tensor_to_pil_list(result["tensor"])
+    assert result["tensor"].shape[:3] == (2, 128, 128)
+    assert [image.tobytes() for image in returned] == [image.tobytes() for image in saved]
+    if crop:
+        assert returned[0].getpixel((0, 0)) == (0, 0, 255, 255)[:channels]
+        assert returned[0].getpixel((64, 64)) == (255, 0, 0, 255)[:channels]
+
+
 class EchoPipeline(ImageDrawPipeline):
     def run(self):
         return {"status": "custom", "task": self.request.task.key, "family": self.module.key}
+
+
+@pytest.mark.parametrize("mode", ["inpaint", "outpaint"])
+@pytest.mark.parametrize("crop", [False, True])
+@pytest.mark.parametrize("mask_alpha", [0, 128, 255])
+@pytest.mark.parametrize("source_alpha,generated_alpha", [(255, 255), (128, 128), (0, 128)])
+def test_masked_graph_tensor_preserves_source_outside_mask(monkeypatch, mode, crop, mask_alpha, source_alpha, generated_alpha):
+    from types import SimpleNamespace
+    from nodes.unicanvas.crop_stitch import CropPlan
+    from nodes.unicanvas.imaging import _image_tensor_to_pil_list
+
+    saved = []
+    monkeypatch.setattr(draw_pipeline, "_save_temp_image", lambda image, prefix: saved.append(image.copy()) or {"filename": prefix})
+    request = SimpleNamespace(settings={}, mode=mode, denoise=1, draw_id="masked-output", steps=1,
+                              payload={"return_tensor": True}, task=SimpleNamespace(key=mode))
+    pipeline = ImageDrawPipeline(EchoFamily(), request)
+    ctx = pipeline.ctx
+    source_pixel = (0, 0, 255 if source_alpha else 0, source_alpha)
+    ctx.source_rgba = Image.new("RGBA", (64, 64), source_pixel)
+    ctx.full_source_rgba = ctx.source_rgba.copy()
+    ctx.result_images = [Image.new("RGBA", (64, 64), (255, 0, 0, generated_alpha))]
+    ctx.paste_mask_image = Image.new("L", (64, 64), 0)
+    ctx.paste_mask_image.paste(mask_alpha, (0, 0, 32, 64))
+    ctx.output_size = (128, 128)
+    if crop:
+        ctx.crop_plan = CropPlan(box=(16, 16, 48, 48), full_size=(64, 64), work_size=(64, 64))
+    pipeline.fit_to_output()
+    returned = _image_tensor_to_pil_list(pipeline.save_result()["tensor"])[0]
+    assert returned.size == (128, 128)
+    assert returned.getpixel((100, 64)) == source_pixel
+    if crop:
+        assert returned.getpixel((0, 64)) == source_pixel
+    # Raw staging pixels are still red; only the graph IMAGE output is composited.
+    point = (40 if crop else 32, 64)
+    assert saved[0].getpixel(point) == (255, 0, 0, generated_alpha)
+    a = generated_alpha * mask_alpha // 255 / 255
+    b = source_alpha / 255 * (1 - a)
+    if a + b:
+        expected = (round(255 * a / (a + b)), 0, round(255 * b / (a + b)), round(255 * (a + b)))
+        assert all(abs(actual - wanted) <= 1 for actual, wanted in zip(returned.getpixel(point), expected))
+    else:
+        assert returned.getpixel(point)[3] == 0
 
 
 @dataclass(frozen=True)

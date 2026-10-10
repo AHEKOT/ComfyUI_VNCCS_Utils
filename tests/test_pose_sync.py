@@ -6,6 +6,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class StubResponse:
@@ -19,7 +20,7 @@ stub_aiohttp.web = types.SimpleNamespace(
     json_response=lambda data, status=200: StubResponse(data, status),
 )
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "api" / "pose_sync.py"
+MODULE_PATH = Path(__file__).resolve().parents[1] / "api" / "pose_capture_sync.py"
 SPEC = importlib.util.spec_from_file_location("vnccs_pose_sync_test_module", MODULE_PATH)
 POSE_SYNC = importlib.util.module_from_spec(SPEC)
 previous_aiohttp = sys.modules.get("aiohttp")
@@ -52,6 +53,20 @@ class FakeRouter:
 
 
 class PoseSyncTests(unittest.TestCase):
+    def test_failed_write_preserves_previous_capture_and_cleans_temporary_file(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "vnccs_debug_42.json"
+            path.write_text('{"captured_images": ["old"]}')
+            def fail_dump(_data, handle):
+                handle.write("partial")
+                raise OSError("disk full")
+            with patch.dict(sys.modules, {"folder_paths": types.SimpleNamespace(get_temp_directory=lambda: root)}), \
+                    patch.object(POSE_SYNC.json, "dump", side_effect=fail_dump):
+                response = asyncio.run(POSE_SYNC.upload_pose_sync(FakeRequest({"node_id": "42"})))
+            self.assertEqual(response.status, 500)
+            self.assertEqual(json.loads(path.read_text()), {"captured_images": ["old"]})
+            self.assertEqual(list(Path(root).iterdir()), [path])
+
     def test_registers_current_and_legacy_routes(self):
         app = types.SimpleNamespace(router=FakeRouter())
 

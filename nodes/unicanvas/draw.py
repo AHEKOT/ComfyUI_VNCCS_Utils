@@ -8,6 +8,7 @@ knows individual families; see ``models/base.py`` for the extension points.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from PIL import Image
@@ -15,9 +16,11 @@ from PIL import Image
 from .debug import set_unicanvas_debug
 from .draw_pipeline import ImageDrawPipeline, prepare_pose_edit_images
 from .draw_request import DrawRequest
-from .progress import set_interrupt
+from .progress import _get_draw_progress, _set_draw_progress, consume_draw_cancellation, interrupt_types, set_interrupt
+from .locks import _COMFY_MODEL_OP_LOCK
 from .models.base import UniCanvasModelModule
 from .models.registry import UNICANVAS_MODEL_MODULES, _get_unicanvas_model_module
+from .prompt_enhance import _release_generation_state
 
 
 def _pose_edit_family_labels() -> list[str]:
@@ -41,11 +44,46 @@ def _create_draw_pipeline(request: DrawRequest) -> ImageDrawPipeline:
     return pipeline_class(request.module, request, supported_pose_labels=_pose_edit_family_labels())
 
 
+_DRAW_OWNER_LOCK = threading.Lock()
+_ACTIVE_DRAW_ID: str | None = None
+
+
+class DrawCancelled(RuntimeError):
+    """A queued draw was stopped before acquiring the model lock."""
+
+
+def interrupt_draw(draw_id: str) -> bool:
+    with _DRAW_OWNER_LOCK:
+        if not draw_id:
+            return False
+        if _ACTIVE_DRAW_ID == draw_id:
+            set_interrupt(True)
+        elif _get_draw_progress(draw_id)["stage"] in {"complete", "error", "cancelled"}:
+            return False
+        else:
+            _set_draw_progress(draw_id, "cancelled", 1.0, message="Stopped before generation", cancel_before_start=True)
+        return True
+
+
 def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
-    settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
-    if "debug_mode" in settings:
-        set_unicanvas_debug(settings.get("debug_mode"))
-    set_interrupt(False)  # a Stop that arrived after the last draw ended must not kill this one
-    request = DrawRequest.from_payload(payload)
-    request.module.validate_request(request)
-    return _create_draw_pipeline(request).run()
+    global _ACTIVE_DRAW_ID
+    with _COMFY_MODEL_OP_LOCK:
+        with _DRAW_OWNER_LOCK:
+            if consume_draw_cancellation(str(payload.get("debug_id") or "")):
+                exceptions = interrupt_types()
+                raise (exceptions[0] if exceptions else DrawCancelled)("Generation stopped")
+            set_interrupt(False)
+            _ACTIVE_DRAW_ID = str(payload.get("debug_id") or "")
+        try:
+            settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
+            if "debug_mode" in settings:
+                set_unicanvas_debug(settings.get("debug_mode"))
+            request = DrawRequest.from_payload(payload)
+            with _DRAW_OWNER_LOCK:
+                _ACTIVE_DRAW_ID = request.draw_id
+            request.module.validate_request(request)
+            return _create_draw_pipeline(request).run()
+        finally:
+            _release_generation_state()
+            with _DRAW_OWNER_LOCK:
+                _ACTIVE_DRAW_ID = None

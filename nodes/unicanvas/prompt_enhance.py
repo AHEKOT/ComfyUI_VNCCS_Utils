@@ -53,7 +53,7 @@ _SAMPLING = {
     "repetition_penalty": 1.05,
     "presence_penalty": 0.0,
 }
-# Official rewriters answer in JSON (QI2.1 "rewritten_prompt", Qwen Edit "Rewritten").
+# Official rewriters answer in JSON (QI2.1 "rewritten_prompt").
 _JSON_KEYS = ("rewritten_prompt", "rewritten", "prompt")
 _JSON_FIELD = re.compile(r'"(?:rewritten_prompt|rewritten)"\s*:\s*"((?:[^"\\]|\\.)*)"', re.IGNORECASE)
 
@@ -140,6 +140,8 @@ def edit_images(canvas: Image.Image | None, settings: dict[str, Any]) -> list[Im
     make sense next to a canvas. An empty canvas (which an edit model would draw as a black picture)
     is ignored: the request is a text-to-image one, with no pictures at all.
     """
+    if settings.get("edit_use_layers_as_reference") is False:
+        return reference_images(settings) or None
     if canvas is None:
         return None
     return [canvas, *reference_images(settings)]

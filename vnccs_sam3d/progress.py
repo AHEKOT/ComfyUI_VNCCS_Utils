@@ -4,17 +4,37 @@ from __future__ import annotations
 
 import threading
 import time
+import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
+from functools import wraps
 
 _TASKS: dict[str, dict] = {}
 _LOCK = threading.Lock()
+_MODEL_OP_LOCK = threading.RLock()
 _CURRENT_TASK_ID: ContextVar[str | None] = ContextVar("vnccs_sam3d_task_id", default=None)
 _DOWNLOAD_PHASE: ContextVar[tuple[str, int, int]] = ContextVar(
     "vnccs_sam3d_download_phase",
     default=("Downloading model files...", 8, 28),
 )
 _MAX_TASK_AGE_SECONDS = 60 * 60
+
+
+def model_operation(function):
+    """Serialize SAM model work with UniCanvas without importing its runtime."""
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        # Resolve at call time: the shared model package can load after this module.
+        package_root = (__package__ or "").rpartition(".")[0]
+        module_name = f"{package_root}.nodes.unicanvas" if package_root else "nodes.unicanvas"
+        module = sys.modules.get(module_name)
+        lock = getattr(module, "_COMFY_MODEL_OP_LOCK", None)
+        if not (hasattr(lock, "acquire") and hasattr(lock, "release")):
+            lock = _MODEL_OP_LOCK
+        with lock:
+            return function(*args, **kwargs)
+
+    return wrapped
 
 
 def _clamp_progress(value) -> int:

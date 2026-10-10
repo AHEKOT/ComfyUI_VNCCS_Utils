@@ -8,6 +8,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
 const entrySource = await readFile(path.join(root, "web/vnccs_unicanvas.js"), "utf8");
 const initSource = await readFile(path.join(root, "__init__.py"), "utf8");
+const buildSource = await readFile(path.join(root, "nodes/unicanvas/build_info.py"), "utf8");
+const cacheSource = await readFile(path.join(root, "api/pose_unicanvas_caches.py"), "utf8");
 
 test("staleness gate: the entry auto-reloads when served code differs from the running one", () => {
   assert.match(entrySource, /const VNCCS_UNICANVAS_VERSION = "\d+";/, "the entry must carry a numeric file version");
@@ -24,11 +26,13 @@ test("staleness gate: the entry auto-reloads when served code differs from the r
 });
 
 test("build info: commit id and file version are exposed to the settings popover and console", () => {
-  assert.match(initSource, /@PromptServer\.instance\.routes\.get\("\/vnccs\/unicanvas\/build_info"\)/,
+  assert.match(initSource, /from \.api\.pose_unicanvas_caches import/, "the extension must load the cache routes");
+  assert.match(initSource, /_vnccs_register_unicanvas_state_cache\(\)/, "the extension must register the cache routes");
+  assert.match(cacheSource, /@PromptServer\.instance\.routes\.get\("\/vnccs\/unicanvas\/build_info"\)/,
     "the backend must expose the build_info route");
-  assert.match(initSource, /_vnccs_read_git_short_commit\(/,
+  assert.match(buildSource, /_vnccs_read_git_short_commit\(/,
     "the build info must carry the git commit id");
-  assert.doesNotMatch(initSource, /subprocess/,
+  assert.doesNotMatch(buildSource, /subprocess/,
     "the build info must read the commit from .git files without process execution");
   const settings = entrySource.slice(entrySource.indexOf("openUniCanvasSettings() {"), entrySource.indexOf("openUniCanvasSettings() {") + 8000);
   assert.match(settings, /vnccs-uc-build-info/, "the settings popover must show the build identity");
@@ -55,7 +59,7 @@ test("entry-level history shield: stale cached modules cannot leak Ctrl+Z/Y to t
 
 test("local module imports carry the cache-busting version query", () => {
   const version = entrySource.match(/const VNCCS_UNICANVAS_VERSION = "(\d+)"/)[1];
-  const imports = [...entrySource.matchAll(/from "\.\/(vnccs_[^"?]+)(\?v=(\d+))?"/g)];
+  const imports = [...entrySource.matchAll(/from "\.\/([^"?]+)(\?v=(\d+))?"/g)];
   assert.ok(imports.length >= 14, "expected the full local import graph to be versioned");
   for (const [, path, query, v] of imports) {
     assert.ok(query, `import of ${path} must carry ?v=`);

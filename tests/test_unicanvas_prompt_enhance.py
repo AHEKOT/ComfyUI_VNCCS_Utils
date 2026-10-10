@@ -291,12 +291,12 @@ class StopTests(unittest.TestCase):
 class DefaultPromptTests(unittest.TestCase):
     def test_shipped_defaults(self):
         entries = {entry["family"]: entry for entry in UNICANVAS.enhance.load_default_prompts()}
-        for family in ("qwen_image21", "qwen_image_edit", "flux_klein", "z_image", "anima", "minimax_h3", "krea2_edit"):
+        for family in ("qwen_image21", "flux_klein", "z_image", "anima", "minimax_h3", "krea2_edit"):
             self.assertIn(family, entries)
             self.assertTrue(entries[family]["positive"] or entries[family]["edit"], family)
         self.assertTrue(entries["qwen_image21"]["positive"].startswith("# Image Prompt Rewriting Expert"))
         self.assertIn("wh_ratio", entries["qwen_image21"]["edit"])
-        for family in ("anima", "qwen_image21", "qwen_image_edit", "z_image"):
+        for family in ("anima", "qwen_image21", "z_image"):
             self.assertTrue(entries[family]["negative"], f"{family} uses the negative prompt, so it needs a negative wand")
 
 

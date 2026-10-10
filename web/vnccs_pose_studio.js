@@ -10,14 +10,14 @@ import {
     POSE_STUDIO_CAPTURE_FOV,
     PoseViewerCore,
     buildEquivalentPerspectiveProjectionFrame,
-} from "./vnccs_pose_studio_core.js?v=20260910.1";
+} from "./pose_studio/core.js?v=20261009.audit";
 import {
     cameraPromptToSkydomeRotation,
-} from "./vnccs_camera_control_utils.mjs";
-import { HAND_PRESETS } from "./vnccs_hand_presets.js";
-import { importMixamoFBXAnimation } from "./vnccs_mixamo_import.js";
-import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
-import { installCustomSelects } from "./vnccs_custom_select.mjs";
+} from "./camera_control/utils.mjs";
+import { HAND_PRESETS } from "./pose_studio/hand_presets.js";
+import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js";
+import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js";
+import { installCustomSelects } from "./shared/custom_select.mjs";
 import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
@@ -34,7 +34,7 @@ import {
     normalizePoseStudioCharacters,
     normalizeSAMProjectionFrame,
     serializePoseStudioCharacter,
-} from "./vnccs_pose_characters.mjs?v=20260908.14";
+} from "./pose_studio/characters.mjs?v=20260908.14";
 import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
@@ -53,7 +53,7 @@ import {
     stabilizeVideoPoseSequence,
     waitForVideoMetadata,
     zoomVideoTimelineViewport,
-} from "./vnccs_video_import.mjs";
+} from "./pose_studio/imports/video.mjs";
 import {
     boneNameForPositionTrack,
     bonePositionTrackName,
@@ -82,9 +82,9 @@ import {
     serializeAnimationStateSnapshot,
     setCharacterTransformKeyframe,
     setTrackKeyframeFromEuler,
-} from "./vnccs_pose_animation.mjs?v=20260908.14";
+} from "./pose_studio/animation.mjs?v=20260908.14";
 
-const VNCCS_POSE_MORPH_WORKER_URL = new URL("./vnccs_pose_morph_worker.js", import.meta.url);
+const VNCCS_POSE_MORPH_WORKER_URL = new URL("./pose_studio/morph_worker.js", import.meta.url);
 let VNCCS_SHARED_MORPH_WORKER = null;
 let VNCCS_SHARED_MORPH_WORKER_FAILED = false;
 let VNCCS_SHARED_MORPH_WORKER_WARMED = false;
@@ -3226,6 +3226,133 @@ const STYLES = `
     background: var(--ps-accent-subtle);
 }
 
+.vnccs-pose-studio .vnccs-ps-library-modal {
+    container: pose-library / inline-size;
+    --vnccs-ps-library-header-scale: calc(var(--vnccs-ps-library-ui-scale) * 0.62);
+}
+
+.vnccs-pose-studio .vnccs-ps-library-modal-header,
+.vnccs-pose-studio .vnccs-ps-library-toolbar,
+.vnccs-pose-studio .vnccs-ps-library-categories {
+    --vnccs-ps-library-ui-scale: var(--vnccs-ps-library-header-scale);
+    flex-shrink: 0;
+}
+
+.vnccs-pose-studio .vnccs-ps-library-modal-title {
+    font-size: max(14px, calc(32px * var(--vnccs-ps-library-ui-scale)));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-modal-header .vnccs-ps-btn,
+.vnccs-pose-studio .vnccs-ps-library-search {
+    font-size: max(12px, calc(20px * var(--vnccs-ps-library-ui-scale)));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-modal-header .vnccs-ps-btn,
+.vnccs-pose-studio .vnccs-ps-modal-close {
+    min-height: 32px;
+    min-width: 32px;
+    transition: color var(--ps-transition), border-color var(--ps-transition);
+}
+
+.vnccs-pose-studio .vnccs-ps-library-modal-header .vnccs-ps-btn-icon {
+    font-size: max(16px, calc(28px * var(--vnccs-ps-library-ui-scale)));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-modal .vnccs-ps-modal-close {
+    font-size: max(24px, calc(44px * var(--vnccs-ps-library-ui-scale)));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-search,
+.vnccs-pose-studio .vnccs-ps-library-menu-btn {
+    box-sizing: border-box;
+    height: max(32px, calc(76px * var(--vnccs-ps-library-ui-scale)));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-menu-btn {
+    flex-shrink: 0;
+    width: max(32px, calc(76px * var(--vnccs-ps-library-ui-scale)));
+    font-size: max(18px, calc(32px * var(--vnccs-ps-library-ui-scale)));
+    transition: color var(--ps-transition), border-color var(--ps-transition);
+}
+
+.vnccs-pose-studio .vnccs-ps-library-size-control {
+    width: max(220px, calc(380px * var(--vnccs-ps-library-ui-scale)));
+    flex-basis: max(220px, calc(380px * var(--vnccs-ps-library-ui-scale)));
+    height: max(32px, calc(76px * var(--vnccs-ps-library-ui-scale)));
+    font-size: max(11px, calc(20px * var(--vnccs-ps-library-ui-scale)));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-size-control input {
+    min-width: 0;
+    min-height: 24px;
+}
+
+.vnccs-pose-studio .vnccs-ps-library-category-chip {
+    flex-shrink: 0;
+    height: max(28px, calc(60px * var(--vnccs-ps-library-ui-scale)));
+    font-size: max(11px, calc(22px * var(--vnccs-ps-library-ui-scale)));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-settings {
+    --vnccs-ps-library-ui-scale: 1;
+    zoom: max(0.55, var(--vnccs-ps-library-header-scale));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-settings-head,
+.vnccs-pose-studio .vnccs-ps-library-repo-actions {
+    flex-wrap: wrap;
+}
+
+.vnccs-pose-studio .vnccs-ps-library-settings-head > div {
+    flex: 1 1 360px;
+    min-width: 0;
+}
+
+.vnccs-pose-studio .vnccs-ps-library-settings-back {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+.vnccs-pose-studio .vnccs-ps-library-settings .vnccs-ps-input,
+.vnccs-pose-studio .vnccs-ps-library-settings .vnccs-ps-btn {
+    box-sizing: border-box;
+    min-height: 60px;
+    white-space: nowrap;
+    transition: color var(--ps-transition), border-color var(--ps-transition);
+}
+
+@container pose-library (max-width: 600px) {
+    .vnccs-pose-studio .vnccs-ps-library-modal-header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .vnccs-pose-studio .vnccs-ps-library-header-actions {
+        grid-column: 1 / -1;
+        grid-row: 2;
+    }
+    .vnccs-pose-studio .vnccs-ps-modal-close {
+        grid-column: 2;
+        grid-row: 1;
+    }
+    .vnccs-pose-studio .vnccs-ps-library-toolbar {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .vnccs-pose-studio .vnccs-ps-library-search {
+        grid-column: 1 / -1;
+        min-width: 0;
+        width: 100%;
+    }
+    .vnccs-pose-studio .vnccs-ps-library-size-control {
+        width: auto;
+        min-width: 0;
+    }
+    .vnccs-pose-studio .vnccs-ps-library-repo-card,
+    .vnccs-pose-studio .vnccs-ps-library-repo-add {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
 .vnccs-ps-library-workspace {
     --vnccs-ps-library-inspector-base-width: 510px;
     --vnccs-ps-library-inspector-scale: 1;
@@ -3355,35 +3482,6 @@ const STYLES = `
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-}
-
-.vnccs-ps-library-repo-diagnostic,
-.vnccs-ps-library-repo-progress-diagnostic {
-    margin-top: 12px;
-    color: #ffd27d;
-    font-size: 17px;
-    line-height: 1.4;
-}
-
-.vnccs-ps-library-repo-diagnostic summary,
-.vnccs-ps-library-repo-progress-diagnostic summary {
-    cursor: pointer;
-    font-weight: 700;
-}
-
-.vnccs-ps-library-repo-diagnostic pre,
-.vnccs-ps-library-repo-progress-diagnostic pre {
-    max-height: 180px;
-    margin: 10px 0 0;
-    padding: 12px;
-    overflow: auto;
-    border: 1px solid rgba(255, 210, 125, 0.3);
-    border-radius: 6px;
-    background: rgba(0, 0, 0, 0.28);
-    color: var(--ps-text-muted);
-    font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
 }
 
 .vnccs-ps-library-repo-actions {
@@ -3578,6 +3676,11 @@ const STYLES = `
 .vnccs-ps-library-item.selected {
     border-color: var(--ps-accent);
     box-shadow: 0 0 0 1px var(--ps-accent-border), 0 10px 28px rgba(0,0,0,0.35);
+}
+
+.vnccs-ps-library-item:focus-visible {
+    outline: 2px solid var(--ps-accent);
+    outline-offset: 2px;
 }
 
 .vnccs-ps-library-item-delete {
@@ -4318,6 +4421,7 @@ class PoseStudioWidget {
         clearTimeout(this._animationCacheUploadTimer);
         this._animationCacheUploadTimer = null;
         this._activeVideoImportClose?.();
+        this._closeLibraryModal?.();
         void this.flushAnimationCacheUpload?.();
         this.animationTimeline?.destroy?.();
         this._customSelectController?.disconnect();
@@ -4908,7 +5012,7 @@ class PoseStudioWidget {
         leftPanel.appendChild(proportionsSection.el);
 
         // --- GENDER SETTINGS SECTION ---
-        const genderSection = this.createSection("Gender Settings", true);
+        const genderSection = this.createSection("Gender Settings", false);
         this.genderFields = {};
 
         const femaleSliders = [
@@ -5051,7 +5155,7 @@ class PoseStudioWidget {
         this.hideSectionInUniCanvas(camAngleSection);
 
         // --- EXPORT SETTINGS SECTION ---
-        const exportSection = this.createSection("Export Settings", true);
+        const exportSection = this.createSection("Export Settings", false);
 
         const modeField = document.createElement("div");
         modeField.className = "vnccs-ps-field";
@@ -5291,17 +5395,31 @@ class PoseStudioWidget {
             boneNames: [],
             onFrameChange: (frame, options = {}) => {
                 this.applyAnimationFrame(frame, {
-                    transient: options.playback || options.scrub,
+                    transient: options.playback || options.scrub || options.transient,
                     updateTimeline: false,
                 });
             },
             onStateChange: (change = {}) => {
-                if (change.transient) return;
+                if (change.type === "timingStart") {
+                    this._timelineTimingBaseline = (this.characters || [])
+                        .filter(character => character.animationState && character.animationState !== this.animationState)
+                        .map(character => [character, JSON.stringify(character.animationState)]);
+                    return;
+                }
+                if (change.transient && change.type !== "timing") return;
+                if (change.type === "timing") {
+                    for (const [character, snapshot] of this._timelineTimingBaseline || []) {
+                        Object.assign(character.animationState, JSON.parse(snapshot));
+                    }
+                }
                 this.syncSharedTimelineFromActive();
                 this.retimeAllCharacterAnimations(this.sharedTimeline);
                 this.animationTimeline?.render();
                 this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
-                this.syncToNode(false, { skipCapture: true });
+                if (!change.transient) {
+                    this._timelineTimingBaseline = null;
+                    this.syncToNode(false, { skipCapture: true });
+                }
             },
             onRequestKey: (trackName, frame) => this.addAnimationKey(trackName, frame),
             onTrackSelect: (trackName) => {
@@ -5412,13 +5530,14 @@ class PoseStudioWidget {
         if (!this.container) return;
         const animation = this.isAnimationMode();
         const imageBatch = this.exportParams.animation_image_batch === true;
+        const canPersist = !this._poseDataRestoreError && !this._poseDataRestorePending && !this.node?._vnccsPoseAwaitingRestore;
         const imageBatchWidget = this.getNodeWidget("animation_image_batch");
-        if (imageBatchWidget && imageBatchWidget.value !== imageBatch) {
+        if (canPersist && imageBatchWidget && imageBatchWidget.value !== imageBatch) {
             imageBatchWidget.value = imageBatch;
             imageBatchWidget.callback?.(imageBatch);
         }
         const poseWidget = this.getNodeWidget("pose_data");
-        if (poseWidget) {
+        if (canPersist && poseWidget) {
             try {
                 const poseData = JSON.parse(poseWidget.value || "{}");
                 const savedExport = poseData.export && typeof poseData.export === "object"
@@ -5685,12 +5804,13 @@ class PoseStudioWidget {
             && this._lastUploadedAnimationCacheRevision >= revision
         ) return true;
 
+        // Freeze the payload before waiting for an earlier upload; edits must not rewrite its snapshot.
+        const animationJSON = (
+            revision === this._animationCacheRevision
+            && this._pendingAnimationCacheJSON
+        ) ? this._pendingAnimationCacheJSON : this.sceneAnimationCacheSnapshot();
         const run = async () => {
             try {
-                const animationJSON = (
-                    revision === this._animationCacheRevision
-                    && this._pendingAnimationCacheJSON
-                ) ? this._pendingAnimationCacheJSON : this.sceneAnimationCacheSnapshot();
                 const body = `{"animation_id":${JSON.stringify(cacheId)},"revision":${Math.max(0, Math.floor(Number(revision) || 0))},"animation":${animationJSON}}`;
                 const response = await fetch("/vnccs/pose_animation_upload", {
                     method: "POST",
@@ -5809,7 +5929,8 @@ class PoseStudioWidget {
             this._animationCacheId = cacheBelongsToNode ? sourceCacheId : null;
             this._animationCacheRevision = Math.max(
                 0,
-                Math.floor(Number(reference.revision ?? payload.revision) || 0),
+                Math.floor(Number(reference.revision) || 0),
+                Math.floor(Number(payload.revision) || 0),
             );
             this._lastUploadedAnimationCacheId = cacheBelongsToNode ? sourceCacheId : null;
             this._lastUploadedAnimationCacheRevision = cacheBelongsToNode
@@ -5862,6 +5983,9 @@ class PoseStudioWidget {
     animationHistorySnapshot() {
         const state = JSON.parse(this.animationSnapshot());
         if (this.meshParams) state.editorMesh = { ...this.meshParams };
+        state.characterAnimations = (this.characters || [])
+            .filter(character => character.animationState && character.id !== this.activeCharacterId)
+            .map(character => ({ id: character.id, animation: JSON.parse(this.animationSnapshot(character.animationState)) }));
         return JSON.stringify(state);
     }
 
@@ -5884,13 +6008,22 @@ class PoseStudioWidget {
             const currentFrame = this.animationState.currentFrame;
             const activeCharacter = this.getActiveCharacter();
             this.pendingAgeCameraFit = false;
-            const editorMesh = JSON.parse(snapshot).editorMesh;
+            const restored = JSON.parse(snapshot);
+            const editorMesh = restored.editorMesh;
             if (editorMesh) this.restoreMeshHistory(editorMesh);
             this.animationState = restoreAnimationStateSnapshot(snapshot, {
                 currentFrame,
                 fallbackPose: this.animationState.basePose || {},
             });
             if (activeCharacter) activeCharacter.animationState = this.animationState;
+            for (const entry of restored.characterAnimations || []) {
+                const character = this.characters?.find(character => character.id === entry.id);
+                if (character) character.animationState = restoreAnimationStateSnapshot(entry.animation, {
+                    currentFrame,
+                    fallbackPose: character.poses?.[this.activeTab] || {},
+                });
+            }
+            this.syncSharedTimelineFromActive();
             this._animationInitialized = true;
             this.animationTimeline?.setState(this.animationState);
             this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
@@ -5928,7 +6061,7 @@ class PoseStudioWidget {
             this.animationState.autoKey = true;
             this.captureAnimationEdits(pose);
             this.animationState.autoKey = previousAutoKey;
-            this.syncToNode(false, { skipCapture: true });
+            this.syncToNode(fullCapture, { skipCapture: !fullCapture, ...syncOptions });
             return;
         }
         pose.cameraParams = this.currentCameraParams();
@@ -5943,6 +6076,12 @@ class PoseStudioWidget {
     }
 
     updateAnimationSettings({ fps, duration, loop, autoKey } = {}) {
+        if ((fps !== undefined || duration !== undefined) && this._settingsTimingBaseline) {
+            for (const [character, snapshot] of this._settingsTimingBaseline) {
+                Object.assign(character.animationState, JSON.parse(snapshot));
+            }
+            this.syncSharedTimelineFromActive();
+        }
         if (fps !== undefined || duration !== undefined || loop !== undefined) {
             this.retimeAllCharacterAnimations({ fps, duration, loop });
         }
@@ -5969,6 +6108,7 @@ class PoseStudioWidget {
             frameCount,
             poseFrameIndices,
         });
+        this.clearAnimationCacheReference();
         state.basePose.prompt = String(state.basePose.prompt || previousPrompt || "");
 
         // Import targets only the selected character. Pose tabs remain a
@@ -6664,7 +6804,15 @@ class PoseStudioWidget {
     }
 
     hydrateCharacterSceneModels({ showOverlay = true, recenterViewport = true } = {}) {
-        if (this._sceneModelHydrationPromise) return this._sceneModelHydrationPromise;
+        const restoreToken = this._poseDataRestoreToken;
+        if (this._sceneModelHydrationPromise) {
+            if (this._sceneModelHydrationToken === restoreToken) return this._sceneModelHydrationPromise;
+            return this._sceneModelHydrationPromise.catch(() => false).then(() => {
+                if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
+                return this.hydrateCharacterSceneModels({ showOverlay, recenterViewport });
+            });
+        }
+        this._sceneModelHydrationToken = restoreToken;
         const preferredActiveId = this.activeCharacterId;
         const run = async () => {
             const previousSuspendCharacterSync = this._suspendCharacterSync;
@@ -6674,19 +6822,25 @@ class PoseStudioWidget {
             if (showOverlay && this.loadingOverlay) this.loadingOverlay.style.display = "flex";
             try {
                 if (this._viewerInitPromise) await this._viewerInitPromise;
+                if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
                 this.viewer?.clearPassiveCharacters?.();
                 this.viewer?.resetSceneCameraTarget?.();
                 await this.loadModel(false, false, { updateScene: false });
+                if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
                 await this.viewer?.waitForCaptureReady?.();
+                if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
                 for (const character of [...this.characters]) {
                     if (character.id === preferredActiveId) continue;
                     await this.selectCharacter(character.id, { sync: false, rebuildScene: false });
+                    if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
                 }
                 if (this.activeCharacterId !== preferredActiveId) {
                     await this.selectCharacter(preferredActiveId, { sync: false, rebuildScene: false });
+                    if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
                 }
                 if (this._animationCacheRestorePending && this._animationCacheRestorePromise) {
                     await this._animationCacheRestorePromise;
+                    if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
                 }
                 this.updateCharacterScene();
                 if (recenterViewport) this.applyCameraToViewer(true);
@@ -7326,13 +7480,18 @@ class PoseStudioWidget {
         this.managerImageMetrics.delete(src);
     }
 
-    setPoseCapture(index, capture) {
+    setPoseCapture(index, capture, requireCapture = false) {
+        if (typeof capture !== "string" || !capture) {
+            if (requireCapture) throw new Error(`Pose capture failed for frame ${index + 1}.`);
+            return false;
+        }
         if (!this.poseCaptures) this.poseCaptures = [];
         const previousCapture = this.poseCaptures[index];
         if (previousCapture && previousCapture !== capture) {
             this.forgetPoseManagerImageMetrics(previousCapture);
         }
         this.poseCaptures[index] = capture;
+        return true;
     }
 
     layoutPoseManager() {
@@ -7482,6 +7641,7 @@ class PoseStudioWidget {
         // A new model/camera generation invalidates every previously rendered
         // card. Resuming in the middle mixes old and new AGE/head-size results.
         this._managerPreviewRefreshNextIndex = 0;
+        this._managerPreviewRefreshError = null;
         if (this._managerPreviewRefreshFrame) {
             cancelAnimationFrame(this._managerPreviewRefreshFrame);
         }
@@ -7498,6 +7658,10 @@ class PoseStudioWidget {
         if (!generation) return false;
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
+            if (this._disposed) throw new Error("Pose Studio was disposed.");
+            if (this._managerPreviewRefreshError?.generation === generation) {
+                throw new Error(this._managerPreviewRefreshError.message);
+            }
             if ((this._managerPreviewRefreshCompletedGeneration || 0) >= generation) {
                 return true;
             }
@@ -7554,8 +7718,9 @@ class PoseStudioWidget {
         if (!this.lightingPrompts) this.lightingPrompts = [];
         this.ensurePosePrompts();
 
-        const captureBatchStarted = this.viewer.beginCaptureBatch?.(w, h) === true;
+        let captureBatchStarted = false;
         try {
+            captureBatchStarted = this.viewer.beginCaptureBatch?.(w, h) === true;
             const capturesPerFrame = 2;
             const startIndex = Math.max(0, Math.min(this._managerPreviewRefreshNextIndex || 0, this.poses.length));
             const endIndex = Math.min(this.poses.length, startIndex + capturesPerFrame);
@@ -7577,8 +7742,8 @@ class PoseStudioWidget {
                 const framing = this.computePoseManagerCaptureFraming(w, h, poseCamera);
                 // Do not replace a visible manager card with a neutral camera
                 // when fitting is temporarily unavailable. The last valid
-                // card (or its placeholder) remains authoritative for RUN.
-                if (!framing) continue;
+                // card stays visible, but RUN must wait for a fresh capture.
+                if (!framing) throw new Error(`Pose ${i + 1} framing is not ready.`);
                 const nextCapture = this.viewer.capture(
                     w,
                     h,
@@ -7589,7 +7754,7 @@ class PoseStudioWidget {
                     poseCamera.yaw_deg,
                     poseCamera.pitch_deg,
                 );
-                this.setPoseCapture(i, nextCapture);
+                this.setPoseCapture(i, nextCapture, true);
                 this.lightingPrompts[i] = this.generatePromptFromLights(
                     isOriginalLighting ? [] : this.lightParams,
                     this.getPosePrompt(i)
@@ -7597,24 +7762,32 @@ class PoseStudioWidget {
                 this.updatePoseManagerPreviewImage(i);
             }
             this._managerPreviewRefreshNextIndex = endIndex;
+        } catch (error) {
+            this._managerPreviewRefreshError = { generation, message: String(error?.message || error) };
+            this.showMessage?.(this._managerPreviewRefreshError.message, true);
         } finally {
-            this.viewer.setPose(originalPose, true);
-            this.updateCharacterScene({ poseIndex: this.activeTab });
-            this.viewer.updateLights(this.effectiveLights(originalLights));
-            // Per-card fitting temporarily moves the shared capture camera.
-            // Restore its neutral scene framing so opening Studio or applying a
-            // library pose cannot inherit the final manager card's offsets.
-            this.viewer.updateCaptureCamera?.(
-                w,
-                h,
-                1,
-                0,
-                0,
-                activeCamera.yaw_deg,
-                activeCamera.pitch_deg,
-            );
-            if (captureBatchStarted) this.viewer.endCaptureBatch?.();
+            try {
+                this.viewer.setPose(originalPose, true);
+                this.updateCharacterScene({ poseIndex: this.activeTab });
+                this.viewer.updateLights(this.effectiveLights(originalLights));
+                // Per-card fitting temporarily moves the shared capture camera.
+                // Restore its neutral scene framing so opening Studio or applying a
+                // library pose cannot inherit the final manager card's offsets.
+                this.viewer.updateCaptureCamera?.(
+                    w,
+                    h,
+                    1,
+                    0,
+                    0,
+                    activeCamera.yaw_deg,
+                    activeCamera.pitch_deg,
+                );
+            } finally {
+                if (captureBatchStarted || this.viewer._captureBatch) this.viewer.endCaptureBatch?.();
+            }
         }
+
+        if (this._managerPreviewRefreshError?.generation === generation) return;
 
         if (generation !== this._managerPreviewRefreshGeneration) return;
         if (this._managerPreviewRefreshNextIndex < this.poses.length) {
@@ -7903,7 +8076,7 @@ class PoseStudioWidget {
         return changed;
     }
 
-    trackPoseGesture(control, { recordPose = false } = {}) {
+    trackPoseGesture(control, { recordPose = false, animationTiming = false } = {}) {
         let active = false;
         let pointer = false;
         let key = false;
@@ -7918,6 +8091,12 @@ class PoseStudioWidget {
             active = true;
             this._poseGestureActive = true;
             this._finishPoseGesture = finish;
+            if (animationTiming) {
+                this._settingsTimingBaseline = (this.characters || []).map(character => {
+                    this.ensureCharacterRuntime(character);
+                    return [character, JSON.stringify(character.animationState)];
+                });
+            }
             if (recordPose && !this.isAnimationMode()) this.viewer?.recordState?.();
         };
         const finish = () => {
@@ -7925,6 +8104,7 @@ class PoseStudioWidget {
             active = pointer = key = false;
             this._poseGestureActive = false;
             this._finishPoseGesture = null;
+            if (animationTiming) this._settingsTimingBaseline = null;
             this.syncToNode(false);
         };
         control.addEventListener("pointerdown", event => {
@@ -8020,6 +8200,7 @@ class PoseStudioWidget {
                 if (isCamParam && this.viewer) {
                     this.applyCameraToViewer(true);
                 }
+                this.syncToNode(false, { skipCapture: true });
             } else {
                 if (key === 'head_size') {
                     if (this.viewer) this.viewer.updateHeadScale(val);
@@ -8609,6 +8790,8 @@ class PoseStudioWidget {
         const hex = "#" + ((1 << 24) + (rgb[0] << 16) + (rgb[1] << 8) + rgb[2]).toString(16).slice(1);
         input.value = hex;
 
+        // Owner-approved: Background affects exports/manager cards only; the Studio viewport stays fixed.
+        // Intentional exception to realtime viewport previews; do not flag or change it in future audits.
         input.addEventListener("input", () => {
             const hex = input.value;
             const r = parseInt(hex.slice(1, 3), 16);
@@ -9391,6 +9574,7 @@ class PoseStudioWidget {
     }
 
     resetCurrentPose() {
+        this._poseDataRestoreError = null;
         this._finishPoseGesture?.();
         this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
         this.pendingAgeCameraFit = false;
@@ -9796,6 +9980,11 @@ class PoseStudioWidget {
         if (!this.viewer || !this.viewer.isInitialized()) {
             throw new Error("Pose viewer is not ready.");
         }
+        const token = this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
+        const characterId = this.activeCharacterId;
+        const tab = this.activeTab;
+        const isCurrent = () => !this._disposed && token === this._libraryLoadToken
+            && characterId === this.activeCharacterId && tab === this.activeTab;
 
         const progress = this.showImportProgressModal("SAM 3D Body Import");
         const taskId = (
@@ -9805,9 +9994,11 @@ class PoseStudioWidget {
         let pollTimer = null;
         const pollStatus = async () => {
             try {
+                if (!isCurrent()) return;
                 const statusResponse = await api.fetchApi(`/vnccs/sam3d/import_status/${encodeURIComponent(taskId)}`);
                 if (!statusResponse.ok) return;
-                progress.update(await statusResponse.json());
+                const status = await statusResponse.json();
+                if (isCurrent()) progress.update(status);
             } catch (_err) {
                 // The long-running POST is the source of truth; status polling is best-effort UI.
             }
@@ -9821,11 +10012,14 @@ class PoseStudioWidget {
                 taskId,
                 fileName: file.name || "pose_image.png",
             });
+            if (!isCurrent()) return;
             await pollStatus();
+            if (!isCurrent()) return;
 
             progress.setProgress(92);
             progress.setText("Step 6/6: Building SAM render fit...");
             const fitData = await this.prepareSAM3DRenderFit(poseData);
+            if (!isCurrent()) return;
             const poseForImport = fitData?.poseData || poseData;
 
             progress.setProgress(96);
@@ -9846,6 +10040,7 @@ class PoseStudioWidget {
             } else {
                 await this.refreshSAMMeshOverlay(poseForImport);
             }
+            if (!isCurrent()) return;
             this.syncMeshProportionSlidersFromViewer();
             this.applySAM3DFrameCameraParams(poseForImport, fitData?.meshData || null);
             this.updateRotationSliders();
@@ -9855,6 +10050,8 @@ class PoseStudioWidget {
             progress.setProgress(100);
             progress.setText("Step 6/6: Pose applied to Pose Studio.");
             this.showMessage("SAM 3D Body image imported successfully.");
+        } catch (error) {
+            if (isCurrent()) throw error;
         } finally {
             if (pollTimer) clearInterval(pollTimer);
             progress.close();
@@ -9870,13 +10067,20 @@ class PoseStudioWidget {
             this.viewer.setSAMMeshOverlayVisible?.(false);
             return false;
         }
+        const token = this._libraryLoadToken;
+        const characterId = this.activeCharacterId;
+        const tab = this.activeTab;
+        const isCurrent = () => !this._disposed && token === this._libraryLoadToken
+            && characterId === this.activeCharacterId && tab === this.activeTab;
         try {
             const meshData = await this.fetchSAM3DRenderMesh(activePose);
+            if (!isCurrent()) return false;
             this._lastSAM3DMeshData = meshData;
             const ok = this.viewer.setSAMMeshOverlayData(meshData, activePose);
             this.viewer.setSAMMeshOverlayVisible?.(showMeshOverlay);
             return ok;
         } catch (err) {
+            if (!isCurrent()) return false;
             console.error("[VNCCS] Failed to build SAM mesh overlay:", err);
             this.showMessage?.(`Failed to build SAM mesh overlay: ${err?.message || err}`, true);
             return false;
@@ -11012,6 +11216,11 @@ class PoseStudioWidget {
         if (!file) return;
         const input = e.target;
         const lowerName = (file.name || '').toLowerCase();
+        const token = this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
+        const characterId = this.activeCharacterId;
+        const tab = this.activeTab;
+        const isCurrent = () => !this._disposed && token === this._libraryLoadToken
+            && characterId === this.activeCharacterId && tab === this.activeTab;
 
         if (lowerName.endsWith('.fbx')) {
             (async () => {
@@ -11021,11 +11230,14 @@ class PoseStudioWidget {
                     const result = await importMixamoFBXAnimation(file, this.viewer, {
                         fps: 12,
                         maxFrames: 48,
+                        isCurrent,
                     });
+                    if (!isCurrent() || !result) return;
                     this.replaceAnimationFromPoses(result.poseSamples, { duration: result.duration });
                     this.updateCaptureCameraPreview();
                     this.showMessage(`Mixamo FBX imported as one animation: ${result.poseSamples.length} keyed frames from ${result.clipName}.`);
                 } catch (err) {
+                    if (!isCurrent()) return;
                     console.error('Error importing Mixamo FBX:', err);
                     this.showMessage(`Failed to import FBX animation: ${err?.message || err}`, true);
                 } finally {
@@ -11067,30 +11279,14 @@ class PoseStudioWidget {
         }
 
         // JSON files
-        const token = this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
-        const characterId = this.activeCharacterId;
-        const tab = this.activeTab;
         const reader = new FileReader();
         reader.onload = async (event) => {
-            if (token !== this._libraryLoadToken || characterId !== this.activeCharacterId || tab !== this.activeTab) return;
+            if (!isCurrent()) return;
             try {
                 const data = JSON.parse(event.target.result);
 
                 if (data?.type === "pose_animation" && data.animation && typeof data.animation === "object") {
-                    this.animationState = normalizeAnimationState(data.animation, this.poses[this.activeTab] || {});
-                    const activeCharacter = this.getActiveCharacter();
-                    if (activeCharacter) activeCharacter.animationState = this.animationState;
-                    this.retimeAllCharacterAnimations({
-                        fps: this.animationState.fps,
-                        duration: this.animationState.duration,
-                        loop: this.animationState.loop,
-                        currentFrame: this.animationState.currentFrame,
-                    });
-                    this._animationInitialized = true;
-                    this.animationTimeline?.setState(this.animationState);
-                    this.setEditorMode("animation", { sync: false });
-                    this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
-                    this.syncToNode(false, { skipCapture: true });
+                    this.loadAnimationLibraryAsset(data);
                     this.showMessage(`Animation imported: ${this.animationState.frameCount} frames.`);
                     input.value = '';
                     return;
@@ -11103,6 +11299,7 @@ class PoseStudioWidget {
                 if (isSAM3DJson) {
                     if (this.viewer && this.viewer.isInitialized()) {
                         const fitData = await this.prepareSAM3DRenderFit(data);
+                        if (!isCurrent()) return;
                         const poseForImport = fitData?.poseData || data;
                         const ok = this.viewer.applySAM3DImport(
                             poseForImport,
@@ -11181,9 +11378,12 @@ class PoseStudioWidget {
                     this.loadPoseSetAsset(data);
                 } else if (data.type === "single_pose" || data.bones) {
                     // Import Single to current tab
+                    this._poseDataRestoreError = null;
                     if (!this.isAnimationMode()) this.viewer?.recordState?.();
                     this.clearSAMCameraMode();
                     const poseData = JSON.parse(JSON.stringify(data));
+                    this.setPosePrompt(this.activeTab, poseData.prompt ?? "");
+                    this.syncPromptFieldToActiveTab();
                     const savedCamera = poseData.cameraParams;
                     this.stripSceneCameraFromPose(poseData);
                     if (savedCamera && typeof savedCamera === "object") {
@@ -11205,6 +11405,7 @@ class PoseStudioWidget {
                 }
 
             } catch (err) {
+                if (!isCurrent()) return;
                 console.error("Error importing pose:", err);
                 this.showMessage("Failed to load pose file. Invalid JSON.", true);
             }
@@ -11291,6 +11492,7 @@ class PoseStudioWidget {
     }
 
     showLibraryModal() {
+        this._closeLibraryModal?.();
         const animationMode = this.isAnimationMode();
         const overlay = document.createElement('div');
         overlay.className = 'vnccs-ps-modal-overlay vnccs-ps-library-overlay';
@@ -11342,7 +11544,10 @@ class PoseStudioWidget {
         }
         this.applyLibraryThumbnailSize(this.libraryWorkspace);
 
+        let closed = false;
         const closeLibraryModal = () => {
+            if (closed) return;
+            closed = true;
             if (this.libraryResizeObserver) {
                 this.libraryResizeObserver.disconnect();
                 this.libraryResizeObserver = null;
@@ -11356,8 +11561,14 @@ class PoseStudioWidget {
                 this._libraryResizeFrame = null;
             }
             this.libraryModal = null;
+            this.libraryGrid = this.libraryInspector = this.libraryWorkspace = null;
+            this.librarySearchInput = this.librarySizeInput = this.librarySizeValue = null;
+            this.libraryCategoriesEl = this.librarySettingsEl = null;
+            this._libraryInspectorLoadToken = (this._libraryInspectorLoadToken || 0) + 1;
+            this._closeLibraryModal = null;
             overlay.remove();
         };
+        this._closeLibraryModal = closeLibraryModal;
         modal.querySelector('.vnccs-ps-modal-close').onclick = closeLibraryModal;
         modal.querySelector('.vnccs-ps-library-save-current').onclick = () => this.showSaveToLibraryModal();
         modal.querySelector('.vnccs-ps-library-menu-btn').onclick = () => this.toggleLibrarySettings();
@@ -11368,7 +11579,7 @@ class PoseStudioWidget {
         this.container.appendChild(overlay);
         this.startLibraryResizeObserver();
 
-        this.refreshLibrary(true);
+        this.refreshLibrary(false);
     }
 
     startLibraryResizeObserver() {
@@ -11393,8 +11604,11 @@ class PoseStudioWidget {
     updateLibraryLayoutScale() {
         if (this.libraryModal) {
             const modalWidth = this.libraryModal.clientWidth || this.libraryModal.getBoundingClientRect().width || 1600;
+            const modalHeight = this.libraryModal.clientHeight || this.libraryModal.getBoundingClientRect().height || 1000;
             const scale = Math.max(0.5, Math.min(1.4, modalWidth / 1600));
             this.libraryModal.style.setProperty("--vnccs-ps-library-ui-scale", scale.toFixed(3));
+            const headerScale = Math.max(0.5, Math.min(1.4, modalWidth / 1600, modalHeight / 1000)) * 0.62;
+            this.libraryModal.style.setProperty("--vnccs-ps-library-header-scale", headerScale.toFixed(3));
         }
         this.updateLibraryInspectorScale();
     }
@@ -11413,7 +11627,7 @@ class PoseStudioWidget {
 
     async refreshLibrary(forceFull = false) {
         try {
-            const res = await fetch('/vnccs/pose_library/list?full=true');
+            const res = await fetch(`/vnccs/pose_library/list?full=${forceFull === true}`);
             const data = await res.json();
             this.libraryPoses = data.poses || []; // Cache for random selection
             this.renderLibrary();
@@ -11426,7 +11640,7 @@ class PoseStudioWidget {
     }
 
     async autoRefreshEnabledPoseRepositories() {
-        if (this._autoRepoRefreshStarted) return;
+        if (this._disposed || this._autoRepoRefreshStarted) return;
         this._autoRepoRefreshStarted = true;
         try {
             const res = await fetch('/vnccs/pose_library/repositories/auto_refresh', {
@@ -11435,6 +11649,7 @@ class PoseStudioWidget {
                 body: JSON.stringify({ reason: 'pose_studio_initial_load', force: true }),
             });
             const data = await res.json().catch(() => ({}));
+            if (this._disposed) return;
             const taskId = data.task_id;
             if (!taskId || (!data.started && !data.running)) return;
 
@@ -11445,7 +11660,7 @@ class PoseStudioWidget {
                     if (!statusRes.ok) return false;
                     const status = await statusRes.json();
                     if (status.status === 'success') {
-                        await this.refreshLibrary(true);
+                        await this.refreshLibrary(false);
                         if (this.librarySettingsMode) await this.refreshPoseRepositories();
                         return true;
                     }
@@ -11548,18 +11763,11 @@ class PoseStudioWidget {
                 ? ` · ${Number(repo.downloaded_count || 0)} downloaded · ${Number(repo.skipped_count || 0)} unchanged · ${Number(repo.removed_count || 0)} removed`
                 : '';
             const transportMeta = repo.transport ? ` · via ${repo.transport}` : '';
-            const gitDiagnostic = repo.git_error
-                ? `<details class="vnccs-ps-library-repo-diagnostic">
-                    <summary>Git clone failed — HTTP fallback was used</summary>
-                    <pre>${this.escapeHtml(repo.git_error)}</pre>
-                </details>`
-                : '';
             card.innerHTML = `
                 <div>
                     <div class="vnccs-ps-library-repo-title">${this.escapeHtml(repo.title || repo.repo_id)}</div>
                     <div class="vnccs-ps-library-repo-id">${this.escapeHtml(repo.repo_id)}</div>
                     <div class="vnccs-ps-library-repo-meta">${Number(repo.pose_count || 0)} poses · ${Number(repo.animation_count || 0)} animations · ${repo.enabled ? 'enabled' : 'disabled'} · ${this.escapeHtml(status)} · checked ${this.escapeHtml(checked)}${this.escapeHtml(syncMeta)}${this.escapeHtml(transportMeta)}</div>
-                    ${gitDiagnostic}
                 </div>
                 <div class="vnccs-ps-library-repo-actions">
                     <button class="vnccs-ps-library-repo-action toggle">${repo.enabled ? 'Disable' : 'Enable'}</button>
@@ -11821,20 +12029,13 @@ class PoseStudioWidget {
                 progress.update({
                     status: "success",
                     progress: 100,
-                    message: refreshed.git_error
-                        ? `${repoId} downloaded through HTTP after Git clone failed.`
-                        : `${repoId} added: ${Number(refreshed.downloaded_count || 0)} downloaded, ${Number(refreshed.skipped_count || 0)} unchanged.`,
-                    git_error: refreshed.git_error || "",
+                    message: `${repoId} added: ${Number(refreshed.downloaded_count || 0)} downloaded, ${Number(refreshed.skipped_count || 0)} unchanged.`,
                     transport: refreshed.transport || "",
                 });
-                if (refreshed.git_error) {
-                    this.showRepositoryNotice("Git clone failed; the repository was downloaded through the slower HTTP fallback. Open Git diagnostics below.");
-                } else {
-                    this.clearRepositoryNotice();
-                }
+                this.clearRepositoryNotice();
             }
-            await this.refreshLibrary(true);
-            if (refreshed.status !== "error" && !refreshed.git_error) {
+            await this.refreshLibrary(false);
+            if (refreshed.status !== "error") {
                 await this.toggleLibrarySettings(false);
             }
         } catch (err) {
@@ -11864,10 +12065,6 @@ class PoseStudioWidget {
                 <div class="vnccs-ps-library-repo-progress-track">
                     <div class="vnccs-ps-library-repo-progress-fill"></div>
                 </div>
-                <details class="vnccs-ps-library-repo-progress-diagnostic" hidden>
-                    <summary>Git clone failed — HTTP fallback active</summary>
-                    <pre></pre>
-                </details>
             </div>
         `;
     }
@@ -11903,15 +12100,9 @@ class PoseStudioWidget {
         const messageEl = progress.querySelector('.vnccs-ps-library-repo-progress-message');
         const percentEl = progress.querySelector('.vnccs-ps-library-repo-progress-percent');
         const fillEl = progress.querySelector('.vnccs-ps-library-repo-progress-fill');
-        const diagnosticEl = progress.querySelector('.vnccs-ps-library-repo-progress-diagnostic');
         if (messageEl) messageEl.textContent = state.message || "Working...";
         if (percentEl) percentEl.textContent = `${Math.round(percent)}%`;
         if (fillEl) fillEl.style.width = `${percent}%`;
-        if (diagnosticEl) {
-            diagnosticEl.hidden = !state.git_error;
-            const diagnosticText = diagnosticEl.querySelector('pre');
-            if (diagnosticText) diagnosticText.textContent = state.git_error || "";
-        }
     }
 
     createInlineRepositoryProgress(key, initialText = "Starting...") {
@@ -11931,7 +12122,6 @@ class PoseStudioWidget {
                 if (status.status) patch.status = status.status;
                 if (status.message) patch.message = status.message;
                 if (status.progress !== undefined) patch.progress = status.progress;
-                if (Object.prototype.hasOwnProperty.call(status, "git_error")) patch.git_error = status.git_error || "";
                 if (Object.prototype.hasOwnProperty.call(status, "transport")) patch.transport = status.transport || "";
                 this.setRepositoryProgressState(key, patch);
             },
@@ -11990,7 +12180,7 @@ class PoseStudioWidget {
                 progress: 100,
                 message: `${repoId} ${enabled ? "enabled" : "disabled"}.`,
             });
-            await this.refreshLibrary(true);
+            await this.refreshLibrary(false);
             if (enabled) {
                 if (pollTimer) {
                     clearInterval(pollTimer);
@@ -12032,16 +12222,10 @@ class PoseStudioWidget {
                 progress: 100,
                 message: refreshed.status === "error"
                     ? `Error: ${refreshed.last_error || "refresh failed"}`
-                    : refreshed.git_error
-                        ? `Repository sync completed through HTTP after Git clone failed.`
-                        : `Repository sync complete: ${Number(refreshed.downloaded_count || 0)} downloaded, ${Number(refreshed.skipped_count || 0)} unchanged, ${Number(refreshed.removed_count || 0)} removed.`,
-                git_error: refreshed.git_error || "",
+                    : `Repository sync complete: ${Number(refreshed.downloaded_count || 0)} downloaded, ${Number(refreshed.skipped_count || 0)} unchanged, ${Number(refreshed.removed_count || 0)} removed.`,
                 transport: refreshed.transport || "",
             });
-            if (refreshed.git_error) {
-                this.showRepositoryNotice("Git clone failed; the repository was downloaded through the slower HTTP fallback. Open Git diagnostics below.");
-            }
-            await this.refreshLibrary(true);
+            await this.refreshLibrary(false);
         } finally {
             if (pollTimer) clearInterval(pollTimer);
             progress.close();
@@ -12059,7 +12243,7 @@ class PoseStudioWidget {
         this.renderPoseRepositorySettings();
         this.clearRepositoryNotice();
         this.showRepositoryNotice(`Removed ${repoId}. Deleted ${Number(data.removed_count || 0)} cached files.`);
-        await this.refreshLibrary(true);
+        await this.refreshLibrary(false);
     }
 
     getLibraryPoseMeta(pose) {
@@ -12099,7 +12283,7 @@ class PoseStudioWidget {
     getLibraryPoseId(pose) {
         if (!pose) return "";
         const meta = this.getLibraryPoseMeta(pose);
-        return pose.id || `${meta.repository}/${meta.category}/${pose.name}`;
+        return pose.id || `${meta.repository}/${meta.assetType === "animation" ? "animations" : "poses"}/${meta.category}/${pose.name}`;
     }
 
     getLibraryPoseQuery(poseOrName) {
@@ -12108,6 +12292,7 @@ class PoseStudioWidget {
         const params = new URLSearchParams();
         params.set("repository", meta.repository);
         params.set("category", meta.category);
+        params.set("asset_type", meta.assetType);
         return `?${params.toString()}`;
     }
 
@@ -12117,6 +12302,7 @@ class PoseStudioWidget {
         const params = new URLSearchParams();
         params.set("repository", meta.repository);
         params.set("category", meta.category);
+        params.set("asset_type", meta.assetType);
         if (pose.preview_mtime) params.set("v", String(pose.preview_mtime));
         return `/vnccs/pose_library/preview/${encodeURIComponent(pose.name)}?${params.toString()}`;
     }
@@ -12198,6 +12384,9 @@ class PoseStudioWidget {
             const item = document.createElement('div');
             item.className = 'vnccs-ps-library-item';
             item.dataset.poseId = this.getLibraryPoseId(pose);
+            item.tabIndex = 0;
+            item.setAttribute('role', 'button');
+            item.setAttribute('aria-pressed', String(this.getLibraryPoseId(pose) === this.librarySelectedName));
             if (this.getLibraryPoseId(pose) === this.librarySelectedName) item.classList.add('selected');
 
             const preview = document.createElement('div');
@@ -12216,6 +12405,12 @@ class PoseStudioWidget {
             name.innerText = pose.name;
 
             item.onclick = () => this.selectLibraryPose(pose);
+            item.addEventListener('keydown', event => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                event.stopPropagation();
+                this.selectLibraryPose(pose);
+            });
 
             const previewVideo = preview.querySelector("video");
             if (previewVideo) {
@@ -12248,13 +12443,16 @@ class PoseStudioWidget {
     selectLibraryPose(pose) {
         this.librarySelectedName = this.getLibraryPoseId(pose);
         this.libraryGrid?.querySelectorAll('.vnccs-ps-library-item').forEach((item) => {
-            item.classList.toggle('selected', item.dataset.poseId === this.librarySelectedName);
+            const selected = item.dataset.poseId === this.librarySelectedName;
+            item.classList.toggle('selected', selected);
+            item.setAttribute('aria-pressed', String(selected));
         });
         this.renderLibraryInspector(pose);
     }
 
-    renderLibraryInspector(pose) {
+    async renderLibraryInspector(pose) {
         if (!this.libraryInspector) return;
+        const token = this._libraryInspectorLoadToken = (this._libraryInspectorLoadToken || 0) + 1;
         if (!pose) {
             this.libraryInspector.classList.remove('visible');
             if (this.libraryWorkspace) this.libraryWorkspace.classList.remove('has-inspector');
@@ -12264,8 +12462,26 @@ class PoseStudioWidget {
         }
         this.libraryInspector.classList.add('visible');
         if (this.libraryWorkspace) this.libraryWorkspace.classList.add('has-inspector');
+        if (!pose.data) {
+            this.libraryInspector.textContent = "Loading library item...";
+            try {
+                const response = await fetch(`/vnccs/pose_library/get/${encodeURIComponent(pose.name)}${this.getLibraryPoseQuery(pose)}`);
+                const result = await response.json();
+                if (token !== this._libraryInspectorLoadToken || this._disposed) return;
+                if (!response.ok || !result.pose || typeof result.pose !== "object") {
+                    throw new Error(result.error || "Library item could not be loaded.");
+                }
+                pose.data = result.pose;
+            } catch (error) {
+                if (token === this._libraryInspectorLoadToken && !this._disposed) {
+                    this.libraryInspector.textContent = `Failed to load library item: ${error?.message || error}`;
+                }
+                return;
+            }
+        }
         const meta = this.getLibraryPoseMeta(pose);
         const isAnimation = meta.assetType === "animation";
+        const localCopy = meta.repository !== "local_user_poses";
         const previewSrc = this.getLibraryPreviewUrl(pose);
         const previewMarkup = previewSrc
             ? (this.isLibraryVideoPreview(pose)
@@ -12310,16 +12526,17 @@ class PoseStudioWidget {
                     <span>Custom ${isAnimation ? "Video Preview" : "Image"}</span>
                     <input class="vnccs-ps-library-preview-input" type="file" accept="${isAnimation ? "video/*" : "image/*"}">
                 </label>
-                <button class="vnccs-ps-btn primary vnccs-ps-library-save-edit">Save Changes</button>
+                <button class="vnccs-ps-btn primary vnccs-ps-library-save-edit">${localCopy ? "Save Local Copy" : "Save Changes"}</button>
             </div>
         `;
         requestAnimationFrame(() => this.updateLibraryInspectorScale());
 
         let pendingPreview = null;
         const previewBox = this.libraryInspector.querySelector('.vnccs-ps-library-inspector-preview');
+        const closeLibraryModal = this._closeLibraryModal;
         this.libraryInspector.querySelector('.vnccs-ps-library-apply').onclick = async () => {
             await this.loadFromLibrary(pose);
-            this.libraryInspector.closest('.vnccs-ps-modal-overlay')?.remove();
+            closeLibraryModal?.();
         };
         this.libraryInspector.querySelector('.vnccs-ps-library-delete').onclick = () => this.showDeleteConfirmModal(pose);
         this.libraryInspector.querySelector('.vnccs-ps-library-preview-input').onchange = async (event) => {
@@ -12358,20 +12575,24 @@ class PoseStudioWidget {
                 updatedPoseData.animation.basePose = updatedPoseData.animation.basePose || {};
                 updatedPoseData.animation.basePose.prompt = posePromptValue;
             }
-            const result = await this.saveLibraryPoseRecord({
-                oldName: pose.name,
-                oldRepository: meta.repository,
-                oldCategory: meta.category,
-                name: newName,
-                pose: updatedPoseData,
-                repository: meta.repository,
-                category,
-                tags,
-                preview: pendingPreview,
-                assetType: meta.assetType,
-            });
-            this.librarySelectedName = result.id || `${meta.repository}/${category}/${newName}`;
-            await this.refreshLibrary(true);
+            try {
+                const result = await this.saveLibraryPoseRecord({
+                    oldName: pose.name,
+                    oldRepository: meta.repository,
+                    oldCategory: meta.category,
+                    name: newName,
+                    pose: updatedPoseData,
+                    repository: "local_user_poses",
+                    category,
+                    tags,
+                    preview: pendingPreview,
+                    assetType: meta.assetType,
+                });
+                this.librarySelectedName = result.id || `local_user_poses/${category}/${newName}`;
+                await this.refreshLibrary(false);
+            } catch (error) {
+                this.showMessage(`Failed to save library item: ${error?.message || error}`, true);
+            }
         };
     }
 
@@ -12725,7 +12946,7 @@ class PoseStudioWidget {
                 assetType: animationMode ? "animation" : "pose",
             });
             this.librarySelectedName = result.id || `local_user_poses/${metadata.category || "Uncategorized"}/${name}`;
-            this.refreshLibrary(true);
+            this.refreshLibrary(false);
             return true;
         } catch (err) {
             console.error(`Failed to save ${animationMode ? "animation" : "pose"}:`, err);
@@ -12820,11 +13041,7 @@ class PoseStudioWidget {
         this.viewer.setCameraParams(this.currentCameraParams());
     }
 
-    async loadCharacterSceneLibraryAsset(asset, { animation = false } = {}) {
-        if (!asset || !Array.isArray(asset.characters) || !asset.characters.length) {
-            throw new Error("Library scene does not contain characters.");
-        }
-        if (this._sceneModelHydrationPromise) await this._sceneModelHydrationPromise;
+    clearAnimationCacheReference() {
         ++this._animationCacheRestoreToken;
         this._animationCacheRestorePending = false;
         this._animationCacheRestorePromise = null;
@@ -12836,6 +13053,14 @@ class PoseStudioWidget {
         this._pendingAnimationCacheId = null;
         clearTimeout(this._animationCacheUploadTimer);
         this._animationCacheUploadTimer = null;
+    }
+
+    async loadCharacterSceneLibraryAsset(asset, { animation = false } = {}) {
+        if (!asset || !Array.isArray(asset.characters) || !asset.characters.length) {
+            throw new Error("Library scene does not contain characters.");
+        }
+        if (this._sceneModelHydrationPromise) await this._sceneModelHydrationPromise;
+        this.clearAnimationCacheReference();
         this._pendingMorphSolve = null;
         ++this._morphSeq;
         this.animationTimeline?.stopPlayback?.();
@@ -12915,6 +13140,7 @@ class PoseStudioWidget {
         if (!Array.isArray(sourcePoses) || !sourcePoses.length) {
             throw new Error("Pose set does not contain poses.");
         }
+        this._poseDataRestoreError = null;
 
         this.setEditorMode("image", { sync: false });
         this.clearSAMCameraMode();
@@ -12957,6 +13183,7 @@ class PoseStudioWidget {
         if (!source || typeof source !== "object") {
             throw new Error("Library animation is missing its timeline data.");
         }
+        this._poseDataRestoreError = null;
 
         this.animationTimeline?.stopPlayback?.();
         this.clearSAMCameraMode();
@@ -12981,17 +13208,7 @@ class PoseStudioWidget {
             currentFrame: 0,
         });
         this._animationInitialized = true;
-        ++this._animationCacheRestoreToken;
-        this._animationCacheRestorePending = false;
-        this._animationCacheRestorePromise = null;
-        this._deferredAnimationReference = null;
-        this._animationCacheId = null;
-        this._animationCacheRevision = 0;
-        this._animationCacheSnapshot = null;
-        this._pendingAnimationCacheJSON = null;
-        this._pendingAnimationCacheId = null;
-        clearTimeout(this._animationCacheUploadTimer);
-        this._animationCacheUploadTimer = null;
+        this.clearAnimationCacheReference();
         this.poses[this.activeTab] = JSON.parse(JSON.stringify(this.animationState.basePose));
         if (activeCharacter) activeCharacter.poses = this.poses;
         this.setPosePrompt(this.activeTab, String(this.animationState.basePose.prompt || ""));
@@ -13247,7 +13464,7 @@ class PoseStudioWidget {
             updateInterfaceUI?.();
         };
         for (const [key, setting] of [["fps", fpsSetting], ["duration", durationSetting]]) {
-            this.trackPoseGesture(setting.input);
+            this.trackPoseGesture(setting.input, { animationTiming: true });
             setting.input.addEventListener("input", () => {
                 if (setting.input.value === "" || !Number.isFinite(Number(setting.input.value))) return;
                 this.updateAnimationSettings({ [key]: setting.input.value });
@@ -13440,7 +13657,7 @@ class PoseStudioWidget {
             this.exportParams.debugMode = debugCheckbox.checked;
             // If debug mode (randomization) is enabled, we need to load full library data
             if (this.exportParams.debugMode) {
-                this.refreshLibrary(true);
+                this.refreshLibrary(false);
             }
             this.syncToNode(false);
         };
@@ -13756,7 +13973,7 @@ class PoseStudioWidget {
             if (!response.ok) throw new Error(result?.error || `HTTP ${response.status}`);
             if (typeof poseOrName === 'string' && this.librarySelectedName === name) this.librarySelectedName = null;
             if (typeof poseOrName !== 'string' && this.librarySelectedName === this.getLibraryPoseId(poseOrName)) this.librarySelectedName = null;
-            this.refreshLibrary(true);
+            this.refreshLibrary(false);
         } catch (err) {
             console.error(`Failed to delete ${itemType}:`, err);
             this.showMessage(`Failed to delete ${itemType}: ${err?.message || err}`, true);
@@ -14426,10 +14643,11 @@ class PoseStudioWidget {
             if (changedKey === "age") {
                 this.pendingAgeCameraFit = true;
             }
-            if (!options.liveOnly) this.syncToNode(false, { skipCapture: true });
+            this.syncToNode(false, { skipCapture: true });
             return;
         }
 
+        this.syncToNode(false, { skipCapture: true });
         this.queueFullMeshUpdate(changedKey);
     }
 
@@ -14927,6 +15145,10 @@ class PoseStudioWidget {
     }
 
     syncToNode(fullCapture = false, options = {}) {
+        if (this._poseDataRestoreError || this._poseDataRestorePending || this.node?._vnccsPoseAwaitingRestore) {
+            if (options.executionCapture) throw new Error(this._poseDataRestoreError || "Pose Studio is still restoring the workflow.");
+            return;
+        }
         if (this._isSyncing || this._animationCacheRestorePending) return;
         this._isSyncing = true;
         try {
@@ -14979,6 +15201,12 @@ class PoseStudioWidget {
         const outputCount = isDebugExecution
             ? 1
             : animationMode ? this.animationState.frameCount : this.poses.length;
+
+        if (fullCapture && captureExplicitlyRequested
+            && outputCount * (this.exportParams.view_width || 1024)
+                * (this.exportParams.view_height || 1024) > 64 * 1024 * 1024) {
+            throw new Error("Captured sequence is too large. Reduce resolution or frame count.");
+        }
 
         if (this.radarRedraw) this.radarRedraw();
 
@@ -15057,95 +15285,106 @@ class PoseStudioWidget {
                 : null;
             if (fullCapture) {
                 const originalTab = this.activeTab;
-                const captureBatchStarted = this.viewer.beginCaptureBatch?.(w, h) === true;
+                const previousCaptures = this.poseCaptures.slice();
+                const previousPrompts = this.lightingPrompts.slice();
+                let captureBatchStarted = false;
 
                 try {
-                for (let i = 0; i < capturePoses.length; i++) {
-                    if (!animationMode && !isDebugExecution) {
-                        this.activeTab = i; // Switch tab for ordinary image-mode capture
-                    }
-
-                    if (isDebugExecution) {
-                        this.viewer.setPose(capturePoses[i], true);
-                        this.updateCharacterScene({ poseIndex: originalTab });
-                        const captureLights = debugLightingMode === "original"
-                            ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
-                            : debugLightingMode === "manual" ? userLights : debugLights;
-                        this.viewer.updateLights(captureLights);
-                        this.setPoseCapture(i, this.viewer.capture(
-                            w,
-                            h,
-                            currentCaptureCamera.zoom,
-                            bg,
-                            currentCaptureCamera.offset_x,
-                            currentCaptureCamera.offset_y,
-                            currentCaptureCamera.yaw_deg,
-                            currentCaptureCamera.pitch_deg,
-                        ));
-                        this.lightingPrompts[i] = this.generatePromptFromLights(
-                            isOriginalLighting ? [] : captureLights,
-                            debugPrompt,
-                        );
-                    } else {
-                        // Normal mode
-                        this._applyingAnimationPose = animationMode;
-                        this.viewer.setPose(capturePoses[i], true);
-                        this._applyingAnimationPose = false;
-                        this.updateCharacterScene(animationMode
-                            ? { frame: i }
-                            : { poseIndex: i });
-                        const poseCamera = resolveCaptureCameraParams(
-                            capturePoses[i]?.cameraParams,
-                            currentCaptureCamera,
-                            animationMode,
-                        );
-                        // Lighting Toggle
-                        if (isOriginalLighting) {
-                            this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
-                        } else {
-                            this.viewer.updateLights(this.effectiveLights());
+                    captureBatchStarted = this.viewer.beginCaptureBatch?.(w, h) === true;
+                    for (let i = 0; i < capturePoses.length; i++) {
+                        if (!animationMode && !isDebugExecution) {
+                            this.activeTab = i; // Switch tab for ordinary image-mode capture
                         }
 
-                        this.setPoseCapture(i, this.viewer.capture(
-                            w,
-                            h,
-                            currentCaptureCamera.zoom,
-                            bg,
-                            currentCaptureCamera.offset_x,
-                            currentCaptureCamera.offset_y,
-                            poseCamera.yaw_deg,
-                            poseCamera.pitch_deg,
-                        ));
-                        const framePrompt = animationMode
-                            ? String(this.animationState.basePose?.prompt ?? this.getPosePrompt(this.activeTab))
-                            : this.getPosePrompt(i);
-                        this.lightingPrompts[i] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams, framePrompt);
+                        if (isDebugExecution) {
+                            this.viewer.setPose(capturePoses[i], true);
+                            this.updateCharacterScene({ poseIndex: originalTab });
+                            const captureLights = debugLightingMode === "original"
+                                ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
+                                : debugLightingMode === "manual" ? userLights : debugLights;
+                            this.viewer.updateLights(captureLights);
+                            this.setPoseCapture(i, this.viewer.capture(
+                                w,
+                                h,
+                                currentCaptureCamera.zoom,
+                                bg,
+                                currentCaptureCamera.offset_x,
+                                currentCaptureCamera.offset_y,
+                                currentCaptureCamera.yaw_deg,
+                                currentCaptureCamera.pitch_deg,
+                            ), true);
+                            this.lightingPrompts[i] = this.generatePromptFromLights(
+                                isOriginalLighting ? [] : captureLights,
+                                debugPrompt,
+                            );
+                        } else {
+                            // Normal mode
+                            this._applyingAnimationPose = animationMode;
+                            this.viewer.setPose(capturePoses[i], true);
+                            this._applyingAnimationPose = false;
+                            this.updateCharacterScene(animationMode
+                                ? { frame: i }
+                                : { poseIndex: i });
+                            const poseCamera = resolveCaptureCameraParams(
+                                capturePoses[i]?.cameraParams,
+                                currentCaptureCamera,
+                                animationMode,
+                            );
+                            // Lighting Toggle
+                            if (isOriginalLighting) {
+                                this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
+                            } else {
+                                this.viewer.updateLights(this.effectiveLights());
+                            }
+
+                            this.setPoseCapture(i, this.viewer.capture(
+                                w,
+                                h,
+                                currentCaptureCamera.zoom,
+                                bg,
+                                currentCaptureCamera.offset_x,
+                                currentCaptureCamera.offset_y,
+                                poseCamera.yaw_deg,
+                                poseCamera.pitch_deg,
+                            ), true);
+                            const framePrompt = animationMode
+                                ? String(this.animationState.basePose?.prompt ?? this.getPosePrompt(this.activeTab))
+                                : this.getPosePrompt(i);
+                            this.lightingPrompts[i] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams, framePrompt);
+                        }
                     }
-                }
-
-                // Restore original state and UI
-                this.viewer.updateLights(
-                    isOriginalLighting
-                        ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
-                        : userLights,
-                );
-                this.activeTab = originalTab;
-                if (animationMode) {
-                    this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
-                } else {
-                    this.viewer.setPose(this.poses[this.activeTab], true);
-                    this.restoreActivePoseCameraParams({ updateViewer: false });
-                    this.updateCharacterScene({ poseIndex: this.activeTab });
-                    this.refreshTabActiveState({ scroll: false });
-                    this.updateRotationSliders();
-                }
-
-                // Restore Camera Visualization
-                const yaw = this.exportParams.cam_yaw_deg || 0;
-                const pitch = this.exportParams.cam_pitch_deg || 0;
-                this.viewer.updateCaptureCamera(w, h, 1, 0, 0, yaw, pitch);
+                } catch (error) {
+                    this.poseCaptures = previousCaptures;
+                    this.lightingPrompts = previousPrompts;
+                    throw error;
                 } finally {
-                    if (captureBatchStarted) this.viewer.endCaptureBatch?.();
+                    this._applyingAnimationPose = false;
+                    this.activeTab = originalTab;
+                    try {
+                        // Restore original state and UI
+                        this.viewer.updateLights(
+                            isOriginalLighting
+                                ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
+                                : userLights,
+                        );
+                        this.activeTab = originalTab;
+                        if (animationMode) {
+                            this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
+                        } else {
+                            this.viewer.setPose(this.poses[this.activeTab], true);
+                            this.restoreActivePoseCameraParams({ updateViewer: false });
+                            this.updateCharacterScene({ poseIndex: this.activeTab });
+                            this.refreshTabActiveState({ scroll: false });
+                            this.updateRotationSliders();
+                        }
+
+                        // Restore Camera Visualization
+                        const yaw = this.exportParams.cam_yaw_deg || 0;
+                        const pitch = this.exportParams.cam_pitch_deg || 0;
+                        this.viewer.updateCaptureCamera(w, h, 1, 0, 0, yaw, pitch);
+                    } finally {
+                        if (captureBatchStarted || this.viewer._captureBatch) this.viewer.endCaptureBatch?.();
+                    }
                 }
 
             } else {
@@ -15201,13 +15440,16 @@ class PoseStudioWidget {
             : `vnccs_capture_${this.node.id}`;
         let animationToSave = this._deferredAnimationReference || undefined;
         if (this._animationInitialized && !this._deferredAnimationReference) {
-            const animationCacheId = this.getAnimationCacheId();
             const animationSnapshot = this.sceneAnimationCacheSnapshot();
+            const animationChanged = animationSnapshot !== this._animationCacheSnapshot;
+            // Saved workflows must keep their own keys when this editor is changed later.
+            if (animationChanged) this._animationCacheId = this.createAnimationCacheId();
+            const animationCacheId = this.getAnimationCacheId();
             const cacheNeedsUpload = (
                 this._lastUploadedAnimationCacheId !== animationCacheId
                 && this._pendingAnimationCacheId !== animationCacheId
             );
-            if (animationSnapshot !== this._animationCacheSnapshot || cacheNeedsUpload) {
+            if (animationChanged || cacheNeedsUpload) {
                 this._animationCacheSnapshot = animationSnapshot;
                 this._pendingAnimationCacheJSON = animationSnapshot;
                 this._animationCacheRevision = Math.max(0, this._animationCacheRevision) + 1;
@@ -15286,16 +15528,16 @@ class PoseStudioWidget {
                 widget.value = nextWidgetValue;
 
                 // Force ComfyUI to recognize the state change so it saves to the workflow
-                if (widget.callback) {
+                if (options.notify !== false && widget.callback) {
                     widget.callback(widget.value);
                 }
-                if (app.graph && app.graph.setDirtyCanvas) {
+                if (options.notify !== false && app.graph && app.graph.setDirtyCanvas) {
                     app.graph.setDirtyCanvas(true, true);
                 }
             }
         }
 
-        this.host?.onStateChange?.(data);
+        if (options.notify !== false) this.host?.onStateChange?.(data);
         if (this.interfaceMode === "manager") this.renderPoseManager();
         else if (this.interfaceMode === "managerDetail") this.renderPoseManagerDetailStrip();
         } finally {
@@ -15304,17 +15546,40 @@ class PoseStudioWidget {
     }
 
     loadFromNode() {
+        const restoreToken = this._poseDataRestoreToken = (this._poseDataRestoreToken || 0) + 1;
+        this.node._vnccsPoseAwaitingRestore = false;
         this.clearPoseHistory();
         this._referenceReadToken = (this._referenceReadToken || 0) + 1;
         this.clearSAMCameraMode();
         // Load from pose_data widget
         const widget = this.getNodeWidget("pose_data");
         if (!widget || !widget.value) {
+            this._poseDataRestoreError = null;
+            this._poseDataRestorePending = false;
+            if (this.container) this.container.inert = false;
             return;
         }
 
         try {
             const data = JSON.parse(widget.value);
+            if (!data || typeof data !== "object" || Array.isArray(data)) {
+                throw new Error("pose_data must be an object");
+            }
+            if (data.schema_version !== undefined && ![1, 2, 3].includes(data.schema_version)) {
+                throw new Error("Unsupported Pose Studio schema version");
+            }
+            for (const key of ["mesh", "export", "animation", "timeline"]) {
+                if (data[key] != null && (typeof data[key] !== "object" || Array.isArray(data[key]))) {
+                    throw new Error(`pose_data.${key} must be an object`);
+                }
+            }
+            for (const key of ["poses", "image_poses", "characters", "pose_prompts", "lights"]) {
+                if (data[key] != null && !Array.isArray(data[key])) {
+                    throw new Error(`pose_data.${key} must be an array`);
+                }
+            }
+            this._poseDataRestorePending = true;
+            if (this.container) this.container.inert = true;
             const knownRootKeys = new Set([
                 "schema_version", "mesh", "export", "poses", "image_poses", "animation",
                 "lights", "activeTab", "capture_id", "lighting_prompts", "background_url",
@@ -15584,12 +15849,25 @@ class PoseStudioWidget {
                 this.viewer.setSkinMode(this.exportParams.skin_type);
             }
 
-            void this.hydrateCharacterSceneModels().catch(error => {
+            void this.hydrateCharacterSceneModels().then(() => {
+                if (this._disposed || restoreToken !== this._poseDataRestoreToken) return;
+                this._poseDataRestorePending = false;
+                if (this.container) this.container.inert = false;
+            }).catch(error => {
+                if (this._disposed || restoreToken !== this._poseDataRestoreToken) return;
+                this._poseDataRestorePending = false;
+                if (this.container) this.container.inert = false;
+                this._poseDataRestoreError = `Pose Studio restoration failed; original state preserved: ${error?.message || error}`;
                 console.error("Failed to restore Pose Studio character scene:", error);
-                this.showMessage?.(`Failed to restore character scene: ${error?.message || error}`, true);
+                this.showMessage?.(this._poseDataRestoreError, true);
             });
+            this._poseDataRestoreError = null;
 
         } catch (e) {
+            this._poseDataRestorePending = false;
+            if (this.container) this.container.inert = false;
+            this._poseDataRestoreError = `Pose Studio restoration failed; original state preserved. Import a valid pose or reset the pose to continue: ${e?.message || e}`;
+            this.showMessage?.(this._poseDataRestoreError, true);
             console.error("Failed to parse pose_data:", e);
         }
     }
@@ -15896,11 +16174,10 @@ app.registerExtension({
                         executionCapture: true,
                     },
                 });
-                await uploadPoseStudioSync(node, nodeId, syncToken);
+                const response = await uploadPoseStudioSync(node, nodeId, syncToken);
+                await requirePoseStudioSyncResponse(response);
             } catch (e) {
-                if (applyMode === "manager_proportions") {
-                    await reportPoseStudioSyncFailure(nodeId, syncToken, e);
-                }
+                await reportPoseStudioSyncFailure(nodeId, syncToken, e);
                 console.error("[VNCCS] SAM3D pose_image apply error:", e);
             }
         });
@@ -16027,6 +16304,9 @@ app.registerExtension({
         const hideInternalWidget = (node, name) => {
             const widget = node?.widgets?.find(candidate => candidate.name === name);
             if (!widget) return;
+            if (name === "pose_data") {
+                widget.options = { ...widget.options, dynamicPrompts: false };
+            }
             widget.type = "hidden";
             widget.computeSize = () => [0, -4];
             widget.hidden = true;
@@ -16052,6 +16332,7 @@ app.registerExtension({
         const onCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             if (onCreated) onCreated.apply(this, arguments);
+            this._vnccsPoseAwaitingRestore = true;
 
             // pose_data is internal state, never user-facing UI. Hide it before
             // constructing the DOM widget so a later initialization exception
@@ -16066,6 +16347,7 @@ app.registerExtension({
                 setAnimationOutputMode(this, animation, imageBatch)
             );
             this.studioWidget = new PoseStudioWidget(this);
+            this.studioWidget.container.inert = true;
             this._vnccsEnsurePoseImageInput = () => ensurePoseImageInput(this);
             this._vnccsSetCameraPromptInputDisabled = (disabled) => setCameraPromptInputDisabled(this, disabled);
             this._vnccsEnsurePoseImageInput();
@@ -16124,13 +16406,13 @@ app.registerExtension({
 
             if (this.studioWidget) {
                 syncStudioDOMWidgetWidth(this);
+                clearTimeout(this._vnccsPoseInitTimer);
                 clearTimeout(this._vnccsPoseConfigureTimer);
+                this.studioWidget.loadFromNode();
+                this._vnccsEnsurePoseImageInput?.();
+                window.__vnccsPoseStudioCharacterCreatorSync?.registerStudio(this.studioWidget);
                 this._vnccsPoseConfigureTimer = setTimeout(() => {
                     syncStudioDOMWidgetWidth(this);
-                    this.studioWidget.loadFromNode();
-                    this._vnccsEnsurePoseImageInput?.();
-                    window.__vnccsPoseStudioCharacterCreatorSync?.registerStudio(this.studioWidget);
-                    this.studioWidget.loadModel();
                     this.studioWidget.refreshLibrary(false); // Pre-load library meta only
                     this.studioWidget.autoRefreshEnabledPoseRepositories();
                     this.onResize(this.size); // Force correct aspect ratio on config
@@ -16144,6 +16426,23 @@ app.registerExtension({
             if (onExecutionStart) onExecutionStart.apply(this, arguments);
 
             // Removed redundant syncToNode(true) to avoid race conditions with vnccs_req_pose_sync
+        };
+
+        const onSerialize = nodeType.prototype.onSerialize;
+        nodeType.prototype.onSerialize = function (workflow) {
+            const result = onSerialize?.apply(this, arguments);
+            const poseWidget = this.widgets?.find(widget => widget.name === "pose_data");
+            if (poseWidget && this.studioWidget) {
+                const previous = poseWidget.value;
+                this.studioWidget.syncToNode(false, {
+                    skipCapture: true, skipCaptureUpload: true,
+                    skipAnimationHistory: true, notify: false,
+                });
+                if (Array.isArray(workflow?.widgets_values)) {
+                    workflow.widgets_values = workflow.widgets_values.map(value => value === previous ? poseWidget.value : value);
+                }
+            }
+            return result;
         };
 
         const onRemoved = nodeType.prototype.onRemoved;

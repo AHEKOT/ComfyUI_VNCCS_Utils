@@ -43,6 +43,153 @@
       }
     },
     {
+      "id": "qwen_image21",
+      "label": "Qwen Edit 2.1",
+      "group": "Qwen Edit 2.1",
+      "title": "Qwen Edit 2.1",
+      "description": "Qwen Image 2.1 INT8 ConvRot with the Qwen3-VL 8B text encoder and the Qwen Image 2.1 VAE. Runs 25 steps at CFG 3; the Turbo LoRA switches to 6 steps at CFG 1.",
+      "settings": {
+        "generation_mode": "qwen_image21",
+        "model_loader": "diffusion_model",
+        "diffusion_model_name": "qwen_image_2.1_int8_convrot.safetensors",
+        "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+        "vae_name": "qwen_image_2.1_vae_bf16.safetensors",
+        "clip_type": "qwen_image",
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "steps": 25,
+        "cfg": 3.0,
+        "denoise": 1.0,
+        "qwen21_turbo_enabled": false,
+        "qwen_lora_name": "",
+        "qwen_lora_strength": 0
+      },
+      "assets": [
+        {
+          "role": "diffusion_model",
+          "name": "Qwen Image 2.1 INT8 ConvRot",
+          "hf_repo": "Comfy-Org/Qwen-Image-2.1",
+          "hf_path": "diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
+          "local_path": "models/diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
+          "description": "Qwen Image 2.1 INT8 ConvRot diffusion model."
+        },
+        {
+          "role": "clip",
+          "name": "QI2 Qwen3-VL 8B Text Encoder",
+          "hf_repo": "Comfy-Org/Qwen-Image-2.1",
+          "hf_path": "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+          "local_path": "models/text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+          "description": "Qwen3-VL 8B text encoder for Qwen Image 2.1."
+        },
+        {
+          "role": "vae",
+          "name": "QI2 VAE",
+          "hf_repo": "Comfy-Org/Qwen-Image-2.1",
+          "hf_path": "vae/qwen_image_2.1_vae_bf16.safetensors",
+          "local_path": "models/vae/qwen_image_2.1_vae_bf16.safetensors",
+          "description": "Qwen Image 2.1 VAE."
+        }
+      ],
+      "turbo": {
+        "setting": "qwen_lora_name",
+        "strength_setting": "qwen_lora_strength",
+        "enable_setting": "qwen21_turbo_enabled",
+        "turbo_settings": {
+          "steps": 6,
+          "cfg": 1.0
+        },
+        "asset": {
+          "name": "Qwen Image 2.1 Viggle Turbo",
+          "role": "lora",
+          "hf_repo": "Viggle/Qwen-Image-2.1-viggle-turbo",
+          "hf_path": "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
+          "local_path": "models/loras/QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
+          "description": "Six-step Viggle Turbo LoRA for Qwen Image 2.1.",
+          "hf_revision": "b77064be8b3f0b1a13c6a212067cb3d281c60c84"
+        }
+      },
+      "dependencies": [
+        {
+          "role": "lora",
+          "name": "Qwen Edit 2.1 Outpaint LoRA v2",
+          "hf_repo": "ausboss/Qwen-Image-2.1-Outpaint-LoRA",
+          "hf_revision": "449336db42ff074aee970ba0facc0ac0feb77863",
+          "hf_path": "qwen-image-2.1-outpaint-v2.safetensors",
+          "local_path": "models/loras/ausboss/qwen-image-2.1-outpaint-v2.safetensors",
+          "description": "Used for outpaint; downloaded separately from the base model."
+        },
+        {
+          "role": "lora",
+          "name": "Qwen Edit 2.1 Pose Studio LoRA v1.1",
+          "hf_repo": "MIUProject/VNCCS_PoseStudio_QI2.1",
+          "hf_revision": "b0518fd047fa75d7dcd909d68390a7c1d337e5cd",
+          "hf_path": "VNCCS_QI2_PoseStudioV1.1.safetensors",
+          "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_PoseStudioV1.1.safetensors",
+          "description": "Applied automatically when generating from a pose layer."
+        }
+      ]
+    },
+    {
+      "id": "krea2_edit",
+      "label": "Krea2 Edit Turbo",
+      "title": "Krea2 Edit Turbo \u00b7 fast, 10 steps",
+      "description": "Fast Krea2 identity edit at 10 steps and CFG 1. Best default for swapping a character into a scene. Includes the required Identity Edit LoRA.",
+      "settings": {
+        "generation_mode": "krea2_edit",
+        "model_loader": "diffusion_model",
+        "diffusion_model_name": "krea2_turbo_fp8_scaled.safetensors",
+        "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
+        "vae_name": "qwen_image_vae.safetensors",
+        "clip_type": "krea2",
+        "krea2_edit_lora_name": "Krea2/krea2_identity_edit_v1_2.safetensors",
+        "krea2_likeness": 4.0,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "steps": 10,
+        "cfg": 1.0,
+        "denoise": 1.0
+      },
+      "assets": [
+        {
+          "role": "diffusion_model",
+          "name": "Krea2 Turbo FP8",
+          "hf_repo": "Comfy-Org/Krea-2",
+          "hf_revision": "e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96",
+          "hf_path": "diffusion_models/krea2_turbo_fp8_scaled.safetensors",
+          "local_path": "models/diffusion_models/krea2_turbo_fp8_scaled.safetensors",
+          "description": "Krea2 Turbo FP8 for Krea2 Edit."
+        },
+        {
+          "role": "clip",
+          "name": "Krea2 Qwen3-VL 4B FP8",
+          "hf_repo": "Comfy-Org/Krea-2",
+          "hf_revision": "e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96",
+          "hf_path": "text_encoders/qwen3vl_4b_fp8_scaled.safetensors",
+          "local_path": "models/text_encoders/qwen3vl_4b_fp8_scaled.safetensors",
+          "description": "Krea2 Qwen3-VL 4B FP8 for Krea2 Edit."
+        },
+        {
+          "role": "vae",
+          "name": "Qwen Image VAE",
+          "hf_repo": "Comfy-Org/Krea-2",
+          "hf_revision": "e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96",
+          "hf_path": "vae/qwen_image_vae.safetensors",
+          "local_path": "models/vae/qwen_image_vae.safetensors",
+          "description": "Qwen Image VAE for Krea2 Edit."
+        },
+        {
+          "role": "lora",
+          "name": "Krea2 Identity Edit v1.2 (required)",
+          "hf_repo": "conradlocke/krea2-identity-edit",
+          "hf_revision": "89e9e7a09ee2e5c9331e952063d79b1b8a703280",
+          "hf_path": "krea2_identity_edit_v1_2.safetensors",
+          "local_path": "models/loras/Krea2/krea2_identity_edit_v1_2.safetensors",
+          "description": "Required edit adapter, always applied at strength 1."
+        }
+      ],
+      "group": "Krea2"
+    },
+    {
       "id": "anima",
       "label": "Anima",
       "title": "Anima Base v1.0",
@@ -101,7 +248,17 @@
           "local_path": "models/loras/Anima/anima-turbo-lora-v0.1.safetensors",
           "description": "Turbo LoRA for Anima."
         }
-      }
+      },
+      "dependencies": [
+        {
+          "role": "controlnet",
+          "name": "Anima LLLite Inpaint v2",
+          "hf_repo": "kohya-ss/Anima-LLLite",
+          "hf_path": "anima-lllite-inpainting-v2.safetensors",
+          "local_path": "models/controlnet/anima-lllite-inpainting-v2.safetensors",
+          "description": "Used for inpaint and outpaint."
+        }
+      ]
     },
     {
       "id": "flux_klein",
@@ -189,148 +346,23 @@
           "local_path": "models/vae/ae.safetensors",
           "description": "AE VAE for Z-Image Turbo."
         }
+      ],
+      "dependencies": [
+        {
+          "role": "model_patch",
+          "name": "Z-Image Fun ControlNet Union 2.1 Lite",
+          "hf_repo": "alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1",
+          "hf_path": "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors",
+          "local_path": "models/model_patches/Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors",
+          "description": "Used for inpaint and outpaint."
+        }
       ]
-    },
-    {
-      "id": "qwen_image_edit",
-      "label": "QIE2511",
-      "title": "Qwen Image Edit 2511 Q5",
-      "description": "Qwen Image Edit 2511 GGUF Q5 preset with matching CLIP and VAE.",
-      "settings": {
-        "generation_mode": "qwen_image_edit",
-        "model_loader": "gguf",
-        "gguf_model_name": "qwen-image-edit-2511-Q5_0.gguf",
-        "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
-        "vae_name": "qwen_image_vae.safetensors",
-        "clip_type": "qwen_image",
-        "sampler_name": "euler",
-        "scheduler": "simple",
-        "steps": 4,
-        "cfg": 1
-      },
-      "assets": [
-        {
-          "role": "gguf",
-          "name": "Qwen-Image-Edit-2511-GGUF-Q5",
-          "hf_repo": "unsloth/Qwen-Image-Edit-2511-GGUF",
-          "hf_path": "qwen-image-edit-2511-Q5_0.gguf",
-          "local_path": "models/unet/qwen-image-edit-2511-Q5_0.gguf",
-          "description": "Q5 GGUF model for QIE2511."
-        },
-        {
-          "role": "clip",
-          "name": "QIE2511 Text Encoder",
-          "hf_repo": "f5aiteam/CLIP",
-          "hf_path": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
-          "local_path": "models/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
-          "description": "Text encoder for Qwen Image Edit 2511."
-        },
-        {
-          "role": "vae",
-          "name": "QIE2511 VAE",
-          "hf_repo": "Comfy-Org/Qwen-Image_ComfyUI",
-          "hf_path": "split_files/vae/qwen_image_vae.safetensors",
-          "local_path": "models/vae/qwen_image_vae.safetensors",
-          "description": "Official Qwen Image VAE."
-        }
-      ],
-      "turbo": {
-        "setting": "qwen_lora_name",
-        "strength_setting": "qwen_lora_strength",
-        "turbo_settings": {
-          "steps": 4,
-          "cfg": 1
-        },
-        "asset": {
-          "role": "lora",
-          "name": "Qwen Image Edit 2511 Lightning",
-          "hf_repo": "MIUProject/VNCCS_v3.0",
-          "hf_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
-          "local_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
-          "description": "4-step lightning LoRA for QIE2511."
-        }
-      }
-    },
-    {
-      "id": "qwen_image21",
-      "label": "QI2.1",
-      "group": "QI2.1",
-      "title": "Qwen Image 2.1 INT8 ConvRot",
-      "description": "Qwen Image 2.1 INT8 ConvRot with the Qwen3-VL 8B text encoder and the Qwen Image 2.1 VAE. Runs 25 steps at CFG 3; the Turbo LoRA switches to 6 steps at CFG 1.",
-      "settings": {
-        "generation_mode": "qwen_image21",
-        "model_loader": "diffusion_model",
-        "diffusion_model_name": "qwen_image_2.1_int8_convrot.safetensors",
-        "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
-        "vae_name": "qwen_image_2.1_vae_bf16.safetensors",
-        "clip_type": "qwen_image",
-        "sampler_name": "euler",
-        "scheduler": "simple",
-        "steps": 25,
-        "cfg": 3.0,
-        "denoise": 1.0,
-        "qwen21_turbo_enabled": false,
-        "qwen_lora_name": "",
-        "qwen_lora_strength": 0
-      },
-      "assets": [
-        {
-          "role": "diffusion_model",
-          "name": "Qwen Image 2.1 INT8 ConvRot",
-          "hf_repo": "Comfy-Org/Qwen-Image-2.1",
-          "hf_path": "diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
-          "local_path": "models/diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
-          "description": "Qwen Image 2.1 INT8 ConvRot diffusion model."
-        },
-        {
-          "role": "clip",
-          "name": "QI2 Qwen3-VL 8B Text Encoder",
-          "hf_repo": "Comfy-Org/Qwen-Image-2.1",
-          "hf_path": "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
-          "local_path": "models/text_encoders/qwen3vl_8b_int8_convrot.safetensors",
-          "description": "Qwen3-VL 8B text encoder for Qwen Image 2.1."
-        },
-        {
-          "role": "vae",
-          "name": "QI2 VAE",
-          "hf_repo": "Comfy-Org/Qwen-Image-2.1",
-          "hf_path": "vae/qwen_image_2.1_vae_bf16.safetensors",
-          "local_path": "models/vae/qwen_image_2.1_vae_bf16.safetensors",
-          "description": "Qwen Image 2.1 VAE."
-        },
-        {
-          "role": "lora",
-          "name": "QI2.1 Outpaint LoRA v2",
-          "hf_repo": "ausboss/Qwen-Image-2.1-Outpaint-LoRA",
-          "hf_revision": "449336db42ff074aee970ba0facc0ac0feb77863",
-          "hf_path": "qwen-image-2.1-outpaint-v2.safetensors",
-          "local_path": "models/loras/ausboss/qwen-image-2.1-outpaint-v2.safetensors",
-          "description": "Outpaint LoRA for Qwen Image 2.1, applied in outpaint mode only."
-        }
-      ],
-      "turbo": {
-        "setting": "qwen_lora_name",
-        "strength_setting": "qwen_lora_strength",
-        "enable_setting": "qwen21_turbo_enabled",
-        "turbo_settings": {
-          "steps": 6,
-          "cfg": 1.0
-        },
-        "asset": {
-          "name": "Qwen Image 2.1 Viggle Turbo",
-          "hf_repo": "Viggle/Qwen-Image-2.1-viggle-turbo",
-          "hf_path": "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
-          "local_path": "models/loras/viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
-          "description": "Six-step Viggle Turbo LoRA for Qwen Image 2.1.",
-          "hf_revision": "b77064be8b3f0b1a13c6a212067cb3d281c60c84"
-        }
-      }
     },
     {
       "id": "minimax_h3",
       "label": "MiniMax H3",
       "group": "MiniMax H3",
-      "title": "MiniMax H3 REF2VA · still image",
+      "title": "MiniMax H3 REF2VA \u00b7 still image",
       "description": "MiniMax H3 REF2VA image edit: <Picture 1> is the working area and Edit model references are <Picture 2..>. Uses the official INT8 ConvRot model, Qwen3-VL 32B text encoder and INT8 ConvRot video VAE; the first frame is kept as the still. The TaoMate Turbo LoRA runs it in 3 steps. Large download.",
       "settings": {
         "generation_mode": "minimax_h3",
@@ -384,6 +416,7 @@
         },
         "asset": {
           "name": "TaoMate H3 3-Step Turbo",
+          "role": "lora",
           "hf_repo": "Robert1212star/TaoMate-H3-3Step-ComfyUI",
           "hf_path": "taomate_h3_3step_comfy.safetensors",
           "local_path": "models/loras/H3/taomate_h3_3step_comfy.safetensors",
@@ -392,69 +425,9 @@
       }
     },
     {
-      "id": "krea2_edit",
-      "label": "Krea2 Edit Turbo",
-      "title": "Krea2 Edit Turbo · fast, 10 steps",
-      "description": "Fast Krea2 identity edit at 10 steps and CFG 1. Best default for swapping a character into a scene. Includes the required Identity Edit LoRA.",
-      "settings": {
-        "generation_mode": "krea2_edit",
-        "model_loader": "diffusion_model",
-        "diffusion_model_name": "krea2_turbo_fp8_scaled.safetensors",
-        "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
-        "vae_name": "qwen_image_vae.safetensors",
-        "clip_type": "krea2",
-        "krea2_edit_lora_name": "Krea2/krea2_identity_edit_v1_2.safetensors",
-        "krea2_likeness": 4.0,
-        "sampler_name": "euler",
-        "scheduler": "simple",
-        "steps": 10,
-        "cfg": 1.0,
-        "denoise": 1.0
-      },
-      "assets": [
-        {
-          "role": "diffusion_model",
-          "name": "Krea2 Turbo FP8",
-          "hf_repo": "Comfy-Org/Krea-2",
-          "hf_revision": "e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96",
-          "hf_path": "diffusion_models/krea2_turbo_fp8_scaled.safetensors",
-          "local_path": "models/diffusion_models/krea2_turbo_fp8_scaled.safetensors",
-          "description": "Krea2 Turbo FP8 for Krea2 Edit."
-        },
-        {
-          "role": "clip",
-          "name": "Krea2 Qwen3-VL 4B FP8",
-          "hf_repo": "Comfy-Org/Krea-2",
-          "hf_revision": "e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96",
-          "hf_path": "text_encoders/qwen3vl_4b_fp8_scaled.safetensors",
-          "local_path": "models/text_encoders/qwen3vl_4b_fp8_scaled.safetensors",
-          "description": "Krea2 Qwen3-VL 4B FP8 for Krea2 Edit."
-        },
-        {
-          "role": "vae",
-          "name": "Qwen Image VAE",
-          "hf_repo": "Comfy-Org/Krea-2",
-          "hf_revision": "e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96",
-          "hf_path": "vae/qwen_image_vae.safetensors",
-          "local_path": "models/vae/qwen_image_vae.safetensors",
-          "description": "Qwen Image VAE for Krea2 Edit."
-        },
-        {
-          "role": "lora",
-          "name": "Krea2 Identity Edit v1.2 (required)",
-          "hf_repo": "conradlocke/krea2-identity-edit",
-          "hf_revision": "89e9e7a09ee2e5c9331e952063d79b1b8a703280",
-          "hf_path": "krea2_identity_edit_v1_2.safetensors",
-          "local_path": "models/loras/Krea2/krea2_identity_edit_v1_2.safetensors",
-          "description": "Required edit adapter, always applied at strength 1."
-        }
-      ],
-      "group": "Krea2"
-    },
-    {
       "id": "krea2_edit_raw",
       "label": "Krea2 Edit Raw",
-      "title": "Krea2 Edit Raw · guided, 20 steps",
+      "title": "Krea2 Edit Raw \u00b7 guided, 20 steps",
       "description": "Slower Krea2 identity edit at 20 steps and CFG 3 with stronger prompt guidance. Pick it for object removal and larger changes. Includes the required Identity Edit LoRA.",
       "settings": {
         "generation_mode": "krea2_edit",

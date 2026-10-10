@@ -4,6 +4,10 @@ from unittest import mock
 
 import pytest
 
+from helpers.unicanvas_package import load_unicanvas_package
+
+load_unicanvas_package("nodes")
+
 from nodes.unicanvas import loras
 from nodes.unicanvas.loras import LoraRequirement, _apply_lora_requirements, _apply_lora_stack
 from nodes.unicanvas.models.registry import _get_unicanvas_model_module
@@ -18,6 +22,7 @@ def applied(monkeypatch):
         return model, clip
 
     monkeypatch.setattr(loras, "_apply_lora_cached", fake_apply)
+    monkeypatch.setattr(loras, "_get_lora_full_path", lambda name: f"/loras/{name.lower()}")
     return calls
 
 
@@ -112,16 +117,6 @@ def test_anima_turbo_lora_keeps_clip_untouched(applied):
     assert applied == [(ANIMA_TURBO_LORA_NAME, 1.0, 0.0)]
 
 
-def test_qwen_edit_lightning_lora_needs_positive_strength(applied):
-    from nodes.unicanvas.models.qwen_image_edit import QWEN_IMAGE_EDIT_TURBO_LORA_NAME
-
-    _family_loras("qwen_image_edit", {"qwen_lora_name": QWEN_IMAGE_EDIT_TURBO_LORA_NAME})
-    _family_loras("qwen_image_edit", {"qwen_lora_name": "style.safetensors", "qwen_lora_strength": 1.0})
-    assert applied == []
-    _family_loras("qwen_image_edit", {"qwen_lora_name": QWEN_IMAGE_EDIT_TURBO_LORA_NAME, "qwen_lora_strength": 0.9})
-    assert applied == [(QWEN_IMAGE_EDIT_TURBO_LORA_NAME, 0.9, 0.0)]
-
-
 def test_qwen21_lora_resolves_the_turbo_download(applied, monkeypatch):
     from nodes.unicanvas.models import qwen_image21
 
@@ -148,6 +143,33 @@ def test_families_without_own_loras_apply_only_the_stack(applied):
         assert applied == [("s.safetensors", 0.5, None)], mode
 
 
+def test_clip_only_loras_count_as_applied_and_are_not_duplicated(applied):
+    stack = [{"name": "clip-only", "strength": 0, "clip_strength": 1},
+             {"name": "clip-only", "strength": 1},
+             {"name": "disabled", "strength": 0, "clip_strength": 1, "enabled": False}]
+    assert loras._active_lora_names(stack) == ["clip-only", "clip-only"]
+    _apply_lora_stack("m", "c", stack)
+    assert applied == [("clip-only", 0, 1)]
+    applied.clear()
+    rule = LoraRequirement(name_setting="lora", default_name="clip-only")
+    _apply_lora_requirements("m", "c", (rule,), {"_external": {"lora_stack": stack[:1]}})
+    assert applied == []
+
+
+def test_cached_loader_passes_clip_only_strength_to_comfy(monkeypatch):
+    import comfy.sd
+    import comfy.utils
+    calls = []
+    monkeypatch.setattr(loras, "_get_lora_full_path", lambda name: "/loras/" + name)
+    monkeypatch.setattr(comfy.utils, "load_torch_file", lambda *_args, **_kwargs: "weights")
+    monkeypatch.setattr(comfy.sd, "load_lora_for_models", lambda *args: (calls.append(args) or (args[0], args[1])), raising=False)
+    assert loras._apply_lora_cached("m", "c", "clip-only", 0, 1) == ("m", "c")
+    assert calls == [("m", "c", "weights", 0, 1)]
+    calls.clear()
+    assert loras._apply_lora_cached("m", "c", "zero", 0) == ("m", "c")
+    assert calls == []
+
+
 def test_no_family_overrides_apply_loras():
     """LoRA behaviour is declared (lora_requirements), never re-implemented per family."""
     from nodes.unicanvas.models import UNICANVAS_MODEL_MODULES
@@ -157,8 +179,14 @@ def test_no_family_overrides_apply_loras():
         assert type(module).apply_loras is UniCanvasModelModule.apply_loras, module.key
 
 
-def test_a_lora_is_never_applied_twice(applied):
-    rules = (LoraRequirement(name_setting="turbo"), LoraRequirement(name_setting="again"))
+def test_a_lora_is_never_applied_twice(applied, monkeypatch):
+    aliases = {"viggle/Turbo.safetensors": "/loras/viggle/turbo.safetensors",
+               "viggle/turbo.safetensors": "/loras/viggle/turbo.safetensors",
+               "turbo.safetensors": "/loras/viggle/turbo.safetensors",
+               "Turbo.safetensors": "/loras/viggle/turbo.safetensors",
+               "loras/turbo.safetensors": "/loras/viggle/turbo.safetensors"}
+    monkeypatch.setattr(loras, "_get_lora_full_path", lambda name: aliases.get(name, f"/loras/{name}"))
+    rules = (LoraRequirement(name_setting="turbo", required=True), LoraRequirement(name_setting="again", required=True))
     # The linked config stack already carries the turbo file: the family rule skips it.
     settings = {
         "turbo": "viggle/Turbo.safetensors",
@@ -179,7 +207,8 @@ def test_a_lora_is_never_applied_twice(applied):
         {"name": "sub/style.safetensors", "strength": 0.9},
         {"name": "Turbo.safetensors", "strength": 1.0},
     ], ["viggle/turbo.safetensors"])
-    assert applied == [("style.safetensors", 0.0, None), ("style.safetensors", 0.6, None)]
+    assert applied == [("style.safetensors", 0.6, None),
+                       ("sub/style.safetensors", 0.9, None)]
 
 
 def test_vncss_config_applies_each_lora_once(monkeypatch):
@@ -194,4 +223,83 @@ def test_vncss_config_applies_each_lora_once(monkeypatch):
         {"name": "b.safetensors"},
     ])
     vncss_config.apply_lora_stack("m", "c", stack)
-    assert calls == ["A.safetensors", "b.safetensors"]
+    assert calls == ["A.safetensors", "dir/a.safetensors", "b.safetensors"]
+
+
+@pytest.mark.parametrize("settings", [
+    {"model_loader": "external", "_external": {"lora_stack": []}},
+    {"_config_model_override": True, "lora_stack": [{"name": "config.safetensors", "strength": .5}]},
+])
+def test_config_owns_optional_loras_but_keeps_required_adapters(applied, settings):
+    resolver = mock.Mock(side_effect=AssertionError("optional LoRA must not download"))
+    rules = (
+        LoraRequirement(name_setting="optional", default_name="turbo.safetensors", resolver=resolver),
+        LoraRequirement(name_setting="required", default_name="edit.safetensors", required=True),
+    )
+    model, clip, names = _apply_lora_requirements("m", "c", rules, settings)
+    _apply_lora_stack(model, clip, settings.get("lora_stack"), names)
+    assert applied == [("edit.safetensors", 1.0, None)] + (
+        [("config.safetensors", .5, None)] if settings.get("_config_model_override") else []
+    )
+    resolver.assert_not_called()
+
+
+def test_config_qwen_lora_defaults_never_download(applied, monkeypatch):
+    from nodes.unicanvas.models import qwen_image21
+
+    resolver = mock.Mock(side_effect=AssertionError("widget turbo must not download"))
+    monkeypatch.setattr(qwen_image21, "resolve_qwen21_turbo_lora", resolver)
+    module = _get_unicanvas_model_module("qwen_image21")
+    module.apply_loras("m", "c", {**module.defaults, "model_loader": "external", "_external": {"lora_stack": []}})
+    assert applied == []
+    resolver.assert_not_called()
+
+
+def test_different_lora_files_with_same_basename_both_apply(applied, monkeypatch):
+    monkeypatch.setattr(loras, "_get_lora_full_path", lambda name: f"/loras/{name}")
+    _apply_lora_stack("m", "c", [{"name": "portraits/adapter.safetensors"},
+                                  {"name": "styles/adapter.safetensors"},
+                                  {"name": "portraits/adapter.safetensors"}])
+    assert [name for name, *_ in applied] == ["portraits/adapter.safetensors", "styles/adapter.safetensors"]
+
+
+def test_loaded_lora_weights_are_not_retained_by_a_global_cache(monkeypatch):
+    import weakref
+    import comfy.sd
+    import comfy.utils
+
+    class Weights:
+        pass
+
+    references = []
+
+    def load(path, safe_load):
+        weights = Weights()
+        references.append(weakref.ref(weights))
+        return weights
+
+    monkeypatch.setattr(loras, "_get_lora_full_path", lambda name: f"/loras/{name}")
+    monkeypatch.setattr(comfy.utils, "load_torch_file", load)
+    monkeypatch.setattr(comfy.sd, "load_lora_for_models", lambda model, clip, weights, *args: (model, clip))
+    for name in ("a", "b", "a"):
+        assert loras._apply_lora_cached("m", "c", name, 1) == ("m", "c")
+    assert len(references) == 3
+    assert all(reference() is None for reference in references)
+
+
+def test_lora_identity_resolves_installed_files_and_default_aliases(tmp_path, monkeypatch):
+    import folder_paths
+
+    for name in ("portraits/adapter.safetensors", "styles/adapter.safetensors"):
+        file = tmp_path / name
+        file.parent.mkdir()
+        file.touch()
+    monkeypatch.setattr(folder_paths, "get_full_path", lambda kind, name: str(tmp_path / name)
+                        if (tmp_path / name).is_file() else None)
+    monkeypatch.setattr(folder_paths, "get_filename_list", lambda kind: ["portraits/adapter.safetensors", "styles/adapter.safetensors"])
+    assert not loras._lora_name_in("styles/adapter.safetensors", ["portraits/adapter.safetensors"])
+    assert not loras._lora_name_in("adapter.safetensors", ["portraits/adapter.safetensors"])
+    with pytest.raises(ValueError, match="Ambiguous"):
+        loras._get_lora_full_path("adapter.safetensors")
+    monkeypatch.setattr(folder_paths, "get_filename_list", lambda kind: ["portraits/adapter.safetensors"])
+    assert loras._lora_name_in("adapter.safetensors", ["portraits/adapter.safetensors"])

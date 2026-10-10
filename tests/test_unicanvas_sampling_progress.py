@@ -1,8 +1,40 @@
 import sys
 import types
 
+import pytest
+
+from helpers.unicanvas_package import load_unicanvas_package
+
+load_unicanvas_package("nodes")
+
 from nodes.unicanvas import progress
 from nodes.unicanvas.sampling import _report_comfy_sampling_progress
+
+
+@pytest.mark.parametrize("error", [RuntimeError("out of memory"), type("InterruptProcessingException", (Exception,), {})("stopped")])
+def test_sampler_runtime_errors_never_start_a_second_sampler(monkeypatch, error):
+    from nodes.unicanvas import sampling
+
+    def fail(**kwargs):
+        raise error
+
+    monkeypatch.setattr(sys.modules["nodes"], "common_ksampler", fail, raising=False)
+    monkeypatch.setattr(sampling, "_call_node_method", lambda *a, **k: pytest.fail("sampling was retried"))
+    with pytest.raises(type(error), match=str(error)):
+        sampling._sample_generation_latent_default(
+            "model", "positive", "negative", {}, 1, 4, 1.0, "euler", "normal", 1.0, {}, "cancel-test"
+        )
+
+
+def test_sampler_fallback_is_used_when_common_sampler_is_missing(monkeypatch):
+    from nodes.unicanvas import sampling
+
+    monkeypatch.delattr(sys.modules["nodes"], "common_ksampler", raising=False)
+    monkeypatch.setattr(sampling, "_call_node_method", lambda *a, **k: ({"samples": "fallback"},))
+    result = sampling._sample_generation_latent_default(
+        "model", "positive", "negative", {}, 1, 4, 1.0, "euler", "normal", 1.0, {}, "fallback-test"
+    )
+    assert result == {"samples": "fallback"}
 
 
 def test_comfy_progress_bar_updates_reach_the_draw_progress(monkeypatch):

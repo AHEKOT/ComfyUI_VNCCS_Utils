@@ -7,8 +7,8 @@ project rules (realtime interaction, E2E suite, Docker test platform, evidence p
 ## What this is
 
 A ComfyUI custom-node extension (VNCCS Utils): **UniCanvas** (in-node infinite-canvas editor
-with direct generation), **Pose Studio**, **3D Factory**, Model Manager/Selector, VNCSS
-Config, QWEN Detailer and helpers. The Python backend runs inside ComfyUI; the frontend is
+with direct generation), **Pose Studio**, **3D Factory**, VNCSS
+Config, BBox Extractor and helpers. The Python backend runs inside ComfyUI; the frontend is
 plain ES modules in `web/` — no bundler, no build step.
 
 ## Commands
@@ -30,14 +30,14 @@ is described in `AGENTS.md`.
 - `__init__.py` — extension entry point: node mappings, `WEB_DIRECTORY`, Pose Studio and
   UniCanvas state-cache routes, calls `register_unicanvas_routes()`.
 - `nodes/` — node classes: `pose_studio.py`, `factory3d*.py`, `vncss_config.py`,
-  `vnccs_model_manager.py`, `vnccs_qwen_detailer.py` and `anima_lllite_internal.py`;
+  `vnccs_bbox_extractor.py` and `anima_lllite_internal.py`;
   `nodes/unicanvas/` is the UniCanvas package (below).
 - `api/` — 3D Factory and Pose Studio backend services.
-- `web/` — frontend widgets. UniCanvas: `vnccs_unicanvas.js` (main widget, very large — add
-  feature code in a `vnccs_unicanvas_<feature>.mjs` module and only hook it from the widget);
-  other modules cover pose, panorama, transform, remove-bg, presets, prompt guide, config
-  bridge, input/layer tools. Pose Studio and 3D Factory have their own `vnccs_pose_*` /
-  `vnccs_3d_factory*` files.
+- `web/` — five `vnccs_*.js` extension entry points in the root. Feature modules live in
+  `unicanvas/`, `pose_studio/`, `factory3d/`, `camera_control/`, and `config/`.
+  Common controls and assets live in `shared/`; third-party libraries live in `vendor/`.
+  Pose Studio keeps its morph pack in `pose_studio/assets/` and skin textures in
+  `pose_studio/textures/`.
 - `config/unicanvas_presets.json` — model presets (pinned HF repo/path/revision).
 - `vnccs_sam3d/` — vendored SAM-3D / BiRefNet code.
 - `tests/` — `conftest.py` stubs `comfy`, `folder_paths`, `server` and points the bare
@@ -55,7 +55,7 @@ Layered; lower layers never import higher ones (no import cycles):
    `latents`, `sampling`, `draw_pipeline` (`ImageDrawPipeline`, `DrawContext`)
 4. Model families: `models/` — `capabilities` (tasks, media kinds, reference slots, prompt
    guides), `base.UniCanvasModelModule` (data + hooks), `registry`, one module per family
-   (`sdxl`, `anima`, `flux_klein`, `qwen_image_edit`, `qwen_image21`, `z_image`,
+   (`sdxl`, `anima`, `flux_klein`, `qwen_image21`, `z_image`,
    `minimax_h3`, `krea2_edit` + vendored `krea2_edit_inference`). Registration happens only
    in `models/__init__.py`.
 5. Features: `presets`, `assets`, `generation`, `draw_request`, `draw`, `segment`,
@@ -90,7 +90,7 @@ Draw flow: `draw._run_unicanvas_draw` -> `DrawRequest.from_payload` -> `family.v
   lazy and go through `huggingface_hub` with `token=False`.
 - Paths to repo files use `paths._EXTENSION_ROOT`, not `__file__` math. Model work
   (load/sample/decode) must hold `locks._COMFY_MODEL_OP_LOCK`.
-- Frontend: new UniCanvas features go in their own `web/vnccs_unicanvas_<feature>.mjs`
+- Frontend: new UniCanvas features go in their own `web/unicanvas/<feature>.mjs`
   module, hooked from `vnccs_unicanvas.js`; respect the realtime interaction contract in
   `AGENTS.md` (continuous feedback during gestures, commit-only on release).
 

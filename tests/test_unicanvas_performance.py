@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
+from helpers.unicanvas_package import load_unicanvas_package
+
+load_unicanvas_package("nodes")
+
 from nodes.unicanvas import performance
 
 
@@ -33,6 +39,29 @@ def test_vae_chunking_is_off_by_default_and_tiles_when_on():
     assert chunked.decode("s") == "tiled" and chunked.encode("p") == "tiled"
     assert vae.calls == ["decode_tiled", "encode_tiled"]
     assert performance.apply_vae_chunking(chunked, {"vae_chunking": True}) is chunked
+
+
+@pytest.mark.parametrize("method", ["encode", "decode"])
+def test_missing_tiled_method_can_use_full_vae(method):
+    vae = _Vae()
+    setattr(vae, method + "_tiled", None)
+    assert getattr(performance.ChunkedVAE(vae), method)("input") == "full"
+    assert vae.calls == [method]
+
+
+@pytest.mark.parametrize("method", ["encode", "decode"])
+@pytest.mark.parametrize("error", [MemoryError("OOM"), RuntimeError("decode failed"), KeyboardInterrupt()])
+def test_tiled_failure_never_retries_a_larger_full_image(method, error):
+    vae = _Vae()
+
+    def fail(value):
+        raise error
+
+    setattr(vae, method + "_tiled", fail)
+    with pytest.raises(type(error)) as caught:
+        getattr(performance.ChunkedVAE(vae), method)("input")
+    assert caught.value is error
+    assert vae.calls == []
 
 
 def test_step_cache_is_on_by_default_for_long_runs_only(monkeypatch):

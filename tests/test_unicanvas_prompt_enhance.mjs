@@ -16,7 +16,7 @@ import {
   promptEnhanceSettingDefs,
   stripEnhanceSettings,
   uniqueByFamily,
-} from "../web/vnccs_unicanvas_prompt_enhance.mjs";
+} from "../web/unicanvas/prompt_enhance.mjs";
 
 const QI21 = { family: "qwen_image21", positive: "T2I:", edit: "EDIT:", negative: "NEG:" };
 const KREA = { family: "krea2_edit", positive: "", edit: "KREA:", negative: "" };

@@ -32,10 +32,6 @@ from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide, Refere
 from .qwen_image21_viggle import apply_viggle_turbo_lora, has_viggle_turbo, viggle_turbo_sigmas
 
 
-# Transparent-RGBA prompt convention from the official Qwen space (spec 9):
-# wrap the description and the model renders real transparency.
-QWEN_IMAGE21_RGBA_PROMPT_PREFIX = "This is an RGBA image with transparency."
-QWEN_IMAGE21_RGBA_PROMPT_SUFFIX = "The image has alpha channel and the background is transparent."
 
 # Official Qwen-Image-2.1 subject-extraction instruction (Comfy-Org workflow
 # template image_qwen_image_2_1_background_removal.json) used by
@@ -57,7 +53,7 @@ QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
     "generation_mode": "qwen_image21",
     "model_loader": "diffusion_model",
     "diffusion_model_name": "qwen_image_2.1_int8_convrot.safetensors",
-    "clip_name": "qwen3vl_8b_int8_convrot_bf16vision.safetensors",
+    "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
     "vae_name": "qwen_image_2.1_vae_bf16.safetensors",
     "clip_type": "qwen_image",
     "sampler": "euler",
@@ -70,7 +66,6 @@ QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
     "qwen21_turbo_enabled": True,
     "qwen_lora_name": "",  # filled below with the turbo LoRA name
     "qwen_lora_strength": 1.0,
-    "qwen21_opaque_output": False,
     "qwen21_outpaint_lora_name": "",  # filled below with the outpaint LoRA name
     "qwen21_outpaint_lora_strength": 1.0,
     "lora_stack": [],
@@ -82,7 +77,7 @@ QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
 QWEN21_TURBO_LORA_REPO_ID = "Viggle/Qwen-Image-2.1-viggle-turbo"
 QWEN21_TURBO_LORA_REVISION = "b77064be8b3f0b1a13c6a212067cb3d281c60c84"
 QWEN21_TURBO_LORA_FILENAME = "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors"
-QWEN21_TURBO_LORA_NAME = f"viggle/{QWEN21_TURBO_LORA_FILENAME}"
+QWEN21_TURBO_LORA_NAME = f"QI2/Viggle/{QWEN21_TURBO_LORA_FILENAME}"
 QWEN21_TURBO_STEPS = 6
 QWEN_IMAGE21_DEFAULTS["qwen_lora_name"] = QWEN21_TURBO_LORA_NAME
 
@@ -99,6 +94,13 @@ QWEN21_OUTPAINT_INSTRUCTION = (
     "keeping the existing picture unchanged."
 )
 QWEN_IMAGE21_DEFAULTS["qwen21_outpaint_lora_name"] = QWEN21_OUTPAINT_LORA_NAME
+
+QWEN21_POSE_LORA_REPO_ID = "MIUProject/VNCCS_PoseStudio_QI2.1"
+QWEN21_POSE_LORA_REVISION = "b0518fd047fa75d7dcd909d68390a7c1d337e5cd"
+QWEN21_POSE_LORA_FILENAME = "VNCCS_QI2_PoseStudioV1.1.safetensors"
+QWEN21_POSE_LORA_NAME = f"QI2.1/VNCCS/{QWEN21_POSE_LORA_FILENAME}"
+_QWEN21_POSE_LORA_LOCK = threading.Lock()
+_QWEN21_POSE_LORA_DOWNLOAD: dict[str, Any] = {"status": "missing", "progress": 0.0, "message": "Missing"}
 
 _QWEN21_TURBO_LORA_LOCK = threading.Lock()
 _QWEN21_TURBO_LORA_DOWNLOAD: dict[str, Any] = {"status": "missing", "progress": 0.0, "message": "Missing"}
@@ -117,7 +119,7 @@ def _resolve_hf_lora(repo_id: str, revision: str, filename: str, lora_name: str,
     import folder_paths
 
     def installed_name() -> str | None:
-        name = _resolve_model_filename(folder_paths, "loras", lora_name)
+        name = _resolve_model_filename(folder_paths, "loras", lora_name, allow_subfolder_fallback=True)
         path = _get_full_path_agnostic(folder_paths, "loras", name)
         return name if path and os.path.exists(path) else None
 
@@ -149,7 +151,7 @@ def _resolve_hf_lora(repo_id: str, revision: str, filename: str, lora_name: str,
 
 
 def resolve_qwen21_turbo_lora() -> str:
-    """Resolve (downloading when missing) the Viggle QI2.1 turbo LoRA into models/loras/viggle/."""
+    """Resolve (downloading when missing) the Viggle QI2.1 turbo LoRA into models/loras/QI2/Viggle/."""
     return _resolve_hf_lora(
         QWEN21_TURBO_LORA_REPO_ID, QWEN21_TURBO_LORA_REVISION, QWEN21_TURBO_LORA_FILENAME, QWEN21_TURBO_LORA_NAME,
         _QWEN21_TURBO_LORA_LOCK, _QWEN21_TURBO_LORA_DOWNLOAD, "Viggle QI2.1 turbo LoRA",
@@ -161,6 +163,14 @@ def resolve_qwen21_outpaint_lora() -> str:
     return _resolve_hf_lora(
         QWEN21_OUTPAINT_LORA_REPO_ID, QWEN21_OUTPAINT_LORA_REVISION, QWEN21_OUTPAINT_LORA_FILENAME,
         QWEN21_OUTPAINT_LORA_NAME, _QWEN21_OUTPAINT_LORA_LOCK, _QWEN21_OUTPAINT_LORA_DOWNLOAD, "QI2.1 outpaint LoRA",
+    )
+
+
+def resolve_qwen21_pose_lora() -> str:
+    """Reuse an installed Pose Studio LoRA or download the pinned public version."""
+    return _resolve_hf_lora(
+        QWEN21_POSE_LORA_REPO_ID, QWEN21_POSE_LORA_REVISION, QWEN21_POSE_LORA_FILENAME,
+        QWEN21_POSE_LORA_NAME, _QWEN21_POSE_LORA_LOCK, _QWEN21_POSE_LORA_DOWNLOAD, "QI2.1 Pose Studio LoRA",
     )
 
 
@@ -208,12 +218,13 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
     paste-back (no InpaintModelConditioning context). Reference editing wires
     the working area to <image1> and the Edit model references to <image2..5>
     in socket order, with the module assembling the QI2.1 <image N>
-    instruction. Output is RGBA with real transparency unless the
-    "opaque output" switch disables the RGBA prompting and flattens.
+    instruction. The decoded alpha channel is preserved without additional
+    transparency instructions or background flattening.
     """
 
     capabilities: ModelCapabilities = ModelCapabilities(
-        label="Qwen Image 2.1",
+        label="Qwen Edit 2.1",
+        supports_pose_edit=True,
         tasks=(
             STANDARD_TASKS["text_to_image"],
             *(STANDARD_TASKS[key].with_prompt_guide(QWEN_IMAGE21_EDIT_PROMPT_GUIDE) for key in ("image_to_image", "inpaint", "outpaint")),
@@ -229,8 +240,8 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
                 "quality boosters (masterpiece, 8K, highly detailed) and do not write aspect ratios or "
                 "resolution in the prompt - use the size controls. Layouts and posters need a longer, "
                 "observational paragraph.\n\n"
-                "Output is RGBA with real transparency by default: the module wraps your prompt in the "
-                "official RGBA sentences ('opaque output' turns that off). With reference images "
+                "The model supports RGBA output; UniCanvas preserves its alpha channel without adding "
+                "transparency instructions. Describe any desired background in your prompt. With reference images "
                 "connected, name them <image2>, <image3>, ... (the working area is <image1>); with no "
                 "references do not use tags. At CFG 1 (the default and the Viggle turbo) the negative "
                 "prompt has no effect."
@@ -253,6 +264,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         "_qwen21_prompts",
         "_qwen21_prompt",
         "_qwen21_negative_prompt",
+        "_qwen21_pose_edit",
     )
     lora_requirements: tuple[LoraRequirement, ...] = (
         LoraRequirement(
@@ -282,7 +294,22 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             resolve_match=QWEN21_OUTPAINT_LORA_NAME,
             description="Qwen-Image-2.1 outpaint LoRA (AusBoss v2, outpaint mode only, downloads on first use)",
         ),
+        LoraRequirement(
+            name_setting="qwen21_pose_lora_name",
+            default_name=QWEN21_POSE_LORA_NAME,
+            enabled_setting="_qwen21_pose_edit",
+            required=True,
+            fixed_strength=1.0,
+            clip_strength=0.0,
+            resolver=lambda: resolve_qwen21_pose_lora(),
+            resolve_match=QWEN21_POSE_LORA_NAME,
+            description="Qwen Edit 2.1 Pose Studio LoRA (pose layers only)",
+        ),
     )
+
+    def prepare_pose_edit(self, ctx) -> None:
+        super().prepare_pose_edit(ctx)
+        ctx.settings["_qwen21_pose_edit"] = True
 
     def on_masked_mode_dropped(self, ctx) -> None:
         # An empty outpaint mask turned the draw into img2img after the LoRAs were applied:
@@ -311,9 +338,6 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
     def uses_differential_diffusion(self, mode: str) -> bool:
         return False
 
-    def output_is_opaque(self, gen_settings: dict[str, Any] | None) -> bool:
-        return bool((gen_settings or {}).get("qwen21_opaque_output", False))
-
     def resolve_generation_size(self, width: int, height: int, gen_settings: dict[str, Any] | None) -> tuple[int, int]:
         # Size comes from the canvas box and the inference scale; no fixed aspect presets.
         return int(width), int(height)
@@ -324,11 +348,14 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         Slot 1 is the canvas working area; slots 2..5 are the Edit model
         reference images in socket order.
         """
+        pose_images = (gen_settings or {}).get("_pose_edit_images")
+        if pose_images:
+            return dict(enumerate(pose_images, start=1))
         return _reference_image_slots(image_tensor, gen_settings)
 
-    def assemble_instruction(self, prompt: str, slots, opaque_output: bool = False, outpaint: bool = False) -> str:
+    def assemble_instruction(self, prompt: str, slots, outpaint: bool = False, use_layers: bool = True) -> str:
         """Assemble the QI2.1 instruction: <image N> slot framing, the user
-        prompt, and (unless opaque output) the transparent-RGBA convention.
+        prompt, without adding transparency instructions.
 
         Outpaint uses the outpaint LoRA's trained instruction verbatim, with the
         user prompt as its optional "Scene:" description and no RGBA wrapping.
@@ -343,16 +370,14 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
                 parts.append(f"Scene: {body}")
             return " ".join(parts)
         parts = []
-        if 1 in slots:
+        if 1 in slots and use_layers:
             parts.append("Working area: <image1>.")
-        references = [f"<image{slot}>" for slot in sorted(slots) if slot != 1]
+        references = [f"<image{slot}>" for slot in sorted(slots) if slot != 1 or not use_layers]
         if references:
             parts.append(f"Reference images: {', '.join(references)}.")
         if body:
             parts.append(body)
         instruction = " ".join(parts)
-        if not opaque_output:
-            instruction = f"{QWEN_IMAGE21_RGBA_PROMPT_PREFIX} {instruction} {QWEN_IMAGE21_RGBA_PROMPT_SUFFIX}".strip()
         return instruction
 
     def create_empty_latent(self, width: int, height: int, gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
@@ -393,12 +418,15 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         if clip is None:
             raise RuntimeError("[VNCCS UniCanvas] Qwen-Image-2.1 requires a Qwen3-VL text encoder (CLIP).")
         slots = self.reference_image_slots(image_tensor, gen_settings)
-        if str(gen_settings.get("draw_mode") or "") == "txt2img":
+        use_layers = gen_settings.get("edit_use_layers_as_reference") is not False
+        if use_layers and str(gen_settings.get("draw_mode") or "") == "txt2img":
             # Pure text-to-image has no working area; references keep fixed slots.
             slots.pop(1, None)
-        opaque = self.output_is_opaque(gen_settings)
         outpaint = str(gen_settings.get("draw_mode") or "") == "outpaint"
-        instruction = self.assemble_instruction(gen_settings.get("_qwen21_prompt"), slots, opaque, outpaint=outpaint)
+        pose_edit = bool(gen_settings.get("_pose_edit_images"))
+        instruction = str(gen_settings.get("_qwen21_prompt") or "") if pose_edit else self.assemble_instruction(
+            gen_settings.get("_qwen21_prompt"), slots, outpaint=outpaint, use_layers=use_layers,
+        )
         negative_prompt = str(gen_settings.get("_qwen21_negative_prompt") or "")
         condition_images = {slot: self._prepare_qi21_condition_image(tensor) for slot, tensor in slots.items()}
         image_h, image_w = _qwen21_image_size(image_tensor)
@@ -412,28 +440,18 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             resolution=_qwen21_encoder_resolution(target_w, target_h),
             draw_id=draw_id,
         )
-        gen_settings["_qwen21_latent"] = self._qwen21_working_latent(vae, image_tensor, gen_settings, draw_id)
+        gen_settings["_qwen21_latent"] = None if pose_edit else self._qwen21_working_latent(vae, image_tensor, gen_settings, draw_id)
         _uc_log(
             draw_id,
             "Qwen-Image-2.1 conditioning prepared",
             {
                 "slots": sorted(slots),
-                "opaque_output": opaque,
                 "generation_size": [target_w, target_h],
                 "positive": _conditioning_debug(positive),
                 "negative": _conditioning_debug(negative),
             },
         )
         return positive, negative
-
-    def decode_samples(self, vae: Any, samples: Any, gen_settings: dict[str, Any]):
-        decoded = super().decode_samples(vae, samples, gen_settings)
-        if self.output_is_opaque(gen_settings) and torch.is_tensor(decoded) and int(decoded.shape[-1]) == 4:
-            # "opaque output" flattens the RGBA result onto white and drops alpha.
-            rgba = decoded.float()
-            alpha = rgba[..., 3:4].clamp(0.0, 1.0)
-            return (rgba[..., :3] * alpha + (1.0 - alpha)).clamp(0.0, 1.0)
-        return decoded
 
     def remove_background(self, image: torch.Tensor, settings: dict[str, Any] | None = None) -> torch.Tensor:
         """QI2.1 RGBA subject extraction over the pixels (spec 10.3).
@@ -484,8 +502,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         """Run the QI2.1 RGBA subject-extraction flow over the pixels.
 
         Uses the by-name QI2.1 stack (UNETLoader/CLIPLoader/VAELoader
-        semantics) with the official extraction instruction wrapped in the
-        transparent-RGBA prompt convention so the flow returns real alpha.
+        semantics) with the subject-extraction instruction; decoded alpha is preserved.
         """
         draw_id = "remove_background"
         # The public contract hands over (H,W,3) pixels; run the flow over the
@@ -507,7 +524,6 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
                 gen_settings["qwen_lora_strength"] = float(picked.get("strength", 1.0))
         gen_settings["draw_mode"] = "img2img"
         gen_settings["_draw_id"] = draw_id
-        gen_settings["qwen21_opaque_output"] = False
         try:
             model, clip, vae = _load_generation_assets(gen_settings)
         except Exception as exc:

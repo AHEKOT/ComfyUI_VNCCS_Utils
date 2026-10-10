@@ -157,6 +157,19 @@ def test_lora_resolution_normalizes_backslash_separators(monkeypatch):
     assert requested == ["subdir\\foo.safetensors", "subdir/foo.safetensors"]
 
 
+def test_lora_aliases_resolving_to_same_file_apply_once(monkeypatch, tmp_path):
+    import nodes.vncss_config as vc
+    file = tmp_path / "adapter.safetensors"
+    file.touch()
+    alias = tmp_path / "alias.safetensors"
+    alias.symlink_to(file)
+    monkeypatch.setattr(vc, "_resolve_lora_path", lambda name: str(alias if name == "alias" else file))
+    calls = []
+    monkeypatch.setattr(vc, "_apply_lora_cached", lambda m, c, name, *args: calls.append(name) or (m, c))
+    vc.apply_lora_stack("m", "c", vc.normalize_lora_stack([{"name": "adapter"}, {"name": "alias"}]))
+    assert calls == ["adapter"]
+
+
 def test_execute_returns_patched_model(monkeypatch):
     import nodes.vncss_config as vc
     monkeypatch.setattr(vc, "_apply_lora_cached",
@@ -187,6 +200,20 @@ def test_apply_lora_stack_forwards_clip_strength(monkeypatch):
         [{"name": "one", "strength": 0.5, "enabled": True, "clip_strength": 0.25}],
     )
     assert calls == [("one", 0.5, 0.25)]
+
+
+def test_config_applies_clip_only_lora_once_and_skips_fully_zero(monkeypatch):
+    import nodes.vncss_config as vc
+    calls = []
+    monkeypatch.setattr(vc, "_resolve_lora_path", lambda name: "/loras/" + name)
+    monkeypatch.setattr(vc, "_apply_lora_cached", lambda m, c, n, s, cs: (calls.append((n, s, cs)) or (m, c)))
+    vc.apply_lora_stack("model", "clip", vc.normalize_lora_stack([
+        {"name": "clip-only", "strength": 0, "clip_strength": 1},
+        {"name": "clip-only", "strength": 1},
+        {"name": "zero", "strength": 0, "clip_strength": 0},
+        {"name": "disabled", "strength": 0, "clip_strength": 1, "enabled": False},
+    ]))
+    assert calls == [("clip-only", 0, 1)]
 
 
 def test_execute_collects_reference_image_10():

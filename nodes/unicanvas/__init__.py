@@ -14,7 +14,7 @@ Package layout (lower layers never import higher ones):
 
 from __future__ import annotations
 
-# Re-exported for api/factory3d.py, which shares this lock through
+# Re-exported for nodes/factory3d/runtime.py, which shares this lock through
 # sys.modules["<package>.nodes.unicanvas"] so both editors serialise model work.
 from .locks import _COMFY_MODEL_OP_LOCK
 from .node import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS, VNCCS_UniCanvas

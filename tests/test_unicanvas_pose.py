@@ -15,7 +15,7 @@ def payload():
 
 class PoseEditContracts(unittest.TestCase):
     def test_reference_order_is_pose_then_background_and_character(self):
-        for model in ("qwen_image_edit", "flux_klein"):
+        for model in ("flux_klein", "qwen_image21"):
             images = UC.draw._prepare_pose_edit_images(payload(), model, (64, 64))
             self.assertEqual([i.getpixel((0, 0)) for i in images], [(200, 10, 20), (10, 100, 200)])
             self.assertTrue(all(i.mode == "RGB" for i in images))
@@ -29,33 +29,17 @@ class PoseEditContracts(unittest.TestCase):
         ]
         for item in invalid:
             with self.subTest(item=list(item)), self.assertRaises(ValueError):
-                UC.draw._prepare_pose_edit_images(item, "qwen_image_edit", (64, 64))
+                UC.draw._prepare_pose_edit_images(item, "flux_klein", (64, 64))
         with self.assertRaisesRegex(ValueError, "dimensions"):
             UC.draw._prepare_pose_edit_images(payload(), "flux_klein", (128, 64))
-        with self.assertRaisesRegex(ValueError, "Pose layers require Flux Klein or Qwen Edit"):
+        with self.assertRaisesRegex(ValueError, "Pose layers require Flux Klein"):
             UC.draw._prepare_pose_edit_images(payload(), "krea2_edit", (64, 64))
 
     def test_inference_always_has_solid_background_even_for_alpha_input(self):
         request = payload()
         request["pose_edit"]["image1"] = _data_url(Image.new("RGBA", (64, 64), (0, 0, 0, 0)))
-        images = UC.draw._prepare_pose_edit_images(request, "qwen_image_edit", (64, 64))
+        images = UC.draw._prepare_pose_edit_images(request, "flux_klein", (64, 64))
         self.assertEqual(images[0].getpixel((0, 0)), (255, 255, 255))
-
-    def test_qwen_pose_path_bypasses_mask_reference_rewriting(self):
-        module = UC.models.registry._get_unicanvas_model_module("qwen_image_edit")
-        settings = {"_pose_edit_images": ["pose", "character-on-background"],
-                    "draw_mode": "inpaint", "_qwen_edit_mask": "unused", "positive": "studio prompt"}
-        calls = []
-        def encode(_self, **kwargs):
-            calls.append(kwargs)
-            return ([], [], {"samples": "latent"})
-        with patch.object(type(module), "_encode_qwen_edit", encode), \
-             patch.object(UC.models.qwen_image_edit, "_conditioning_debug", return_value={}), \
-             patch.object(UC.models.qwen_image_edit, "_latent_debug", return_value={}):
-            module.prepare_reference_conditioning([], [], "vae", "ordinary-input", settings)
-        self.assertEqual(calls[0]["image_tensors"], ["pose", "character-on-background"])
-        self.assertEqual(calls[0]["image_tensor"], "pose")
-        self.assertEqual(calls[0]["prompt"], "studio prompt")
 
     def test_klein_reference_pipeline_appends_two_images_to_both_conditionings(self):
         module = UC.models.registry._get_unicanvas_model_module("flux_klein")

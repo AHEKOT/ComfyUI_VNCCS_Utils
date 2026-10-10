@@ -88,9 +88,16 @@ class EditContractTests(unittest.TestCase):
 
     def test_missing_edit_lora_keeps_card_uninstalled(self):
         preset = next(p for p in PRESETS._unicanvas_load_preset_registry()["presets"] if p["id"] == "krea2_edit")
-        with patch.object(PRESETS, "_unicanvas_load_preset_registry", return_value={"presets": [preset]}), \
-             patch.object(PRESETS.os.path, "exists", side_effect=lambda p: "identity_edit" not in p):
-            card = PRESETS._get_unicanvas_presets()["presets"][0]
+        with tempfile.TemporaryDirectory() as directory:
+            folders = types.SimpleNamespace(models_dir=directory, get_folder_paths=lambda _key: [],
+                                            get_filename_list=lambda _key: [], get_full_path=lambda _key, _name: None)
+            for asset in preset["assets"][:3]:
+                target = Path(directory).joinpath(*asset["local_path"].split("/")[1:])
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"installed")
+            with patch.dict(sys.modules, {"folder_paths": folders}), \
+                 patch.object(PRESETS, "_unicanvas_load_preset_registry", return_value={"presets": [preset]}):
+                card = PRESETS._get_unicanvas_presets()["presets"][0]
         self.assertFalse(card["installed"])
         self.assertEqual([a["installed"] for a in card["assets"]], [True, True, True, False])
 
@@ -125,11 +132,11 @@ class EditContractTests(unittest.TestCase):
             stack.enter_context(patch.object(PRESETS, "_PRESET_DOWNLOAD_QUEUE", queue))
             stack.enter_context(patch.object(PRESETS, "_PRESET_DOWNLOAD_STATUS", {}))
             stack.enter_context(patch.object(PRESETS, "_unicanvas_resolve_local_model_path", return_value=str(target)))
-            stack.enter_context(patch.object(PRESETS, "_unicanvas_temp_dir", return_value=str(root / "temp")))
+            stack.enter_context(patch.object(PRESETS, "_unicanvas_download_progress_class", return_value=object))
             with self.assertRaises(StopIteration):
                 PRESETS._unicanvas_download_worker_loop()
             hub.hf_hub_download.assert_called_once_with(repo_id=asset["hf_repo"], filename=asset["hf_path"],
-                                                       repo_type="model", revision=asset["hf_revision"], token=False)
+                                                       repo_type="model", revision=asset["hf_revision"], token=False, tqdm_class=object)
             self.assertEqual(target.read_bytes(), cached.read_bytes())
             self.assertEqual(PRESETS._PRESET_DOWNLOAD_STATUS["test:edit"]["status"], "success")
             queue.task_done.assert_called_once()
@@ -182,7 +189,7 @@ class EditContractTests(unittest.TestCase):
         self.assertNotIn("_krea2_edit_image_b", settings)
 
     def test_lora_default_is_found_in_any_subfolder(self):
-        from nodes.unicanvas import loras
+        loras = UC.loras
 
         class _FolderPaths:
             @staticmethod
@@ -198,7 +205,10 @@ class EditContractTests(unittest.TestCase):
                 return __file__ if name.replace("/", "\\") == r"krea\krea2_identity_edit_v1_2.safetensors" else None
 
         with patch.dict(sys.modules, {"folder_paths": _FolderPaths()}):
-            self.assertEqual(loras._get_lora_full_path("Krea2/krea2_identity_edit_v1_2.safetensors"), __file__)
+            name, _ = MODULE.lora_requirements[0].resolve({})
+            self.assertEqual(loras._get_lora_full_path(name), __file__)
+            with self.assertRaisesRegex(ValueError, "LoRA not found"):
+                loras._get_lora_full_path("custom/krea2_identity_edit_v1_2.safetensors")
 
     def test_empty_latent_uses_sd3_channels_and_batch_contract(self):
         expected = {"samples": object()}

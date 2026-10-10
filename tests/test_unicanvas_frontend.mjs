@@ -1,9 +1,59 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 
 
 const source = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+
+test("inpaint defaults to the full bbox and crop settings describe the edit-model boundary", () => {
+    const defaults = source.slice(source.indexOf("function makeDefaultUniCanvasSettings() {"), source.indexOf("const MODEL_SELECTION_SETTINGS"));
+    const settings = runInNewContext(`${defaults}; makeDefaultUniCanvasSettings()`, {
+        UNICANVAS_MODEL_MODULES: { sdxl:{ defaults:{} }, anima:{ defaults:{} } }, DEFAULT_SEED_MODE:"randomize",
+    });
+    assert.equal(settings.inpaint_crop_to_mask, false);
+    assert.match(source, /checkboxRow\("Crop and stitch \(non-edit models only\)", s\.inpaint_crop_to_mask === true/);
+    assert.ok(source.includes("Edit models always generate the whole bbox and apply only the mask."));
+});
+
+test("scheduler survives pending assets and repairs blank or unavailable restored selections", () => {
+    class Select {
+        dataset = { setting:"scheduler" };
+        options = [];
+        set value(value) { this.selected = this.options.find(option => option.value === String(value))?.value || ""; }
+        get value() { return this.selected || ""; }
+    }
+    const method = source.slice(source.indexOf("  syncPromptControls() {"), source.indexOf("  // The \"?\" guide opens"));
+    const prototype = runInNewContext(`(class { ${method} }).prototype`, {
+        HTMLSelectElement:Select, HTMLInputElement:class {}, NUMERIC_SETTINGS:new Set(),
+    });
+    for (const standalone of [true, false]) {
+        const select = new Select();
+        const widget = Object.create(prototype);
+        Object.assign(widget, { standalone, settings:{ scheduler:"normal" },
+            normalizeGenerationSettings:() => ({ loader:{ key:"diffusion_model" } }),
+            container:{ querySelector:() => null, querySelectorAll:selector => selector === "[data-setting]" ? [select] : [] },
+        });
+        for (const name of ["syncInferenceControls", "syncDenoiseControls", "syncSeedModeControl", "renderModelSelectionControls",
+            "renderLoraStackControls", "syncPromptGuide", "autoResizePromptTextareas"]) widget[name] = () => {};
+        widget.syncPromptControls();
+        assert.equal(widget.settings.scheduler, "normal", "pending assets must preserve the saved value");
+        select.options = ["normal", "simple", "beta"].map(value => ({ value }));
+        widget.syncPromptControls();
+        assert.equal(select.value, "normal", "the saved value appears when assets arrive");
+        for (const saved of ["", "removed_scheduler", "simple", "beta"]) {
+            widget.settings.scheduler = saved;
+            widget.syncPromptControls();
+            const expected = ["simple", "beta"].includes(saved) ? saved : "simple";
+            assert.equal(widget.settings.scheduler, expected);
+            assert.equal(select.value, expected);
+        }
+        select.options = [{ value:"normal" }];
+        widget.settings.scheduler = "";
+        widget.syncPromptControls();
+        assert.equal(select.value, "normal", "use an available scheduler when simple is absent");
+    }
+});
 
 
 test("imported UniCanvas images immediately refresh the layer list", () => {
@@ -43,12 +93,12 @@ test("the settings gear sits next to the snap-to-grid icon", () => {
 
 test("remove bg offers edit model / birefnet / rembg / sam 3 with BiRefNet default", async () => {
     assert.ok(source.includes('remove_bg_model: "birefnet"'), "BiRefNet must be the default backend");
-    const removeBg = await readFile(new URL("../web/vnccs_unicanvas_remove_bg.mjs", import.meta.url), "utf8");
+    const removeBg = await readFile(new URL("../web/unicanvas/remove_bg.mjs", import.meta.url), "utf8");
     assert.ok(source.includes("buildRemoveBgSettings(s, {"), "the settings popover builds the remove bg rows from the module");
     for (const marker of ['["edit", "Edit model"]', '["birefnet", "BiRefNet"]', '["rembg", "rembg"]', '["sam3", "SAM 3']) {
         assert.ok(removeBg.includes(marker), "missing remove bg backend option: " + marker);
     }
-    assert.ok(removeBg.includes('["qwen_image21", "Qwen Image 2.1"]'), "the edit-model backend needs the QI2.1 choice");
+    assert.ok(removeBg.includes('["qwen_image21", "Qwen Edit 2.1"]'), "the edit-model backend needs the QI2.1 choice");
     assert.ok(!removeBg.includes('"minimax_h3"'), "MiniMax H3 decodes RGB only: it is not a remove bg edit model");
     assert.ok(removeBg.includes("REMOVE_BG_DEFAULT_PROMPT"), "the universal remove bg prompt is editable");
     for (const key of ["model_loader", "gguf_arch", "clip_name", "vae_name", "steps", "cfg", "sampler_name", "scheduler", "lora_name", "prompt"]) {
@@ -58,10 +108,10 @@ test("remove bg offers edit model / birefnet / rembg / sam 3 with BiRefNet defau
     assert.ok(!removeBg.includes('"lora_strength"'), "the remove bg LoRA always runs at strength 1");
 });
 
-test("edit model reference images upload next to Steps with per-family slot markers", () => {
+test("edit model reference images upload with per-family slot markers", () => {
     assert.ok(source.includes('data-action="edit-refs"'), "the cards icon button must exist");
     assert.ok(source.includes("data-edit-refs-badge"), "the icon must carry a count badge");
-    assert.ok(source.includes("referenceSlotName(this.modelDescriptors, this.settings.generation_mode, index + 2)"), "uploaded images are marked with the active family's slot 2.. name");
+    assert.ok(source.includes("referenceSlotName(this.modelDescriptors, this.settings.generation_mode, index + (layersFirst ? 2 : 1))"), "uploaded image slots follow the canvas reference toggle");
     assert.ok(source.includes("edit_reference_images"), "the uploads must persist in the widget settings");
     assert.match(source, /openEditReferenceImages\(\)/, "the popover entry point must exist");
 });
@@ -193,7 +243,7 @@ test("preset dropdown: compact header card, one-line menu rows, chevron drawn wi
 
 test("a linked VNCSS Config hides model, family, turbo and LoRA controls and drives the family", () => {
     assert.match(source, /\.vnccs-uc-config-linked \[data-mode-control\][^}]*display:none !important/, "Mode is hidden");
-    for (const part of [".vnccs-uc-model-tabs", ".vnccs-uc-turbo-section", ".vnccs-uc-lora-stack", ".vnccs-uc-refs-btn", ".vnccs-uc-qwen21-panel"]) {
+    for (const part of [".vnccs-uc-model-tabs", ".vnccs-uc-turbo-section", ".vnccs-uc-lora-stack", ".vnccs-uc-refs-btn"]) {
         assert.ok(source.includes(`.vnccs-uc-config-linked ${part}`), `${part} must be hidden while linked`);
     }
     assert.ok(source.includes('panel.style.display = configLinked ? (panelMode === "custom" ? "" : "none")'), "only the cut-down Custom panel (inference scale) stays");
@@ -201,7 +251,10 @@ test("a linked VNCSS Config hides model, family, turbo and LoRA controls and dri
     const family = source.slice(source.indexOf("  syncConfigFamily() {"), source.indexOf("  syncConfigOverride() {"));
     assert.ok(family.includes("resolveConfigDrawSettings(") && family.includes("detectModuleForModelName("), "the family follows the config's model file");
     assert.ok(family.includes("forcedMode"), "a checkpoint config stays SDXL");
-    assert.match(source, /this\.syncConfigFamily\(\);\s*try \{\s*const refs = await loadConfigReferences/, "GENERATE re-detects the family before drawing");
+    const capture = source.slice(source.indexOf("  captureGenerationSettings() {"), source.indexOf("  async draw() {"));
+    assert.match(capture, /this\.syncConfigFamily\(\)/, "GENERATE captures the config family before asynchronous preparation");
+    assert.match(source, /const request = this\.captureGenerationSettings\(\);\s*await this\.stateUploadPromise/, "the request settings are captured before awaiting saves");
+    assert.match(source, /this\.drawInProgress = true;\s*this\.drawBtn\.disabled = true;\s*try \{\s*const refs = await loadConfigReferences/, "GENERATE locks the button before loading references");
 });
 
 test("family detection reads the file name only, prefers the most specific pattern and keeps the loader", async () => {
@@ -210,7 +263,7 @@ test("family detection reads the file name only, prefers the most specific patte
     const method = source.slice(source.indexOf("  detectModuleForModelName(name) {"), source.indexOf("  // A linked config decides the model"));
     const detect = runInNewContext(`${matcher}
         const UNICANVAS_MODEL_MODULES = {
-            qwen_image_edit: { key: "qwen_image_edit", detect: ["qwen-image-edit", "qwen"] },
+            generic: { key: "generic", detect: ["qwen"] },
             qwen_image21: { key: "qwen_image21", detect: ["qwen-image-2.1", "qwen_image_2.1"] },
             sdxl: { key: "sdxl", detect: ["sdxl", "xl"] },
         };
@@ -218,7 +271,7 @@ test("family detection reads the file name only, prefers the most specific patte
         (name) => holder.detect(name)?.key ?? null;`);
     assert.equal(detect("qwen\Qwen-Image-2.1-int8.safetensors"), "qwen_image21", "a qwen/ folder must not select the edit family");
     assert.equal(detect("qwen_image_2.1_int8.safetensors"), "qwen_image21");
-    assert.equal(detect("qwen/qwen-image-edit-2511.safetensors"), "qwen_image_edit");
+    assert.equal(detect("qwen/qwen-image-edit-2511.safetensors"), "generic");
     assert.equal(detect("sdxl\\model.safetensors"), null, "the folder alone never picks a family");
     const auto = source.slice(source.indexOf("  autoDetectGenerationModeFromModel() {"), source.indexOf("  getModelBase() {"));
     assert.ok(auto.includes("if (modelLoader) this.settings.model_loader = modelLoader"), "picking a file never switches the loader");

@@ -8,8 +8,8 @@ interaction, E2E suite, Docker test platform, evidence policy) live in `AGENTS.m
 ## What this is
 
 A ComfyUI custom-node extension (VNCCS Utils): **UniCanvas** (in-node canvas editor with
-direct generation), **Pose Studio**, **3D Factory**, Model Manager/Selector, VNCSS Config,
-QWEN Detailer and helpers. Python backend runs inside ComfyUI; the frontend is plain ES
+direct generation), **Pose Studio**, **3D Factory**, VNCSS Config,
+BBox Extractor and helpers. Python backend runs inside ComfyUI; the frontend is plain ES
 modules in `web/` (no bundler, no build step). `.github/copilot-instructions.md` carries the
 same guidance for GitHub Copilot.
 
@@ -31,11 +31,19 @@ is described in `AGENTS.md`.
 - `__init__.py` - extension entry point: node mappings, `WEB_DIRECTORY`, Pose Studio and
   UniCanvas state-cache routes, calls `register_unicanvas_routes()`.
 - `nodes/` - node classes. `nodes/unicanvas/` is a package (below); `pose_studio.py`,
-  `factory3d*.py`, `vncss_config.py`, `vnccs_model_manager.py`, `vnccs_qwen_detailer.py`,
+  `factory3d/` (graph nodes and backend services), `vncss_config.py`, `vnccs_bbox_extractor.py`,
   and `anima_lllite_internal.py`.
-- `api/` - 3D Factory and Pose Studio backend services.
-- `web/` - frontend widgets. UniCanvas: `vnccs_unicanvas.js` (main widget, very large - add
-  feature code in a `vnccs_unicanvas_<feature>.mjs` module and only hook it from the widget).
+- `api/` - HTTP handlers and route registration for Factory, Pose Studio, and runtime caches.
+  Feature services live in `nodes/factory3d/`, `nodes/posestudio/`, and `nodes/unicanvas/`.
+  Shared configuration, progress, and runtime roots live in `nodes/shared/`.
+  Graph nodes import services directly; service modules never import `api/`.
+  See `docs/API_LAYOUT.md` for the complete ownership map and compatibility contract.
+- `web/` - five `vnccs_*.js` extension entry points in the root. Feature modules live in
+  `unicanvas/`, `pose_studio/`, `factory3d/`, `camera_control/`, and `config/`.
+  Common controls and assets live in `shared/`; third-party libraries live in `vendor/`.
+  Add UniCanvas feature code in `web/unicanvas/<feature>.mjs` and hook it from
+  `vnccs_unicanvas.js`. Pose Studio keeps its morph pack in `pose_studio/assets/`
+  and skin textures in `pose_studio/textures/`.
 - `config/unicanvas_presets.json` - model presets (pinned HF repo/path/revision).
 - `vnccs_sam3d/` - vendored SAM-3D / BiRefNet code.
 - `tests/` - `conftest.py` stubs `comfy`, `folder_paths`, `server` and points the bare
@@ -61,7 +69,7 @@ Layered; lower layers never import higher ones (keep it that way - no import cyc
 6. Entry points: `node` (`VNCCS_UniCanvas`), `routes` (all `/vnccs/unicanvas/*` endpoints)
 
 The package `__init__` re-exports only `VNCCS_UniCanvas`, `register_unicanvas_routes`, the
-node mappings and `_COMFY_MODEL_OP_LOCK` (shared with `api/factory3d.py` through
+node mappings and `_COMFY_MODEL_OP_LOCK` (shared with `nodes/factory3d/runtime.py` through
 `sys.modules`). Import everything else from the owning submodule.
 
 Draw flow: `draw._run_unicanvas_draw` -> `DrawRequest.from_payload` -> `family.validate_request`

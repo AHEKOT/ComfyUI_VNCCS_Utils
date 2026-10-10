@@ -61,6 +61,8 @@ class DrawRequest:
         external = payload.get("external")
         settings = _normalize_gen_settings(_request_settings(payload, external))
         settings.pop("_pose_edit_images", None)
+        settings.pop("_qwen21_pose_edit", None)
+        settings.pop("_edit_layers_reference", None)
         module = _get_unicanvas_model_module(settings.get("generation_mode"))
         task = _resolve_task(module, task_key, mode)
         if task_key:
@@ -184,6 +186,7 @@ def _request_settings(payload: dict[str, Any], external: Any) -> dict[str, Any]:
         gen_settings["lora_stack"] = []
         gen_settings["turbo_enabled"] = False
         gen_settings.pop("edit_reference_images", None)
+        gen_settings.pop("edit_use_layers_as_reference", None)
     # Widget-uploaded Edit model reference images (spec 9): the upload popover is
     # an alternative to the VNCSS Config reference inputs and occupies the same
     # numbered slots (reference_image_N -> <Picture N+1>).
@@ -197,8 +200,9 @@ def _request_settings(payload: dict[str, Any], external: Any) -> dict[str, Any]:
         if not isinstance(references, dict):
             references = {}
             external_block["references"] = references
-        uploads = [item for item in edit_refs if isinstance(item, str) and item][:MAX_UPLOADED_REFERENCES]
-        for index, value in enumerate(uploads):
+        for index, value in enumerate(edit_refs[:MAX_UPLOADED_REFERENCES]):
+            if not isinstance(value, str) or not value:
+                continue
             name = f"reference_image_{index + 1}"
             if references.get(name) is None:
                 references[name] = _pil_to_image_tensor(_decode_data_url(value, "RGB"))

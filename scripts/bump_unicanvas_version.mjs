@@ -10,14 +10,18 @@ import { fileURLToPath } from "node:url";
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "web");
 const entryPath = path.join(webDir, "vnccs_unicanvas.js");
 const versionMarker = /const VNCCS_UNICANVAS_VERSION = "([^"]*)";/;
-const relevant = (name) => /^vnccs_(unicanvas|custom_select|pose_studio)/.test(name) && /\.(js|mjs)$/.test(name);
+const relevant = (name) => /^(?:vnccs_(?:unicanvas|pose_studio|config)\.js$|(?:unicanvas|pose_studio|camera_control|config|shared|vendor\/three)\/)/.test(name)
+  && /\.(js|mjs)$/.test(name);
 
 async function newestMtime(dir) {
   let newest = 0;
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) continue;
-    if (!relevant(entry.name)) continue;
+    if (entry.isDirectory()) {
+      newest = Math.max(newest, await newestMtime(full));
+      continue;
+    }
+    if (!relevant(path.relative(webDir, full).split(path.sep).join("/"))) continue;
     const info = await stat(full);
     newest = Math.max(newest, info.mtimeMs);
   }
@@ -44,6 +48,6 @@ if (current === version) {
 let next = source.replace(versionMarker, `const VNCCS_UNICANVAS_VERSION = "${version}";`);
 // Keep the cache-busting query on every local module import in sync with the
 // version constant, so a bumped entry always pulls fresh modules.
-next = next.replace(/(from "\.\/vnccs_[^"?]+)\?v=\d+/g, `$1?v=${version}`);
+next = next.replace(/(from "\.\/[^"?]+)\?v=\d+/g, `$1?v=${version}`);
 await writeFile(entryPath, next, "utf8");
 console.log("Bumped VNCCS_UNICANVAS_VERSION:", current, "->", version, "(imports re-versioned)");

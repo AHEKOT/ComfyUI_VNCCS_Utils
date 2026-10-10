@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "blocks": [
+    {
+      "id": "bundled-hairstyles",
+      "name": "Hairstyles",
+      "text": "{~ponytail|twintails|side ponytail|twin braids|braid|drill hair|ahoge|sidelocks|blunt bangs|side swept bangs|hair bun|bangs|parted bangs|two side up|messy hair|floating hair|hair over one eye|streaked hair|gradient hair|two-tone hair|drills|high ponytail|low ponytail|loose ponytail|braided ponytail|bubble ponytail|short ponytail|long ponytail|high twintails|low twintails|short twintails|long twintails|uneven twintails|side braid|long braid|short braid|french braid|dutch braid|fishtail braid|crown braid|halo braid|waterfall braid|braided bangs|braided bun|rope braid|micro braids|box braids|cornrows|dreadlocks|single hair bun|double buns|low bun|high bun|messy bun|side bun|chignon|topknot|half-up hair|half-up bun|half-up ponytail|half-up twintails|bob cut|short bob|long bob|asymmetrical bob|angled bob|hime cut|pixie cut|bowl cut|buzz cut|undercut|sidecut|mohawk|mullet|shag haircut|wolf cut|layered hair|feathered hair|straight hair|wavy hair|curly hair|ringlets|tight curls|loose curls|afro|short hair|medium hair|long hair|very long hair|shoulder-length hair|waist-length hair|ankle-length hair|spiky hair|slicked-back hair|swept-back hair|wet hair|tousled hair|bedhead|fluffy hair|voluminous hair|curtain bangs|wispy bangs|short bangs|long bangs|asymmetrical bangs|arched bangs|choppy bangs|hair between eyes|hair covering both eyes|center-parted hair|side-parted hair|zigzag part|no bangs|flipped ends|inward-curled ends|outward-curled ends|hair tucked behind ear|one side tucked behind ear|loose strands|face-framing strands|flyaway hair}",
+      "color": "#edaf89",
+      "category": "Hair"
+    }
+  ]
+}

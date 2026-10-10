@@ -230,3 +230,10 @@ tests/e2e/evidence/
 /docs/UNICANVAS_REMOVE_BG_KEEP.md
 
 PoseLibrary
+.runtime_cache
+ModelLibrary
+/PromptLibrary/*
+!/PromptLibrary/defaults/
+/PromptLibrary/defaults/*
+!/PromptLibrary/defaults/*.json
+

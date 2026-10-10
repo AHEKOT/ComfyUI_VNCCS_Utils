@@ -1,8 +1,12 @@
 import base64
 import io
 import json
+import os
+import tempfile
 import types
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import numpy as np
 from PIL import Image
@@ -27,6 +31,124 @@ def _data_url(image):
 
 
 class UniCanvasRenderTests(unittest.TestCase):
+    def test_incomplete_cache_cannot_render_a_successful_blank_canvas(self):
+        state = {"version": 2, "storage": "server_cache", "state_id": "partial",
+                 "bbox": {"x": 0, "y": 0, "width": 1, "height": 1},
+                 "layers": [{"id": "image", "type": "raster", "cached": True,
+                             "crop": {"x": 0, "y": 0, "width": 1, "height": 1}}]}
+        for cached in ({"layers": []}, {"layers": [{"id": "image"}]}):
+            with self.subTest(cached=cached), mock.patch.object(UNICANVAS.state, "_read_unicanvas_state_cache", return_value=cached):
+                with self.assertRaisesRegex(ValueError, "pixels are missing"):
+                    UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+
+    def test_confirmed_empty_cached_layer_still_renders_transparent(self):
+        state = {"storage": "server_cache", "state_id": "empty",
+                 "bbox": {"x": 0, "y": 0, "width": 1, "height": 1},
+                 "layers": [{"id": "image", "type": "raster", "cached": True, "crop": None}]}
+        cached = {"layers": [{"id": "image", "type": "raster", "crop": None, "dataURL": None}]}
+        with mock.patch.object(UNICANVAS.state, "_read_unicanvas_state_cache", return_value=cached):
+            result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+        self.assertEqual(result.getpixel((0, 0)), (0, 0, 0, 0))
+
+    def test_large_flat_layer_exports_its_small_bbox_without_decoding_the_whole_layer(self):
+        pixels = _data_url(Image.new("RGBA", (6000, 4000), "red"))
+        state = {"version": 2, "state_id": "large-layer", "output_id": "large-layer_out",
+                 "bbox": {"x": 0, "y": 0, "width": 1024, "height": 1024},
+                 "layers": [{"id": "image", "type": "raster", "dataURL": pixels,
+                             "crop": {"x": 0, "y": 0, "width": 6000, "height": 4000}}]}
+        output = {"bbox": state["bbox"], "layers": [{"id": "output", "type": "raster",
+                  "crop": state["bbox"], "dataURL": _data_url(Image.new("RGBA", (1024, 1024), "red"))}]}
+        with mock.patch.object(UNICANVAS.render, "_read_unicanvas_state_cache", return_value=output) as read:
+            result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+        read.assert_called_once_with("large-layer_out")
+        self.assertEqual(result.size, (1024, 1024))
+        self.assertEqual(result.getpixel((0, 0)), (255, 0, 0, 255))
+
+    def test_uploaded_reference_gaps_keep_their_socket_numbers(self):
+        uploads = [None, "", "third", *([None] * 6), "tenth", "outside_limit"]
+        with (
+            mock.patch.object(UNICANVAS.draw_request, "_decode_data_url", side_effect=lambda value, mode: value),
+            mock.patch.object(UNICANVAS.draw_request, "_pil_to_image_tensor", side_effect=lambda value: value),
+        ):
+            settings = UNICANVAS.draw_request._request_settings({"settings": {"edit_reference_images": uploads}}, None)
+        self.assertEqual(settings["_external"]["references"], {"reference_image_3": "third", "reference_image_10": "tenth"})
+        self.assertEqual(UNICANVAS.models.base._reference_image_slots("canvas", settings), {1: "canvas", 4: "third", 11: "tenth"})
+
+    def test_cache_merge_preserves_workflow_geometry_and_hires_clear(self):
+        cached = {"layers": [{"id": "image", "crop": {"x": 0}, "dataURL": "pixels",
+                              "hiresRect": {"x": 0}, "hiresDataURL": "hires"}]}
+        live = {"layers": [{"id": "image", "cached": True, "crop": {"x": 5},
+                            "dataURL": None, "hiresRect": None, "hiresDataURL": None}]}
+        merged = UNICANVAS.state._merge_unicanvas_state_with_cache(live, cached)["layers"][0]
+        self.assertEqual(merged["crop"], {"x": 5})
+        self.assertEqual(merged["dataURL"], "pixels")
+        self.assertIsNone(merged["hiresRect"])
+        self.assertIsNone(merged["hiresDataURL"])
+        live["layers"][0].pop("hiresRect")
+        live["layers"][0].pop("crop")
+        fallback = UNICANVAS.state._merge_unicanvas_state_with_cache(live, cached)["layers"][0]
+        self.assertEqual(fallback["crop"], {"x": 0})
+        self.assertEqual(fallback["hiresRect"], {"x": 0})
+        self.assertEqual(fallback["hiresDataURL"], "hires")
+        cached["layers"][0].update(crop={"x": 0, "y": 0, "width": 1, "height": 1},
+            dataURL=_data_url(Image.new("RGBA", (1, 1), "red")), hiresRect=None, hiresDataURL=None)
+        live["layers"][0]["crop"] = {"x": 5, "y": 0, "width": 1, "height": 1}
+        live["layers"][0]["type"] = "raster"
+        live["bbox"] = {"x": 0, "y": 0, "width": 8, "height": 1}
+        image = UNICANVAS.render._render_unicanvas_state_to_rgba(
+            json.dumps(UNICANVAS.state._merge_unicanvas_state_with_cache(live, cached)))
+        self.assertEqual(image.getpixel((5, 0)), (255, 0, 0, 255))
+        self.assertEqual(image.getpixel((0, 0)), (0, 0, 0, 0))
+
+    def test_pixel_cache_changes_invalidate_comfy_output_without_metadata_changes(self):
+        with (
+            tempfile.TemporaryDirectory() as root,
+            mock.patch.object(UNICANVAS.state.cache, "_UNICANVAS_STATE_CACHE_DIR", root),
+            mock.patch.object(UNICANVAS.state.cache, "_UNICANVAS_LEGACY_STATE_CACHE_DIR", root),
+        ):
+            state = json.dumps({"storage": "server_cache", "state_id": "layers", "output_id": "output"})
+            node = UNICANVAS.VNCCS_UniCanvas
+            missing = node.IS_CHANGED(state)
+            fingerprints = []
+            for cache_id in ("layers", "output"):
+                path = Path(root) / f"{cache_id}.json"
+                path.write_text(json.dumps({"state": {"layers": [{"dataURL": "red"}]}}))
+                red = node.IS_CHANGED(state)
+                self.assertEqual(red, node.IS_CHANGED(state))
+                stamp = path.stat().st_mtime_ns
+                path.write_text(json.dumps({"state": {"layers": [{"dataURL": "tan"}]}}))
+                os.utime(path, ns=(stamp + 1_000_000, stamp + 1_000_000))
+                changed = node.IS_CHANGED(state)
+                self.assertNotEqual(red, changed)
+                fingerprints.extend((red, changed))
+            self.assertNotEqual(missing, fingerprints[0])
+            legacy = json.dumps({"state_id": "layers", "panorama": {"projection": "equirectangular"}})
+            legacy_missing = node.IS_CHANGED(legacy)
+            (Path(root) / "layers_out.json").write_text('{"state": {"layers": []}}')
+            self.assertNotEqual(legacy_missing, node.IS_CHANGED(legacy))
+            for path in Path(root).glob("*.json"):
+                path.unlink()
+            self.assertEqual(node.IS_CHANGED(state), missing)
+
+    def test_rendering_cached_pixels_preserves_comfy_output_fingerprint(self):
+        with (
+            tempfile.TemporaryDirectory() as root,
+            mock.patch.object(UNICANVAS.state.cache, "_UNICANVAS_STATE_CACHE_DIR", root),
+            mock.patch.object(UNICANVAS.state.cache, "_UNICANVAS_LEGACY_STATE_CACHE_DIR", root),
+        ):
+            cached = {"layers": [], "bbox": {"x": 0, "y": 0, "width": 64, "height": 64}}
+            for cache_id in ("layers", "output"):
+                path = Path(root) / f"{cache_id}.json"
+                path.write_text(json.dumps({"state": cached}))
+                os.utime(path, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+            for output_id in (None, "output"):
+                with self.subTest(output_id=output_id):
+                    state = json.dumps({"storage": "server_cache", "state_id": "layers", "output_id": output_id})
+                    before = UNICANVAS.VNCCS_UniCanvas.IS_CHANGED(state)
+                    result = UNICANVAS.render._render_unicanvas_state_to_rgba(state)
+                    self.assertEqual(result.size, (64, 64))
+                    self.assertEqual(UNICANVAS.VNCCS_UniCanvas.IS_CHANGED(state), before)
+
     def panorama_state(self):
         base = Image.new("RGBA", (8, 4), (20, 40, 60, 255))
         edit = Image.new("RGBA", (8, 4), (0, 0, 0, 0))

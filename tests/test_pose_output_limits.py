@@ -2,6 +2,9 @@ import importlib.util
 import contextlib
 import io
 import json
+import base64
+import tempfile
+import time
 import sys
 import types
 import unittest
@@ -43,6 +46,62 @@ POSE_STUDIO = _load_pose_studio_module()
 
 
 class PoseOutputLimitTests(unittest.TestCase):
+    def test_workflow_json_is_not_rewritten_as_dynamic_prompt_text(self):
+        settings = POSE_STUDIO.VNCCS_PoseStudio.INPUT_TYPES()["required"]["pose_data"][1]
+        self.assertIs(settings["dynamicPrompts"], False)
+
+    def test_capture_sequence_has_a_total_pixel_budget_and_cannot_drop_frames(self):
+        encoded = io.BytesIO()
+        Image.new("RGB", (2, 2)).save(encoded, format="PNG")
+        capture = base64.b64encode(encoded.getvalue()).decode("ascii")
+        with patch.object(POSE_STUDIO, "_CAPTURED_IMAGE_MAX_TOTAL_PIXELS", 7):
+            with self.assertRaisesRegex(ValueError, "Reduce resolution or frame count"):
+                POSE_STUDIO._decode_captured_images([capture, capture])
+        with self.assertRaisesRegex(ValueError, "non-empty strings"):
+            POSE_STUDIO._decode_captured_images([capture, None])
+
+    def test_sam_analysis_failure_does_not_reuse_existing_pose(self):
+        node = POSE_STUDIO.VNCCS_PoseStudio()
+        sam = types.SimpleNamespace(
+            process_image_to_pose_json=lambda _image: (_ for _ in ()).throw(ValueError("inference failed")),
+            progress=types.SimpleNamespace(start_task=lambda *_args: None,
+                task_context=lambda *_args: contextlib.nullcontext(), update=lambda *_args: None),
+        )
+        with patch.dict(sys.modules, {"server": types.SimpleNamespace(),
+            "vnccs_pose_limit_testpkg.vnccs_sam3d": sam}):
+            # The server is imported before inference, so provide its normal symbol.
+            sys.modules["server"].PromptServer = types.SimpleNamespace()
+            with self.assertRaisesRegex(RuntimeError, "inference failed"):
+                node._apply_pose_image_via_frontend([object()], "703")
+
+    def test_sync_reader_matches_sanitized_combined_node_id_and_token(self):
+        with tempfile.TemporaryDirectory() as root:
+            node_id, token = "node/" + "a" * 120, "token?"
+            file_id = POSE_STUDIO.re.sub(r"[^A-Za-z0-9_-]+", "_", f"{node_id}_{token}").strip("_")[:128]
+            payload = {"captured_images": ["new"]}
+            (Path(root) / f"vnccs_debug_{file_id}.json").write_text(json.dumps(payload))
+            with patch.dict(sys.modules, {"folder_paths": types.SimpleNamespace(get_temp_directory=lambda: root)}):
+                self.assertEqual(POSE_STUDIO.VNCCS_PoseStudio()._wait_for_frontend_sync(
+                    node_id, time.time(), timeout=0.2, sync_token=token), payload)
+
+    def test_live_sync_timeout_rejects_old_captures_and_allows_scene_readiness(self):
+        node = POSE_STUDIO.VNCCS_PoseStudio()
+        waits = []
+        node._wait_for_frontend_sync = lambda *_args, **kwargs: (waits.append(kwargs) or None)
+        server = types.SimpleNamespace(PromptServer=types.SimpleNamespace(
+            instance=types.SimpleNamespace(send_sync=lambda *_args: None)))
+        with patch.dict(sys.modules, {"server": server}):
+            with self.assertRaisesRegex(RuntimeError, "Live capture timed out"):
+                node.generate(json.dumps({"captured_images": ["old"]}), unique_id="42")
+        self.assertGreater(waits[0]["timeout"], 120)
+
+    def test_sparse_animation_export_preserves_imported_duration(self):
+        fps = POSE_STUDIO._animation_frame_rate({"animation": {"fps": 600 / 7200}})
+        self.assertAlmostEqual(600 / fps, 7200)
+        for raw, expected in ((0, 0.001), (500, 120), ("invalid", 12), (float("nan"), 12)):
+            with self.subTest(raw=raw):
+                self.assertEqual(POSE_STUDIO._animation_frame_rate({"animation": {"fps": raw}}), expected)
+
     def test_sam_sync_error_is_reported_without_claiming_proportions_were_applied(self):
         node = POSE_STUDIO.VNCCS_PoseStudio()
         failure = {"sync_error": "Pose Manager previews are still refreshing."}

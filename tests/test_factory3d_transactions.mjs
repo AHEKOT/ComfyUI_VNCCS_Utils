@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
+import vm from "node:vm";
 import { FactoryCommandHistory } from "../web/factory3d/editor_commands.mjs";
 import { FactoryPropertyGesture } from "../web/factory3d/core/property_gesture.mjs";
 import { LIGHT_NUMERIC_PROPERTIES, acceptNumericDraft, readLightProperty, writeLightProperty } from "../web/factory3d/core/property_descriptors.mjs";
 import { bindNumericPropertyInputs } from "../web/factory3d/ui/numeric_property_binding.mjs";
 import { enqueueFactorySceneSave } from "../web/factory3d/core/save_queue.mjs";
-import { normalizedLighting } from "../web/vnccs_3d_factory_viewer.js";
+import { normalizedLighting } from "../web/factory3d/viewer.js";
 import { migrateEditorState, normalizedWorkspace, fitWorkspaceDocks } from "../web/factory3d/core/editor_migrations.mjs";
 import { findFactoryCommands } from "../web/factory3d/ui/command_registry.mjs";
 import { factoryCameraQuaternion, factoryCameraEuler } from "../web/factory3d/core/camera_rotation.mjs";
@@ -205,6 +206,69 @@ test("Queued saves freeze scene ownership and nested values and recover after a 
     const recovered = enqueueFactorySceneSave(failed, "scene-c", {}, send);
     await assert.rejects(failed, /Offline/);
     assert.equal(await recovered, "scene-c");
+});
+
+test("editor saves advance queued revisions only from successful saves to the same scene", async () => {
+    const source = fs.readFileSync(new URL("../web/vnccs_3d_factory.js", import.meta.url), "utf8");
+    const start = source.indexOf("    async _saveSceneNow(");
+    const end = source.indexOf("\n    _scheduleScenePreview(", start);
+    assert.ok(start >= 0 && end > start);
+    const methods = vm.runInNewContext(`({ ${source.slice(start, end)} })`, {
+        enqueueFactorySceneSave, clearTimeout, ENDPOINTS: { scene: id => id },
+    });
+    const scene = { scene_id: "a", edit_revision: 3, name: "Scene" };
+    const sent = [];
+    const editor = Object.assign(methods, {
+        scene, sceneId: "a", els: { sceneName: { value: "Scene" } },
+        _scenePayload() { return { name: this.scene.name }; },
+        _scheduleStateSave() {}, _showError() {},
+        async _fetchJSON(id, options) {
+            const snapshot = JSON.parse(options.body);
+            sent.push([id, snapshot.edit_revision]);
+            return { scene_id: id, edit_revision: snapshot.edit_revision + 1 };
+        },
+    });
+    const first = editor._saveSceneNow(), second = editor._saveSceneNow();
+    await Promise.all([first, second]);
+    assert.deepEqual(sent, [["a", 3], ["a", 4]]);
+    editor.sceneId = "b";
+    editor.scene = { scene_id: "b", edit_revision: 1, name: "Other scene" };
+    await editor._saveSceneNow();
+    assert.deepEqual(sent[2], ["b", 1]);
+    editor._fetchJSON = async () => { throw new Error("Conflict"); };
+    await assert.rejects(editor._saveSceneNow(), /Conflict/);
+    editor._fetchJSON = async (id, options) => {
+        assert.equal(JSON.parse(options.body).edit_revision, 2, "a failed save must not advance the revision");
+        return { scene_id: id, edit_revision: 3 };
+    };
+    await editor._saveSceneNow();
+});
+
+test("workflow restore sends its saved revision and reads a revision for legacy snapshots", async () => {
+    const source = fs.readFileSync(new URL("../web/vnccs_3d_factory.js", import.meta.url), "utf8");
+    const start = source.indexOf("    async ensureScene(");
+    const end = source.indexOf("\n    async createScene(", start);
+    const methods = vm.runInNewContext(`({ ${source.slice(start, end)} })`, {
+        ENDPOINTS: { scene: id => id }, console: { warn() {} },
+    });
+    const sent = [];
+    const editor = Object.assign(methods, { sceneId: "a",
+        async _fetchJSON(id, options) {
+            sent.push(options ? JSON.parse(options.body) : "GET");
+            return { scene_id: id, edit_revision: 7 };
+        },
+        async _applyScene() {}, async loadScene() { sent.push("reload"); },
+    });
+    await editor.ensureScene({ objects: [], edit_revision: 4 });
+    assert.deepEqual(sent, [{ objects: [], edit_revision: 4 }]);
+    sent.length = 0;
+    const legacy = { objects: [] };
+    await editor.ensureScene(legacy);
+    assert.deepEqual(sent, ["GET", { objects: [], edit_revision: 7 }]);
+    assert.equal(legacy.edit_revision, undefined);
+    editor._fetchJSON = async () => { throw new Error("Conflict"); };
+    await editor.ensureScene({ objects: [], edit_revision: 4 });
+    assert.equal(sent.at(-1), "reload", "a stale workflow loads the newer host scene");
 });
 
 test("Shared numeric contract cases agree with accepted UI values and the viewer normalizer", () => {

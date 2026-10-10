@@ -1,17 +1,17 @@
 import fs from "node:fs/promises";
 import vm from "node:vm";
 import { gunzipSync } from "node:zlib";
-import * as THREE from "../../web/three.module.js";
-import { PoseViewerCore } from "../../web/vnccs_pose_studio_core.js";
-import * as characters from "../../web/vnccs_pose_characters.mjs";
-import * as animation from "../../web/vnccs_pose_animation.mjs";
-import { HAND_PRESETS } from "../../web/vnccs_hand_presets.js";
-import * as openpose from "../../web/vnccs_openpose_import.js";
-import { isLikelyVideoFile } from "../../web/vnccs_video_import.mjs";
-import { parseMorphPack, solveMorph, buildStaticModelData } from "../../web/vnccs_pose_morph_runtime.mjs";
+import * as THREE from "../../web/vendor/three/three.module.js";
+import { PoseViewerCore } from "../../web/pose_studio/core.js";
+import * as characters from "../../web/pose_studio/characters.mjs";
+import * as animation from "../../web/pose_studio/animation.mjs";
+import { HAND_PRESETS } from "../../web/pose_studio/hand_presets.js";
+import * as openpose from "../../web/pose_studio/imports/openpose.js";
+import { isLikelyVideoFile } from "../../web/pose_studio/imports/video.mjs";
+import { parseMorphPack, solveMorph, buildStaticModelData } from "../../web/pose_studio/morph_runtime.mjs";
 
 const source = await fs.readFile(new URL("../../web/vnccs_pose_studio.js", import.meta.url), "utf8");
-const raw = gunzipSync(await fs.readFile(new URL("../../web/assets/pose_studio_makehuman.v2.bin.gz", import.meta.url)));
+const raw = gunzipSync(await fs.readFile(new URL("../../web/pose_studio/assets/pose_studio_makehuman.v2.bin.gz", import.meta.url)));
 const pack = parseMorphPack(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
 const noop = () => {};
 export class Element {

@@ -30,8 +30,8 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "../web/vnccs_unicanvas_transform.mjs";
-import { pickRenderLodScale } from "../web/vnccs_unicanvas_render_lod.mjs";
+} from "../web/unicanvas/transform.mjs";
+import { pickRenderLodScale } from "../web/unicanvas/render_lod.mjs";
 
 const near = (actual, expected, eps = 1e-6) => assert.ok(Math.abs(actual - expected) <= eps, `${actual} != ${expected}`);
 const nearPoint = (p, q, eps = 1e-6) => { near(p.x, q.x, eps); near(p.y, q.y, eps); };
@@ -139,7 +139,7 @@ test("hit testing: handles, inside moves, just outside rotates, warp grabs mesh 
 
 test("the widget renders drafts through the transform module and keeps the original pixels", async () => {
   const source = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
-  assert.match(source, /from "\.\/vnccs_unicanvas_transform\.mjs/);
+  assert.match(source, /from "\.\/unicanvas\/transform\.mjs/);
   assert.match(source, /sampleTransformGrid\(draft,/);
   assert.doesNotMatch(source, /createTransformSourceFromDraft/, "gestures must not re-rasterize the draft");
 });

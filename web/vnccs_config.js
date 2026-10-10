@@ -1,14 +1,14 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { installCustomSelects } from "./vnccs_custom_select.mjs";
+import { installCustomSelects } from "./shared/custom_select.mjs";
 import {
   ensureConfigStyles,
   createCollapsibleSection,
   createStatusDot,
   createSliderNumber,
   createSwitch,
-} from "./vnccs_config_ui.mjs";
-import { referenceConventionHint, referenceSlotName } from "./vnccs_unicanvas_prompt_guide.mjs";
+} from "./config/ui.mjs";
+import { referenceConventionHint, referenceSlotName } from "./unicanvas/prompt_guide.mjs";
 
 // MiniMax H3 (<Picture N>) and Qwen-Image-2.1 (<image N>) accept up to 10
 // reference images beyond the working area. Inputs appear one at a time:

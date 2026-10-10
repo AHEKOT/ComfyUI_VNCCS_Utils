@@ -13,7 +13,7 @@ from ..comfy_bridge import _call_node_method
 from ..debug import _latent_debug, _tensor_debug, _uc_log
 from ..latents import _unwrap_latent_samples
 from ..loras import LoraRequirement
-from ..paths import _get_full_path_agnostic, _safe_get_folder_paths
+from ..paths import _get_full_path_agnostic, _resolve_model_filename, _safe_get_folder_paths
 from .base import UniCanvasModelModule
 from .capabilities import ModelCapabilities, PromptGuide
 
@@ -267,9 +267,12 @@ def _ensure_anima_lllite_model(lllite_name: str, draw_id: str = "unknown") -> st
             f"Expected {ANIMA_LLLITE_INPAINT_FILENAME} from {ANIMA_LLLITE_REPO_ID}."
         )
 
-    found = _get_full_path_agnostic(folder_paths, "controlnet", requested, require_exists=True)
+    installed = _resolve_model_filename(folder_paths, "controlnet", requested)
+    found = _get_full_path_agnostic(folder_paths, "controlnet", installed, require_exists=True)
     if found:
         return found
+    if "/" in requested:
+        raise ValueError(f"Anima LLLite model not found: {requested}")
     found = _get_full_path_agnostic(folder_paths, "controlnet", basename, require_exists=True)
     if found:
         return found

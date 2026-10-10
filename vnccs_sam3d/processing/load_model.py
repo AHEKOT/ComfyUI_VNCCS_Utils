@@ -8,6 +8,7 @@ from .. import progress
 # the user's ComfyUI install has configured as the models root, without
 # requiring a UI input that drifts per environment.
 MODEL_DIR = os.path.join(folder_paths.models_dir, "sam3dbody")
+MODEL_REVISION = "1f026b2cc9076fd460243dae553cff9b0dcd199d"
 DEVICE_OPTIONS = ["Auto", "CUDA", "CPU"]
 
 
@@ -74,6 +75,7 @@ class LoadSAM3DBodyModel:
                     try:
                         snapshot_download(
                             repo_id="jetjodh/sam-3d-body-dinov3",
+                            revision=MODEL_REVISION,
                             local_dir=model_path,
                             tqdm_class=progress.SnapshotDownloadTqdm,
                             token=False,
@@ -85,6 +87,7 @@ class LoadSAM3DBodyModel:
                         )
                         snapshot_download(
                             repo_id="jetjodh/sam-3d-body-dinov3",
+                            revision=MODEL_REVISION,
                             local_dir=model_path,
                             token=False,
                         )

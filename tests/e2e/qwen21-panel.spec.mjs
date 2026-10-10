@@ -1,10 +1,8 @@
 import { test, expect } from "@playwright/test";
 import { openUnicanvas } from "./helpers/app.mjs";
 
-// Qwen-Image-2.1 adds one "transparent output" switch (on by default) below Steps. The Turbo LoRA is
-// the shared "Turbo LoRA" card: on = 6 steps, off = the 25-step base preset profile,
-// both visible in the sidebar's Steps field. Help "?" tooltips render in a body-level
-// layer, so no sidebar scroll container can clip them.
+// Qwen-Image-2.1 keeps decoded alpha without a transparency switch.
+// Turbo LoRA uses the shared card and updates the visible Steps field immediately.
 
 async function chooseSetting(page, setting, value) {
   await page.evaluate(([key, next]) => {
@@ -23,15 +21,12 @@ async function selectFamily(page, mode) {
   await chooseSetting(page, "generation_mode", mode);
 }
 
-test("QI2.1 transparent-output switch; shared Turbo LoRA card 6/25 steps; tooltips are not clipped", async ({ page }) => {
+test("QI2.1 has no transparency switch; shared Turbo LoRA card uses 6/25 steps", async ({ page }) => {
   await openUnicanvas(page);
   const shell = page.locator(".vnccs-uc2-standalone-shell");
   await selectFamily(page, "qwen_image21");
 
-  const panel = shell.locator("[data-qwen21-panel]").first();
-  await expect(panel).toBeVisible({ timeout: 15_000 });
-  await expect(panel).toContainText("transparent output");
-  await expect(panel.locator("input[data-qwen21-setting]")).toBeChecked(); // on by default
+  await expect(shell.locator("[data-qwen21-panel]")).toHaveCount(0);
 
   // The Seed dice starts active: random draws out of the box, and a canvas saved
   // with the old "fixed" default adopts it too.
@@ -43,7 +38,7 @@ test("QI2.1 transparent-output switch; shared Turbo LoRA card 6/25 steps; toolti
   const turbo = shell.locator('[data-turbo-panel] [data-turbo-toggle="qwen_image21"]');
   await expect(turbo).toBeVisible();
   await expect(turbo).toHaveClass(/selected/);
-  const steps = shell.locator('[data-edit-steps-panel] input[data-setting="steps"]').first();
+  const steps = shell.locator('[data-generic-steps] input[data-setting="steps"]').first();
   await expect(steps).toHaveValue("6");
 
   // Turbo off -> the base 25-step schedule, immediately visible in the sidebar.
@@ -54,21 +49,4 @@ test("QI2.1 transparent-output switch; shared Turbo LoRA card 6/25 steps; toolti
   await expect(turbo).toHaveClass(/selected/);
   await expect(steps).toHaveValue("6");
 
-  // Help tooltips live in the body-level layer and stay inside the viewport.
-  await panel.locator(".vnccs-uc-help").first().hover();
-  const tip = page.locator("#vnccs-uc-help-tooltip");
-  await expect(tip).toBeVisible();
-  await expect(tip).toContainText("RGBA");
-  const box = await tip.boundingBox();
-  const viewport = page.viewportSize();
-  expect(box.x).toBeGreaterThanOrEqual(0);
-  expect(box.y).toBeGreaterThanOrEqual(0);
-  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
-  expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
-
-  // Tooltips in the Parameters panel use the same layer (the old CSS tooltip was
-  // clipped by the sidebar's scroll container).
-  await shell.locator('[data-edit-steps-help]').first().hover();
-  await expect(tip).toBeVisible();
-  await expect(tip).toContainText("Reference edit");
 });

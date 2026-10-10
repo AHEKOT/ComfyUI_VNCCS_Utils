@@ -24,6 +24,7 @@ _CAPTURED_IMAGE_MAX_COUNT = 600
 _CAPTURED_IMAGE_MAX_TOTAL_CHARS = 64 * 1024 * 1024
 _CAPTURED_IMAGE_MAX_BYTES = 32 * 1024 * 1024
 _CAPTURED_IMAGE_MAX_PIXELS = 4096 * 4096
+_CAPTURED_IMAGE_MAX_TOTAL_PIXELS = 64 * 1024 * 1024
 _POSE_OUTPUT_MAX_PIXELS = 4096 * 4096
 
 _CAMERA_AZIMUTH_PHRASES = (
@@ -118,11 +119,10 @@ def _decode_captured_images(captured_images):
 
     rendered_images = []
     total_chars = 0
+    total_pixels = 0
     for b64 in captured_images:
-        if not b64:
-            continue
-        if not isinstance(b64, str):
-            raise ValueError("captured_images entries must be strings")
+        if not isinstance(b64, str) or not b64:
+            raise ValueError("captured_images entries must be non-empty strings")
         total_chars += len(b64)
         if total_chars > _CAPTURED_IMAGE_MAX_TOTAL_CHARS:
             raise ValueError("captured_images payload is too large")
@@ -135,6 +135,9 @@ def _decode_captured_images(captured_images):
         img = Image.open(BytesIO(img_data))
         if img.width * img.height > _CAPTURED_IMAGE_MAX_PIXELS:
             raise ValueError("captured image dimensions are too large")
+        total_pixels += img.width * img.height
+        if total_pixels > _CAPTURED_IMAGE_MAX_TOTAL_PIXELS:
+            raise ValueError("Captured sequence is too large. Reduce resolution or frame count.")
         rendered_images.append(img.convert('RGB'))
     return rendered_images
 
@@ -147,7 +150,7 @@ def _animation_frame_rate(data):
         fps = 12.0
     if not math.isfinite(fps):
         fps = 12.0
-    return max(1.0, min(120.0, fps))
+    return max(0.001, min(120.0, fps))
 
 
 def _positive_int(value, name, default):
@@ -205,7 +208,7 @@ def _hydrate_cached_pose_animation(data):
     if not cache_id:
         return data
     try:
-        from .. import vnccs_get_pose_animation_cache
+        from .posestudio.caches import vnccs_get_pose_animation_cache
         entry = vnccs_get_pose_animation_cache(cache_id)
         animation = entry.get("animation") if isinstance(entry, dict) else None
         if isinstance(animation, dict):
@@ -245,7 +248,7 @@ class VNCCS_PoseStudio:
         return {
             "required": {
                 # ALL settings come from widget via pose_data
-                "pose_data": ("STRING", {"multiline": True, "default": "{}"}),
+                "pose_data": ("STRING", {"multiline": True, "default": "{}", "dynamicPrompts": False}),
             },
             "optional": {
                 "pose_image": ("IMAGE",),
@@ -306,7 +309,8 @@ class VNCCS_PoseStudio:
 
         temp_dir = folder_paths.get_temp_directory()
         token_suffix = f"_{sync_token}" if sync_token else ""
-        filepath = os.path.join(temp_dir, f"vnccs_debug_{unique_id}{token_suffix}.json")
+        file_id = re.sub(r"[^A-Za-z0-9_-]+", "_", f"{unique_id}{token_suffix}").strip("_")[:128]
+        filepath = os.path.join(temp_dir, f"vnccs_debug_{file_id}.json")
 
         while time.time() - start_time < timeout:
             if os.path.exists(filepath) and os.path.getmtime(filepath) > start_time - 1.0:
@@ -331,8 +335,10 @@ class VNCCS_PoseStudio:
         apply_mode="pose",
         image_size=None,
     ):
-        if pose_image is None or not unique_id:
+        if pose_image is None:
             return None
+        if not unique_id:
+            raise RuntimeError("Pose image analysis requires an active browser widget.")
 
         try:
             from server import PromptServer
@@ -349,8 +355,7 @@ class VNCCS_PoseStudio:
             except Exception:
                 pose_payload = None
             if not pose_payload:
-                print("[VNCCS Pose Studio] pose_image SAM import returned empty pose data.")
-                return None
+                raise RuntimeError("SAM import returned empty pose data.")
 
             sync_token = uuid.uuid4().hex
             start_time = time.time()
@@ -369,7 +374,7 @@ class VNCCS_PoseStudio:
                 start_time,
                 # Manager fitting can refresh every card and the widget allows
                 # up to 120 seconds for scene readiness. Leave upload headroom.
-                timeout=150.0 if apply_mode == "manager_proportions" else 20.0,
+                timeout=150.0,
                 sync_token=sync_token,
             )
             if synced:
@@ -380,10 +385,9 @@ class VNCCS_PoseStudio:
                 else:
                     print("[VNCCS Pose Studio] Applied pose_image SAM pose through frontend sync.")
                 return synced
-            print("[VNCCS Pose Studio] pose_image was analyzed, but frontend sync timed out. Using existing pose_data.")
+            raise RuntimeError("Pose image frontend sync timed out.")
         except Exception as e:
-            print(f"[VNCCS Pose Studio] pose_image SAM import failed: {e}")
-        return None
+            raise RuntimeError(f"Pose image SAM import failed: {e}") from e
     
     def generate(
         self,
@@ -446,17 +450,12 @@ class VNCCS_PoseStudio:
                         "camera_prompt": camera_prompt or "",
                         "sync_token": sync_token,
                     })
-                    sync_timeout = 5.0
+                    # Frontend scene readiness allows 120 seconds before capture.
+                    sync_timeout = 150.0
                     if export_settings.get("editor_mode", export_settings.get("content_mode")) == "animation":
                         animation = data.get("animation") if isinstance(data.get("animation"), dict) else {}
                         frame_count = max(1, int(animation.get("frameCount", animation.get("frame_count", 1)) or 1))
-                        sync_timeout = min(120.0, max(15.0, 5.0 + frame_count * 0.25))
-                    else:
-                        character_count = len(data.get("characters", [])) if isinstance(data.get("characters"), list) else 1
-                        if character_count > 1:
-                            # A freshly opened multi-character workflow may
-                            # still be materializing up to four independent rigs.
-                            sync_timeout = min(60.0, 10.0 + character_count * 10.0)
+                        sync_timeout = max(sync_timeout, 125.0 + frame_count * 0.25)
                     synced = self._wait_for_frontend_sync(
                         unique_id,
                         start_time,
@@ -468,8 +467,10 @@ class VNCCS_PoseStudio:
                             sync_error_message = str(synced["sync_error"])
                         else:
                             data = _hydrate_cached_pose_animation(synced)
+                    else:
+                        sync_error_message = "Live capture timed out; old captures cannot be used."
                 except Exception as e:
-                    print(f"[VNCCS Pose Studio] Sync error: {e}")
+                    sync_error_message = str(e)
                 if sync_error_message:
                     raise RuntimeError(f"Pose Studio frontend sync failed: {sync_error_message}")
             # ---------------------------------------------
@@ -482,7 +483,7 @@ class VNCCS_PoseStudio:
             capture_id = data.get("capture_id")
             if capture_id:
                 try:
-                    from .. import vnccs_get_capture_cache
+                    from .posestudio.caches import vnccs_get_capture_cache
                     cached = vnccs_get_capture_cache(capture_id)
                     if cached:
                         data["captured_images"] = cached.get("captured_images", [])

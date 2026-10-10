@@ -1,6 +1,6 @@
 import math
 import pytest
-import torch
+torch = pytest.importorskip("torch")
 
 from nodes.unicanvas.models.qwen_image21 import (
     QWEN_IMAGE21_DEFAULTS,
@@ -39,8 +39,7 @@ def test_defaults_follow_qi21_recipe():
     # ComfyUI core >= 0.37 loader semantics for the QI2.1 stack.
     assert defaults["model_loader"] == "diffusion_model"
     assert defaults["clip_type"] == "qwen_image"
-    # RGBA is the default output.
-    assert defaults["qwen21_opaque_output"] is False
+    assert "qwen21_opaque_output" not in defaults
 
 
 def test_generation_size_follows_the_canvas():
@@ -54,19 +53,20 @@ def test_create_empty_latent_uses_64_channel_16x_compression():
     assert tuple(latent["samples"].shape) == (1, 64, 48, 64)
 
 
-def test_rgba_default_prompt_convention():
+def test_reference_prompt_has_no_automatic_transparency_instructions():
     module = _get_unicanvas_model_module("qwen_image21")
     text = module.assemble_instruction("Keep the face from <image2>.", {1: object(), 2: object()})
-    assert text.startswith("This is an RGBA image with transparency.")
-    assert text.endswith("The image has alpha channel and the background is transparent.")
+    assert "RGBA" not in text
+    assert "transparent" not in text
+    assert "alpha channel" not in text
     assert "Working area: <image1>." in text
     assert "Reference images: <image2>." in text
     assert "Keep the face from <image2>." in text
 
 
-def test_opaque_output_switch_disables_rgba_prompting():
+def test_plain_prompt_has_no_automatic_transparency_instructions():
     module = _get_unicanvas_model_module("qwen_image21")
-    text = module.assemble_instruction("a cat", {1: object()}, opaque_output=True)
+    text = module.assemble_instruction("a cat", {1: object()})
     assert "RGBA" not in text
     assert "transparent" not in text
     assert text == "Working area: <image1>. a cat"
@@ -188,7 +188,7 @@ def test_decode_samples_keeps_alpha_by_default():
     assert torch.all(decoded[..., 3] == 0.5)
 
 
-def test_decode_samples_opaque_switch_flattens():
+def test_decode_samples_preserves_alpha_with_legacy_opaque_setting():
     module = _get_unicanvas_model_module("qwen_image21")
 
     class FakeVae:
@@ -199,8 +199,9 @@ def test_decode_samples_opaque_switch_flattens():
             return decoded
 
     decoded = module.decode_samples(FakeVae(), {"samples": torch.zeros(1, 64, 1, 1)}, {"qwen21_opaque_output": True})
-    assert tuple(decoded.shape) == (1, 8, 8, 3)
-    assert torch.allclose(decoded, torch.full((1, 8, 8, 3), 0.625))
+    assert tuple(decoded.shape) == (1, 8, 8, 4)
+    assert torch.all(decoded[..., :3] == 0.25)
+    assert torch.all(decoded[..., 3] == 0.5)
 
 
 def test_remove_background_contract(monkeypatch):
@@ -397,10 +398,17 @@ def test_turbo_model_samples_on_the_viggle_schedule(monkeypatch):
 # --- AusBoss outpaint LoRA -----------------------------------------------------------
 
 
-def test_outpaint_lora_applies_only_in_outpaint(monkeypatch):
+def test_outpaint_lora_applies_only_in_outpaint(monkeypatch, tmp_path):
+    import folder_paths
     from nodes.unicanvas.models import qwen_image21
 
     calls = []
+    installed = tmp_path / qwen_image21.QWEN21_OUTPAINT_LORA_NAME
+    installed.parent.mkdir(parents=True)
+    installed.touch()
+    monkeypatch.setattr(folder_paths, "get_full_path", lambda kind, name: str(tmp_path / name)
+                        if (tmp_path / name).is_file() else None)
+    monkeypatch.setattr(folder_paths, "get_filename_list", lambda kind: [qwen_image21.QWEN21_OUTPAINT_LORA_NAME])
     monkeypatch.setattr(qwen_image21, "resolve_qwen21_outpaint_lora", lambda: qwen_image21.QWEN21_OUTPAINT_LORA_NAME)
     monkeypatch.setattr("nodes.unicanvas.loras._apply_lora_cached", lambda m, c, name, strength, clip_strength=None: calls.append(name) or (m, c))
     module = _get_unicanvas_model_module("qwen_image21")
@@ -427,6 +435,74 @@ def test_outpaint_uses_gray_canvas_and_trained_instruction():
     source.putpixel((0, 0), (255, 0, 0, 255))
     padded = module.prepare_outpaint_reference_image(source, None, "t")
     assert padded.mode == "RGB" and padded.getpixel((3, 3)) == (128, 128, 128) and padded.getpixel((0, 0)) == (255, 0, 0)
-    text = module.assemble_instruction("a forest at dusk", {1: object()}, opaque_output=False, outpaint=True)
+    text = module.assemble_instruction("a forest at dusk", {1: object()}, outpaint=True)
     assert text == f"{QWEN21_OUTPAINT_INSTRUCTION} Scene: a forest at dusk"
     assert module.assemble_instruction("", {1: object()}, outpaint=True) == QWEN21_OUTPAINT_INSTRUCTION
+
+
+def test_pose_uses_the_same_two_images_and_unmodified_pose_studio_prompt(monkeypatch):
+    from types import SimpleNamespace
+    from nodes.unicanvas.models import qwen_image21
+
+    module = _get_unicanvas_model_module("qwen_image21")
+    assert module.capabilities.supports_pose_edit
+    settings = {"draw_mode": "img2img", "_qwen21_clip": "CLIP", "_qwen21_prompt": "Draw character from image2\nsoft lighting",
+                "_qwen21_negative_prompt": "blurry", "edit_use_layers_as_reference": False}
+    ctx = SimpleNamespace(settings=settings, denoise=0.4, mode="img2img", width=64, height=64, draw_id="pose")
+    module.prepare_pose_edit(ctx)
+    assert ctx.denoise == settings["denoise"] == 1.0
+    pose, character = torch.rand(1, 64, 64, 3), torch.rand(1, 64, 64, 3)
+    settings["_pose_edit_images"] = [pose, character]
+    settings["_external"] = {"references": {"reference_image_1": torch.zeros_like(pose)}}
+    calls = []
+    monkeypatch.setattr(qwen_image21, "_call_comfy_node", lambda name, **kwargs: calls.append((name, kwargs)) or ("POS", "NEG"))
+    positive, negative = module.prepare_reference_conditioning(None, None, object(), character, settings, "pose")
+    assert (positive, negative) == ("POS", "NEG")
+    name, encoded = calls[0]
+    assert name == "TextEncodeQwenImage21"
+    assert encoded["prompt"] == settings["_qwen21_prompt"]
+    assert encoded["negative_prompt"] == "blurry"
+    assert list(encoded["images"]) == ["image_1", "image_2"]
+    assert torch.equal(encoded["images"]["image_1"], pose)
+    assert torch.equal(encoded["images"]["image_2"], character)
+    assert settings["_qwen21_latent"] is None
+    latent = module.prepare_generation_latent(ctx)
+    assert latent["samples"].shape == (1, 64, 4, 4)
+    assert not torch.any(latent["samples"])
+    assert "_qwen21_pose_edit" in module.sampling_scratch_keys
+
+
+def test_pose_lora_is_model_only_automatic_and_deduplicated(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    import folder_paths
+    from nodes.unicanvas.models import qwen_image21
+
+    module = _get_unicanvas_model_module("qwen_image21")
+    installed = tmp_path / "custom" / qwen_image21.QWEN21_POSE_LORA_FILENAME
+    installed.parent.mkdir(); installed.touch()
+    relative = str(installed.relative_to(tmp_path))
+    monkeypatch.setattr(folder_paths, "get_full_path", lambda kind, name: str(tmp_path / name) if (tmp_path / name).is_file() else None)
+    monkeypatch.setattr(folder_paths, "get_filename_list", lambda kind: [relative])
+    resolver_calls, apply_calls = [], []
+    monkeypatch.setattr(qwen_image21, "resolve_qwen21_pose_lora", lambda: resolver_calls.append(True) or relative)
+    monkeypatch.setattr("nodes.unicanvas.loras._apply_lora_cached", lambda m, c, name, strength, clip_strength=None:
+                        apply_calls.append((name, strength, clip_strength)) or (m, c))
+    settings = {"qwen_lora_name": "", "draw_mode": "img2img"}
+    module.apply_loras("MODEL", "CLIP", settings)
+    assert resolver_calls == apply_calls == []
+    module.prepare_pose_edit(SimpleNamespace(settings=settings, denoise=0.4))
+    settings["lora_stack"] = [{"name": relative, "strength": 1.0}]
+    module.apply_loras("MODEL", "CLIP", settings)
+    assert resolver_calls == [True]
+    assert apply_calls == [(relative, 1.0, 0.0)]
+
+
+def test_restored_pose_scratch_cannot_enable_lora_in_an_ordinary_draw():
+    from nodes.unicanvas.draw_request import DrawRequest
+
+    request = DrawRequest.from_payload({"mode": "img2img", "settings": {
+        "generation_mode": "qwen_image21", "_qwen21_pose_edit": True,
+        "_pose_edit_images": ["stale pose", "stale character"],
+    }})
+    assert "_qwen21_pose_edit" not in request.settings
+    assert "_pose_edit_images" not in request.settings

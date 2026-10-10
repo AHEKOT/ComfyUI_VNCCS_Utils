@@ -15,7 +15,7 @@ from .color_match import _run_unicanvas_color_match
 from .constants import _MAX_UPLOAD_BYTES
 from .debug import debug_enabled, debug_event, set_unicanvas_debug
 from .describe_layers import _run_unicanvas_describe_layers
-from .draw import _run_unicanvas_draw
+from .draw import DrawCancelled, _run_unicanvas_draw, interrupt_draw
 from .enhance import _run_unicanvas_enhance_prompt, load_default_prompts
 from .models.qwen_image21 import (
     _QWEN21_TURBO_LORA_DOWNLOAD,
@@ -27,11 +27,12 @@ from .presets import (
     _PRESET_DOWNLOAD_STATUS,
     _enqueue_preset_download,
     _get_unicanvas_presets,
+    _get_unicanvas_dependencies,
+    _download_unicanvas_dependencies,
     _unicanvas_find_preset_asset,
     _unicanvas_load_preset_registry,
-    _unicanvas_resolve_local_model_path,
 )
-from .progress import _get_draw_progress, _get_draw_result, _set_draw_progress, interrupt_types, set_interrupt
+from .progress import _get_draw_progress, _get_draw_result, _set_draw_progress, interrupt_types
 from .remove_bg import _run_unicanvas_remove_bg
 from .save_output import _run_unicanvas_save_output
 from .user_prefs import load_model_memory, remember_model_choice
@@ -39,14 +40,13 @@ from .segment import _run_unicanvas_segment
 
 
 _DRAW_LOCK = asyncio.Lock()
-_DRAWS_RUNNING = 0  # UniCanvas draws inside the draw lock (Stop only acts on those)
 
 
 def _run_draw_cancellable(payload: dict[str, Any]) -> dict[str, Any]:
     """The draw in its worker thread; a Stop ends it as {"cancelled": true}, never as an exception."""
     try:
         return _run_unicanvas_draw(payload)
-    except interrupt_types():
+    except (DrawCancelled,) + interrupt_types():
         return {"cancelled": True}
 _UNICANVAS_LAYER_ROUTES_REGISTERED = False
 
@@ -135,6 +135,30 @@ def register_unicanvas_routes() -> None:
     async def vnccs_unicanvas_presets_status(_request):
         return web.json_response(dict(_PRESET_DOWNLOAD_STATUS))
 
+    @PromptServer.instance.routes.get("/vnccs/unicanvas/dependencies")
+    async def vnccs_unicanvas_dependencies(request):
+        try:
+            return web.json_response(_get_unicanvas_dependencies(
+                request.query.get("generation_mode", ""), request.query.get("preset_id", ""),
+                request.query.get("clip_name", ""), request.query.get("vae_name", "")))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    @PromptServer.instance.routes.post("/vnccs/unicanvas/dependencies/download")
+    async def vnccs_unicanvas_dependencies_download(request):
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Dependency download must be an object")
+            queued = _download_unicanvas_dependencies(payload)
+            return web.json_response({"queued": queued})
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
     @PromptServer.instance.routes.post("/vnccs/unicanvas/presets/download")
     async def vnccs_unicanvas_presets_download(request):
         try:
@@ -144,8 +168,7 @@ def register_unicanvas_routes() -> None:
             queued: list[str] = []
             if kind == "turbo":
                 download_key, asset = _unicanvas_find_preset_asset(preset_id, "turbo")
-                if not os.path.exists(_unicanvas_resolve_local_model_path(str(asset.get("local_path") or ""))):
-                    _enqueue_preset_download(download_key, asset)
+                _enqueue_preset_download(download_key, asset)
                 queued.append(download_key)
             else:
                 registry = _unicanvas_load_preset_registry()
@@ -160,8 +183,7 @@ def register_unicanvas_routes() -> None:
                     if not isinstance(asset, dict):
                         continue
                     download_key = f"{preset_id}:asset:{index}"
-                    if not os.path.exists(_unicanvas_resolve_local_model_path(str(asset.get("local_path") or ""))):
-                        _enqueue_preset_download(download_key, asset)
+                    _enqueue_preset_download(download_key, asset)
                     queued.append(download_key)
             return web.json_response({"status": "queued", "queued": queued})
         except Exception as exc:
@@ -174,13 +196,8 @@ def register_unicanvas_routes() -> None:
         payload: dict[str, Any] = {}
         try:
             payload = await request.json()
-            global _DRAWS_RUNNING
             async with _DRAW_LOCK:
-                _DRAWS_RUNNING += 1
-                try:
-                    result = await asyncio.to_thread(_run_draw_cancellable, payload)
-                finally:
-                    _DRAWS_RUNNING -= 1
+                result = await asyncio.to_thread(_run_draw_cancellable, payload)
             return web.json_response(result)
         except Exception as exc:
             import traceback
@@ -191,13 +208,19 @@ def register_unicanvas_routes() -> None:
             return web.json_response({"error": str(exc)}, status=500)
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/interrupt")
-    async def vnccs_unicanvas_interrupt(_request):
-        # Same flag as ComfyUI's own /interrupt, but only while a UniCanvas draw is running, so a late
-        # click cannot leave a stale flag behind for the next prompt.
-        running = _DRAWS_RUNNING > 0
-        if running:
-            set_interrupt(True)
-        return web.json_response({"interrupted": running})
+    async def vnccs_unicanvas_interrupt(request):
+        if not _content_length_ok(request, 64 * 1024):
+            return web.json_response({"error": "Interrupt payload is too large"}, status=413)
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Interrupt request must be an object")
+            draw_id = payload.get("draw_id")
+            if not isinstance(draw_id, str) or not draw_id or len(draw_id) > 256:
+                raise ValueError("draw_id must be a non-empty string of at most 256 characters")
+            return web.json_response({"interrupted": interrupt_draw(draw_id)})
+        except (ValueError, TypeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/segment")
     async def vnccs_unicanvas_segment(request):
@@ -223,7 +246,10 @@ def register_unicanvas_routes() -> None:
 
     @PromptServer.instance.routes.get("/vnccs/unicanvas/model_memory")
     async def vnccs_unicanvas_model_memory_get(_request):
-        return web.json_response(await asyncio.to_thread(load_model_memory))
+        try:
+            return web.json_response(await asyncio.to_thread(load_model_memory))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=500)
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/model_memory")
     async def vnccs_unicanvas_model_memory_set(request):

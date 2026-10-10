@@ -1,7 +1,5 @@
 # ComfyUI VNCCS Utils
 
-> **Current release: `0.6.9`**
-
 A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI_VNCCS) project for everyday ComfyUI workflows, including **VNCCS 3D Factory**, **VNCCS UniCanvas**, **VNCCS Pose Studio**, and supporting generation utilities.
 
 <table>
@@ -60,8 +58,8 @@ assets through the bundled SparkJS viewport.
   every saved scene camera.
 * **Gaussian Library**: Save individual objects or complete scenes with
   automatic 3D previews. `.vnccs3d` packages keep only canonical PLY assets,
-  then synchronize or publish manifest-driven model repositories on Hugging
-  Face through the Pose Studio repository workflow.
+  and can be saved and loaded locally. Public repository assets can be
+  downloaded; publishing repositories is currently disabled.
 * **Observable Jobs**: Background removal, image encoding, diffusion steps,
   Gaussian decoding, serialization, and scene insertion expose real progress,
   printed to the ComfyUI console and retained in a downloadable per-job log.
@@ -108,39 +106,14 @@ assets through the bundled SparkJS viewport.
 *   **Performance and diagnostics**: enable step caching for longer runs, use VAE chunking on lower-memory systems, and inspect request sizes and timings with debug mode.
 *   **PSD import/export**: *Import PSD* loads raster layers (name, visibility, opacity, blend mode, stacking order); anything UniCanvas cannot represent is skipped and reported. *Export Layers as PSD* writes the layer stack as a PSD file.
 
-### VNCSS Config
 
-`VNCSS Config` lets an existing ComfyUI model setup drive UniCanvas. Connect the node's `config` output to the `config` input of `VNCCS UniCanvas`.
 
-While it is linked, the config supplies the model, LoRA, and reference-image values; UniCanvas disables its duplicate controls while keeping **Mode** and the sampling settings editable. Unlinking restores the embedded controls unchanged.
 
-The config panel provides an ordered LoRA stack and an **Edit model** switch for reference-conditioned workflows, including MiniMax H3 region editing. Both settings are saved with the workflow.
-
-### Fullscreen mode
-
-The **Fullscreen** button at the top-right of the stage opens a distraction-free workspace with isolated keyboard input (text fields keep working), a **✕** exit button, and an optional "true fullscreen" toggle. The UniCanvas shortcuts work whenever the canvas has focus, in fullscreen or embedded mode:
-
-| Shortcut | Action |
-|---|---|
-| `B` / `V` / `E` / `M` / `L` / `S` | Brush / Move / Eraser / Mask brush / Lasso / Rectangle tools |
-| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
-| `[` / `]` | Shrink / grow the brush size |
-| `Tab` | Toggle panel visibility |
-| `Esc` | Exit fullscreen |
 
 ### Standalone Unicanvas mode
 
 The **Unicanvas** sidebar tab runs UniCanvas as a standalone image app — no node, no workflow. Entering it hides the ComfyUI chrome; leaving it restores everything. The engine picker offers the built-in presets plus custom models from disk; output actions replace the node's `image` socket (**Save to output** writes the flattened composite into ComfyUI's `output/` directory, **New** clears the canvas after confirmation). Work persists to `localStorage`, so it survives a page reload. Enable the tab with the `VNCCS.UniCanvas.StandaloneSidebar` ComfyUI setting.
 
-### Qwen-Image-2.1
-
-UniCanvas generates with **Qwen-Image-2.1** through the `QwenImage21` family tab:
-
-*   **Native 2K workflow**: built-in aspect presets and all standard draw modes are available for text-to-image, image-to-image, inpaint, and outpaint.
-*   **Transparent output by default**: generated layers keep real alpha; the **`opaque output`** switch is available when transparency is not wanted.
-*   **Reference editing**: with `VNCSS Config` and the `Edit model` switch, reference images are addressed predictably from the prompt and combined with the working area.
-*   **Viggle turbo**: an optional six-step mode for faster generation.
-*   **Edit-model background removal**: use the same family as a subject extractor and apply the result directly to the active layer.
 
 ## VNCCS Pose Studio
 
@@ -178,39 +151,6 @@ An interactive node with a visual widget for controlling camera position. It is 
 *   **Elevation Slider**: Pick elevation from -30° to 60°.
 *   **Trigger Word Toggle**: Enable or disable the `<sks>` trigger from the widget.
 *   **Random Range Toggle**: Randomize across the full 360° or restrict random views to the front ±45° while keeping elevation and distance random.
-
-### VNCCS QWEN Detailer
-**[Example Workflow](workflows/VNCCS_Utils%20QwenDetailer_ChangeEmotion.json)**
-
-A QWEN-Image-Edit2511 detailer for enhancing detected regions such as faces, hands, and objects with vision-guided instructions.
-
-*   **Smart Cropping**: Automatically squares crops and handles padding.
-*   **Vision-Guided Enhancement**: Uses QWEN-generated instructions or user prompts.
-*   **Drift Fix**: Helps keep the enhanced area aligned with the original composition.
-*   **Quality of Life Tools**: Includes color matching, Poisson blending, and upscaling options.
-*   **Inpainting Mode**: Supports mask-based editing and filling black areas.
-*   **QWEN Options**: Supports QWEN-Image-Edit2511-specific options such as `distortion_fix` and `qwen_2511` mode.
-
-### VNCCS Model Manager & Selector
-**[Example Workflow](workflows/VNCCS_Utils%20Model%20Loader%20ShowCase.json)**
-
-A system for managing and selecting LoRAs and checkpoints directly in ComfyUI, with support for Civitai and HuggingFace.
-
-#### VNCCS Model Manager
-The backend node that reads a HuggingFace-hosted `model_updater.json` and manages model downloads: point it at your repository, queue downloads in the background, and use API key authentication for restricted Civitai models.
-
-👉 **[Configuration Guide: How to create your own model repo](docs/MODEL_MANAGER_GUIDE.md)**
-
-#### VNCCS Model Selector
-The companion UI node for choosing models from the configured repository.
-
-*   **Visual Card UI**: Shows model name, version, status, and description.
-*   **Smart Search**: Opens a searchable modal model list.
-*   **Status Indicators**: Shows Installed, Update Available, Missing, and Downloading states.
-*   **One-Click Install/Update**: Install or update models directly from the selector.
-*   **Universal Connection**: Outputs a standard relative path string compatible with standard ComfyUI nodes.
-
-👉 **[Usage Guide: How to use Selector with Standard Loaders](docs/MODEL_SELECTOR_USAGE.md)**
 
 ### VNCCS BBox Extractor
 

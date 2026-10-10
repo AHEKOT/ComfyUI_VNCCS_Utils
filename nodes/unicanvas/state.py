@@ -3,31 +3,13 @@
 from __future__ import annotations
 
 import json
-import os
-import re
 from typing import Any
 
-from .paths import _unicanvas_runtime_temp_root, _unicanvas_state_cache_dir
-
-
-# The upload route (__init__.py) writes to the user directory; the temp directory is the pre-restart-safe location.
-_UNICANVAS_STATE_CACHE_DIR = _unicanvas_state_cache_dir()
-_UNICANVAS_LEGACY_STATE_CACHE_DIR = os.path.join(_unicanvas_runtime_temp_root(), "vnccs_unicanvas_state_cache")
-_SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
-
-
-def _safe_unicanvas_state_id(value: Any) -> str:
-    safe = _SAFE_ID_RE.sub("_", str(value or ""))[:96].strip("_")
-    return safe or "unicanvas"
+from . import cache
 
 
 def _read_unicanvas_state_cache(state_id: str) -> dict[str, Any] | None:
-    name = f"{_safe_unicanvas_state_id(state_id)}.json"
-    path = next((p for p in (os.path.join(directory, name) for directory in (_UNICANVAS_STATE_CACHE_DIR, _UNICANVAS_LEGACY_STATE_CACHE_DIR)) if os.path.exists(p)), None)
-    if path is None:
-        return None
-    with open(path, "r", encoding="utf-8") as handle:
-        entry = json.load(handle)
+    entry = cache._vnccs_read_unicanvas_state_cache_file(state_id)
     return entry.get("state") if isinstance(entry, dict) else None
 
 
@@ -51,8 +33,13 @@ def _merge_unicanvas_state_with_cache(state: dict[str, Any], cached: dict[str, A
         if isinstance(cached_layer, dict):
             layer = {**cached_layer, **live_layer}
             if live_layer.get("cached") and not live_layer.get("dataURL"):
-                for key in ("crop", "dataURL", "hiresRect", "hiresDataURL"):
-                    layer[key] = cached_layer.get(key)
+                layer["dataURL"] = cached_layer.get("dataURL")
+                layer["crop"] = live_layer.get("crop") or cached_layer.get("crop")
+                layer["hiresRect"] = live_layer.get("hiresRect", cached_layer.get("hiresRect"))
+                layer["hiresDataURL"] = live_layer.get("hiresDataURL") or (cached_layer.get("hiresDataURL") if layer["hiresRect"] else None)
+                if (live_layer.get("crop", False) is None and cached_layer.get("crop", False) is None
+                        and not cached_layer.get("cached") and not layer.get("dataURL") and not layer.get("hiresRect")):
+                    layer["cached"] = False
         else:
             layer = dict(live_layer)
         merged_layers.append(layer)
@@ -83,4 +70,11 @@ def _load_unicanvas_state(unicanvas_state: str) -> dict[str, Any]:
 
     if not isinstance(state.get("layers"), list):
         state["layers"] = []
+    if any(
+        (layer.get("cached") is not False and (layer.get("cached") or layer.get("crop"))
+         and not layer.get("dataURL") and not (layer.get("hiresRect") and layer.get("hiresDataURL")))
+        or (layer.get("hiresRect") and not layer.get("hiresDataURL"))
+        for layer in state["layers"] if isinstance(layer, dict)
+    ):
+        raise ValueError("UniCanvas saved layer pixels are missing; wait for state sync before queueing")
     return state

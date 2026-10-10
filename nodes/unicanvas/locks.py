@@ -1,6 +1,6 @@
 """Process-wide locks shared by every UniCanvas model operation.
 
-Factory 3D reuses ``_COMFY_MODEL_OP_LOCK`` (see ``api/factory3d.py``) so the two
+Factory 3D reuses ``_COMFY_MODEL_OP_LOCK`` (see ``nodes/factory3d/runtime.py``) so the two
 editors never move or release model weights under each other.
 """
 

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
 import test from "node:test";
+import vm from "node:vm";
 
 // All regexes avoid literal line breaks so the suite stays CRLF-tolerant on
 // Windows checkouts (see tests/test_unicanvas_frontend.mjs for the contrast).
-const modesSource = await readFile(new URL("../web/vnccs_unicanvas_modes.mjs", import.meta.url), "utf8");
+const modesSource = await readFile(new URL("../web/unicanvas/modes.mjs", import.meta.url), "utf8");
 const widgetSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 
 // Handler-region scoping: assertions run against the named region only, so they
@@ -69,8 +69,8 @@ test("UniCanvas shortcut map covers tools, history, brush size, panels and Esc",
 });
 
 test("open widget modals keep their Enter/Escape keyboard contract in fullscreen", () => {
-    assert.ok(modesSource.includes('const modalOwnsKey = (event) => isUniCanvasModalOpen(widget) && (event.key === "Enter" || event.key === "Escape")'),
-        "Enter/Escape must be deferred to the modal while one is open");
+    assert.ok(modesSource.includes('const modalOwnsKey = (event) => isUniCanvasModalOpen(widget) && (event.key === "Enter" || event.key === "Escape" || event.key === "Tab")'),
+        "Enter/Escape/Tab must be deferred to the modal while one is open");
     assert.ok(modesSource.includes(".vnccs-uc-modal-overlay"), "the modal overlay must be detected");
     const shortcuts = region(modesSource, "export function handleUniCanvasShortcut", "function installUniCanvasShortcuts");
     assert.ok(shortcuts.includes("isUniCanvasModalOpen(widget)"), "an open modal must keep the keyboard");
@@ -81,7 +81,7 @@ test("open widget modals keep their Enter/Escape keyboard contract in fullscreen
 test("Esc leaves the active tool before it leaves fullscreen", () => {
     const shortcuts = region(modesSource, "export function handleUniCanvasShortcut", "function installUniCanvasShortcuts");
     const toolExit = shortcuts.indexOf('key === "Escape" && widget.tool !== "move" && widget.tool !== "pan"');
-    const fullscreenExit = shortcuts.indexOf('key === "Escape" && widget._vnccsFullscreen');
+    const fullscreenExit = shortcuts.lastIndexOf('key === "Escape" && widget._vnccsFullscreen');
     const poseExit = shortcuts.indexOf('(key === "Escape" || key === "Enter") && widget.tool === "pose"');
     const draftExit = shortcuts.indexOf('(key === "Escape" || key === "Enter") && widget.transformDraft');
     assert.ok(toolExit >= 0, "the tool-exit Esc branch must exist");
@@ -111,20 +111,22 @@ test("standalone sidebar tab registers Unicanvas with a visible icon", () => {
     assert.ok(modesSource.includes("const extensionManager = app?.extensionManager;"), "extensionManager must be probed safely");
     assert.ok(/title:\s*"Unicanvas"/.test(modesSource), 'the tab must be labeled exactly "Unicanvas"');
     assert.ok(/tooltip:\s*"Unicanvas"/.test(modesSource), 'the tab tooltip must be "Unicanvas"');
-    assert.ok(/icon:\s*UNICANVAS_SIDEBAR_ICON_CLASS/.test(modesSource), "the tab must register an icon");
+    assert.ok(modesSource.includes('icon: `pi pi-images ${UNICANVAS_SIDEBAR_ICON_CLASS}`'), "the tab uses the native monochrome PrimeIcons image stack");
     assert.ok(modesSource.includes('const UNICANVAS_SIDEBAR_ICON_CLASS = "vnccs-unicanvas-sidebar-icon";'),
         "the icon class must be a stable marker");
-    assert.ok(modesSource.includes('new URL("./assets/unicanvas_icon.svg", import.meta.url).href'),
-        "the icon is the shipped UniCanvas SVG asset");
-    const icon = readFileSync(new URL("../web/assets/unicanvas_icon.svg", import.meta.url), "utf8");
-    assert.ok(icon.startsWith("<svg") && icon.includes('viewBox="0 0 32 32"') && icon.includes("stroke-dasharray"),
-        "a layer stack with a dashed selection marquee");
-    assert.ok(modesSource.includes('background: url("${UNICANVAS_SIDEBAR_ICON_SVG}") center / contain no-repeat'),
-        "the icon must render from CSS on the sidebar tab <i>");
+    assert.ok(!modesSource.includes("UNICANVAS_SIDEBAR_ICON_SVG"), "the tab must not paint a colored custom icon");
     assert.ok(modesSource.includes('type: "custom"'), "the tab renders a custom DOM container");
     assert.ok(/widget\.standalone = true/.test(modesSource), "the tab opens UniCanvasWidget with standalone: true");
     assert.ok(widgetSource.includes("syncUniCanvasStandaloneSidebarTab(UniCanvasWidget, readUniCanvasStandaloneSetting())"),
         "vnccs_unicanvas.js must register the sidebar tab from the stored setting");
+});
+
+test("only the standalone widget opts into the ComfyUI theme", () => {
+    const create = region(modesSource, "function createStandaloneWidget", "function findUniCanvasSidebarRail");
+    assert.ok(create.includes('widget.container.classList.add("vnccs-uc-standalone")'));
+    const fullscreen = region(modesSource, "export function enterUniCanvasFullscreen", "export function exitUniCanvasFullscreen");
+    assert.ok(!fullscreen.includes('classList.add("vnccs-uc-standalone")'), "node fullscreen must keep the node theme");
+    assert.ok(modesSource.includes("UNICANVAS_MODE_STYLES + STANDALONE_STYLES"));
 });
 
 test("standalone sidebar tab is a ComfyUI setting, on by default", () => {
@@ -142,32 +144,98 @@ test("standalone sidebar tab is a ComfyUI setting, on by default", () => {
 test("standalone state persists to the vnccs-unicanvas-standalone key", () => {
     assert.ok(modesSource.includes('const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";'),
         "localStorage key must be exactly vnccs-unicanvas-standalone");
-    assert.ok(modesSource.includes("window.localStorage?.setItem(UNICANVAS_STANDALONE_STORAGE_KEY"),
+    assert.ok(modesSource.includes("window[storage]?.setItem(UNICANVAS_STANDALONE_STORAGE_KEY"),
         "state must be written to that localStorage key");
-    assert.ok(modesSource.includes("window.localStorage?.getItem(UNICANVAS_STANDALONE_STORAGE_KEY"),
+    assert.ok(modesSource.includes("window[storage]?.getItem(UNICANVAS_STANDALONE_STORAGE_KEY"),
         "state must be restored from that localStorage key");
 });
 
-test("New canvas lives in the top bar, asks Are you sure? and clears layers and images", () => {
+test("standalone reload follows a saved conflict draft instead of the shared cache", () => {
+    const read = vm.runInNewContext(region(modesSource, "function readStandalonePersistedStateValue", "function createStandaloneWidget") + "\nreadStandalonePersistedStateValue", {
+        UNICANVAS_STANDALONE_STORAGE_KEY: "vnccs-unicanvas-standalone", console,
+        window: { localStorage: { getItem: () => JSON.stringify({ state: {
+            version: 2, storage: "server_cache", state_id: "vnccs_unicanvas_standalone_draft", layers: [],
+        } }) } },
+    });
+    assert.equal(JSON.parse(read()).state_id, "vnccs_unicanvas_standalone_draft");
+});
+
+test("another tab saving cannot redirect a conflict draft when its tab reloads", () => {
+    const shared = new Map(), session = new Map();
+    const storage = values => ({ getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) });
+    const environment = { console, UNICANVAS_STANDALONE_STORAGE_KEY: "vnccs-unicanvas-standalone",
+        window: { localStorage: storage(shared), sessionStorage: storage(session) } };
+    const methods = vm.runInNewContext(region(modesSource, "function writeStandaloneState", "const standalonePersistState")
+        + region(modesSource, "function readStandalonePersistedStateValue", "function createStandaloneWidget")
+        + "\n({ writeStandaloneState, readStandalonePersistedStateValue })", environment);
+    methods.writeStandaloneState({ getStateCacheId: () => "vnccs_unicanvas_standalone_draft" });
+    environment.window.sessionStorage = storage(new Map());
+    methods.writeStandaloneState({ getStateCacheId: () => "vnccs_unicanvas_standalone_tab" });
+    environment.window.sessionStorage = storage(session);
+    assert.equal(JSON.parse(methods.readStandalonePersistedStateValue()).state_id, "vnccs_unicanvas_standalone_draft");
+    environment.window.sessionStorage = storage(new Map());
+    assert.equal(JSON.parse(methods.readStandalonePersistedStateValue()).state_id, "vnccs_unicanvas_standalone_tab");
+});
+
+test("New canvas lives in the top bar and delegates to durable document creation", () => {
     const newDocument = region(modesSource, "export async function newUniCanvasDocument", "function installUniCanvasOutputActions");
-    assert.ok(newDocument.includes('"New canvas"'), 'the confirm modal must be titled "New canvas"');
-    assert.ok(newDocument.includes('"Are you sure?\\nConfirmation will delete <b>all layers</b> in canvas."'),
-        'the copy must warn that the confirmation deletes all layers');
-    assert.ok(newDocument.includes("confirmInWidget("), "the confirmation must use the widget modal");
-    assert.ok(newDocument.includes("widget.stagingItems = []"), "staged images must be cleared");
-    assert.ok(newDocument.includes("widget.layers = []"), "layers must be cleared");
-    assert.ok(newDocument.includes('widget.addLayer("raster", "Base Layer", false)'), "a fresh base layer must be created");
+    assert.ok(newDocument.includes("widget.createCanvasDocument()"));
+    assert.ok(!newDocument.includes("clearStateCache"));
     const outputActions = region(modesSource, "function installUniCanvasOutputActions", "export function installUniCanvasWidgetModes");
-    assert.ok(outputActions.includes('widget._button(\n    "New canvas", "vnccs-uc-btn vnccs-uc-new-canvas"')
-        || outputActions.includes('"New canvas", "vnccs-uc-btn vnccs-uc-new-canvas"'),
-        "New canvas must be a top-bar widget button with the centering class");
-    assert.ok(outputActions.includes("widget.settingsBar?.appendChild(newCanvasButton)"),
-        "New canvas must be appended to the top toolbar, not the left column");
+    assert.ok(!outputActions.includes("vnccs-uc-new-canvas"), "mode installation must not duplicate the document toolbar's New icon");
     assert.ok(!modesSource.includes("vnccs-uc2-output-actions"), "the old New row above GENERATE must be gone");
     assert.ok(!modesSource.includes("_vnccsOutputActions"), "no dead output-actions handle may remain");
     assert.ok(modesSource.includes('widget._button("Save to output", "vnccs-uc-btn"'), "Save to output must be a widget button");
-    assert.ok(widgetSource.includes(".vnccs-uc-bottom .vnccs-uc-new-canvas { position:absolute; left:50%; transform:translateX(-50%); }"),
-        "the top bar CSS must center the New canvas button between the clusters");
+    assert.match(widgetSource, /\.vnccs-uc-bottom \.vnccs-uc-canvas-actions \{ position:absolute; left:50%; transform:translateX\(-50%\);/,
+        "the manager must be centered between the toolbar clusters");
+    assert.match(widgetSource, /\.vnccs-uc-bottom \.vnccs-uc-new-canvas \{ position:absolute; left:calc\(100% \+ 6px\); \}/,
+        "the New icon must sit immediately to the right of the manager");
+});
+
+test("New canvas delegates once and cannot run while generation blocks editing", async () => {
+    const newDocument = vm.runInNewContext(region(modesSource, "export async function newUniCanvasDocument", "function installUniCanvasOutputActions")
+        .replace("export ", "") + "\nnewUniCanvasDocument");
+    let creates = 0;
+    const originalLayers = [{ id: "old" }];
+    const widget = { layers: originalLayers, createCanvasDocument: async () => { creates++; return true; } };
+    assert.equal(await newDocument(widget), true);
+    assert.equal(creates, 1);
+    assert.equal(widget.layers, originalLayers);
+    widget.editingBlocked = true;
+    assert.equal(await newDocument(widget), false);
+    widget.editingBlocked = false;
+    widget._disposed = true;
+    assert.equal(await newDocument(widget), false);
+    assert.equal(creates, 1);
+});
+
+test("cache deletion waits for queued uploads and resets upload deduplication", async () => {
+    const prototype = vm.runInNewContext(widgetSource.slice(widgetSource.indexOf("class UniCanvasWidget {"), widgetSource.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", {
+        clearTimeout() {}, Date,
+        window: { localStorage: { removeItem(key) { removed.push(key); } } },
+        fetch: async (_url, request) => {
+            payload = JSON.parse(request.body);
+            assert.equal(uploadFinished, true);
+            return { ok: true };
+        },
+    });
+    let finishUpload, payload, uploadFinished = false;
+    const removed = [];
+    const widget = Object.assign(Object.create(prototype), {
+        stateCacheId: "current", stateUploadRevision: Date.now() + 100, outputUploadRevision: Date.now() + 200,
+        lastUploadedStateJSON: "old", lastUploadedOutputJSON: "old output",
+        stateUploadPromise: new Promise(resolve => { finishUpload = () => { uploadFinished = true; resolve(); }; }),
+        node: { id: 1 },
+    });
+    const pending = widget.clearStateCache();
+    assert.equal(payload, undefined);
+    finishUpload();
+    await pending;
+    assert.equal(payload.state_id, "current");
+    assert.ok(payload.revision > Date.now());
+    assert.equal(widget.lastUploadedStateJSON, null);
+    assert.equal(widget.lastUploadedOutputJSON, null);
+    assert.equal(removed.length, 2);
 });
 
 test("confirmInWidget renders the message as pre-line HTML copy", () => {
@@ -222,8 +290,8 @@ test("fullscreen and standalone teardown run on disposal and tab destroy", () =>
     const teardown = region(modesSource, "  const teardown = () => {", "  registerSidebarTab.call(");
     assert.ok(teardown.includes("teardownUniCanvasWidgetModes(widget)"),
         "the tab destroy() must flush/clear the pending persistence timer");
-    assert.ok(modesSource.includes("localStateBackupDisabled") && modesSource.includes("1_500_000"),
-        "standalone persistence must mirror the local backup degradation");
+    assert.ok(modesSource.includes("uploadStatePayload.call(widget, state, keepalive)"),
+        "standalone persistence must use the durable server cache");
 });
 
 test("standalone mode hides ComfyUI chrome with explicit markers", () => {
@@ -233,7 +301,7 @@ test("standalone mode hides ComfyUI chrome with explicit markers", () => {
         "entering the tab must add the chrome-hiding class");
     assert.ok(modesSource.includes("document.body.classList.remove(UNICANVAS_STANDALONE_BODY_CLASS)"),
         "leaving the tab must restore the standard chrome");
-    for (const selector of ["#comfyui-body-top", ".comfyui-body-top", "#comfy-menu", "#comfyui-body-bottom"]) {
+    for (const selector of ["#comfyui-body-top", ".comfyui-body-top", "#comfy-menu"]) {
         assert.ok(modesSource.includes(selector), `chrome-hiding CSS must cover ${selector}`);
     }
     assert.ok(modesSource.includes("vnccs-uc2-standalone-shell"), "the standalone app surface must exist");
@@ -368,9 +436,12 @@ test("the ChangeTracker gate stops ComfyUI's own Ctrl+Z before it reloads the gr
         "the keydown handler must (re)install the gate before anything else runs");
 });
 
-test("ComfyUI dialogs and their scrim open above the standalone shell and fullscreen portal", () => {
+test("standalone shares native stacking; node fullscreen still lifts native dialogs", () => {
     const styles = region(modesSource, "const UNICANVAS_MODE_STYLES = `", "ensureUniCanvasModeStyles");
-    for (const marker of [".vnccs-uc2-standalone-shell", ".vnccs-uc2-fullscreen-portal"]) {
+    assert.match(styles, /standalone-shell \{[^}]*z-index: 1;/);
+    assert.ok(!styles.includes("body:has(.vnccs-uc2-standalone-shell)"), "standalone must not override native modal stacking");
+    assert.ok(!/comfyui-body-bottom[^}]*display: none/.test(styles), "native bottom dock must stay visible");
+    for (const marker of [".vnccs-uc2-fullscreen-portal"]) {
         assert.ok(styles.includes(`body:has(${marker}) .p-dialog-mask`),
             `PrimeVue dialog masks must lift above ${marker}`);
         assert.ok(styles.includes(`body:has(${marker}) [role="dialog"]`),
@@ -379,5 +450,5 @@ test("ComfyUI dialogs and their scrim open above the standalone shell and fullsc
             `legacy modals must lift above ${marker}`);
     }
     assert.ok(/z-index:\s*2147484000 !important/.test(styles),
-        "the lifted z-index must beat the shell (2147481000) and portal (2147482000) with !important");
+        "the lifted z-index must beat the node fullscreen portal with !important");
 });

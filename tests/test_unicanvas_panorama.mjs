@@ -1,11 +1,12 @@
-import { isImageLayer, serializePose, poseGenerationLayer, mergePoseCache } from "../web/vnccs_unicanvas_pose_state.mjs";
+import { compositeBlendModeToPsd } from "../web/unicanvas/layer_tools.mjs";
+import { isImageLayer, serializePose, poseGenerationLayer, mergePoseCache } from "../web/unicanvas/pose_state.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import { normalizePanorama, isPanoramaCandidate, viewToSphere, sphereToView, PanoramaDocument, trimPanoramaHistory, DEFAULT_PANORAMA_CAMERA } from "../web/vnccs_unicanvas_panorama.mjs";
-import { snapAxisAngles } from "../web/vnccs_unicanvas_panorama_orbit.mjs";
-import { normalizeTransformMode } from "../web/vnccs_unicanvas_transform.mjs";
+import { normalizePanorama, isPanoramaCandidate, viewToSphere, sphereToView, PanoramaDocument, trimPanoramaHistory, DEFAULT_PANORAMA_CAMERA } from "../web/unicanvas/panorama.mjs";
+import { snapAxisAngles } from "../web/unicanvas/panorama_orbit.mjs";
+import { normalizeTransformMode } from "../web/unicanvas/transform.mjs";
 
 const settings = (extra = {}) => normalizePanorama({ projection: "equirectangular", width: 4096, height: 2048, ...extra });
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-8, `${a} != ${b}`);
@@ -67,7 +68,7 @@ class Element {
 }
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const context = {
-  isImageLayer, serializePose, poseGenerationLayer, mergePoseCache,
+  compositeBlendModeToPsd, isImageLayer, serializePose, poseGenerationLayer, mergePoseCache,
   normalizePanorama, isPanoramaCandidate, PanoramaDocument, trimPanoramaHistory, normalizeTransformMode, snapAxisAngles, DEFAULT_PANORAMA_CAMERA,
   document: { createElement: () => new Element() },
   window: { setTimeout: () => 0 }, clearTimeout, URLSearchParams,
@@ -171,12 +172,32 @@ test("queue synchronization commits pixels before projecting and awaits successf
     syncToNode: () => order.push("metadata"), flushStateUpload: async () => { order.push("upload"); return true; },
     uploadOutputSnapshot: async () => { order.push("output"); return true; },
   });
-  await w.preparePanoramaForQueue(); assert.deepEqual(order, ["commit", "view", "metadata", "output", "upload"]);
+  await w.preparePanoramaForQueue(); assert.deepEqual(order, ["commit", "view", "upload", "metadata", "output"]);
   // The flattened output is what the node needs: without it the queue stops, a failed full-state save only warns.
   w.flushStateUpload = async () => false;
   await w.preparePanoramaForQueue();
   w.uploadOutputSnapshot = async () => false;
   await assert.rejects(w.preparePanoramaForQueue(), /queue stopped/);
+  w.isPointerDown = true;
+  await assert.rejects(w.preparePanoramaForQueue(), /Finish/);
+});
+
+test("flat raster queue waits for current pixels and refreshed bounds, and rejects a failed save", async () => {
+  const order = []; let finish;
+  const w = widget({ layers: [{ type: "raster" }],
+    flushStateUpload: () => { order.push("upload"); return new Promise(resolve => { finish = resolve; }); },
+    syncToNode: () => order.push("metadata"),
+    uploadOutputSnapshot: async () => { order.push("output"); return true; },
+  });
+  const pending = w.preparePanoramaForQueue();
+  assert.deepEqual(order, ["upload"]);
+  finish(true); await pending;
+  assert.deepEqual(order, ["upload", "metadata", "output"]);
+  w.flushStateUpload = async () => false;
+  await assert.rejects(w.preparePanoramaForQueue(), /queue stopped/);
+  w.flushStateUpload = async () => true;
+  w.uploadOutputSnapshot = async () => false;
+  await assert.rejects(w.preparePanoramaForQueue(), /output.*queue stopped/i);
   w.isPointerDown = true;
   await assert.rejects(w.preparePanoramaForQueue(), /Finish/);
 });
@@ -194,24 +215,158 @@ test("panorama uploads cannot overwrite newer state by finishing out of order", 
   release(); await Promise.all([first, second]); assert.deepEqual(started, [1, 2]);
 });
 
-test("generation retains its request camera when the user rotates while waiting", async () => {
+test("flat raster uploads keep capture order and revisions across failed writes", async () => {
+  const started = []; let release;
+  const w = widget({ stateUploadRevision: Date.now() + 1000, performStateUpload: async (state, keepalive, revision) => {
+    started.push([state.label, revision]);
+    if (state.label === "old") {
+      await new Promise(resolve => { release = resolve; });
+      throw new Error("upload failed");
+    }
+    return true;
+  } });
+  const first = w.uploadStatePayload({ layers: [], label: "old" });
+  const rejection = assert.rejects(first, /upload failed/);
+  const second = w.uploadStatePayload({ layers: [], label: "new" });
+  await Promise.resolve(); assert.equal(started.length, 1);
+  release(); await rejection; assert.equal(await second, true);
+  assert.deepEqual(started.map(item => item[0]), ["old", "new"]);
+  assert.ok(started[1][1] > started[0][1]);
+});
+
+test("closing-page saves start immediately and stale failures do not clear their success", async () => {
+  const previousFetch = context.fetch;
+  const sent = [], errors = []; let finishOld;
+  context.fetch = async (_url, request) => {
+    const payload = JSON.parse(request.body);
+    sent.push({ payload, keepalive: request.keepalive });
+    if (payload.state.label === "old") return new Promise(resolve => {
+      finishOld = () => resolve({ ok: false, status: 500, json: async () => ({ error: "old failure" }) });
+    });
+    return { ok: true };
+  };
+  try {
+    const w = widget({ getStateCacheId: () => "saved", saveLocalStateBackup() {}, setStatus: message => errors.push(message) });
+    const first = w.uploadStatePayload({ layers: [], label: "old" });
+    await Promise.resolve(); assert.equal(sent.length, 1);
+    assert.equal(await w.uploadStatePayload({ layers: [], label: "new" }, true), true);
+    assert.equal(sent.length, 2); assert.equal(sent[1].keepalive, true);
+    assert.ok(sent[1].payload.revision > sent[0].payload.revision);
+    finishOld(); assert.equal(await first, false);
+    assert.match(w.lastUploadedStateJSON, /"label":"new"/);
+    assert.deepEqual(errors, []);
+  } finally { context.fetch = previousFetch; }
+});
+
+test("a pending autosave never replaces the final save of the same state", async () => {
+  const previousFetch = context.fetch;
+  const sent = []; let finishOld;
+  context.fetch = async (_url, request) => {
+    sent.push(request);
+    if (sent.length === 1) return new Promise(resolve => {
+      finishOld = () => resolve({ ok: false, status: 500, json: async () => ({ error: "old failure" }) });
+    });
+    return { ok: true };
+  };
+  try {
+    const w = widget({ getStateCacheId: () => "saved", saveLocalStateBackup() {}, setStatus() {} });
+    const state = { layers: [], label: "same" };
+    const first = w.uploadStatePayload(state);
+    await Promise.resolve();
+    assert.equal(w.lastUploadedStateJSON, undefined, "the server has not confirmed the first write");
+    assert.equal(await w.uploadStatePayload(state, true), true);
+    assert.equal(sent.length, 2);
+    assert.equal(sent[1].keepalive, true);
+    finishOld(); assert.equal(await first, false);
+    assert.match(w.lastUploadedStateJSON, /"label":"same"/);
+    assert.equal(await w.uploadStatePayload(state), true);
+    assert.equal(sent.length, 2, "only an acknowledged idle save may be deduplicated");
+    assert.equal(w.stateUploadsPending, 0);
+  } finally { context.fetch = previousFetch; }
+});
+
+for (const started of [true, false]) test(`final save restores acknowledged pixels while another autosave is ${started ? "running" : "queued"}`, async () => {
+  const previousFetch = context.fetch;
+  const sent = []; let finishDifferent;
+  context.fetch = async (_url, request) => {
+    const state = JSON.parse(request.body).state;
+    sent.push(state.label);
+    if (state.label === "different") return new Promise(resolve => { finishDifferent = () => resolve({ ok: true }); });
+    return { ok: true };
+  };
+  try {
+    const w = widget({ getStateCacheId: () => "saved", saveLocalStateBackup() {}, setStatus() {} });
+    const original = { layers: [], label: "original" };
+    await w.uploadStatePayload(original);
+    const pending = w.uploadStatePayload({ layers: [], label: "different" });
+    if (started) await Promise.resolve();
+    await w.uploadStatePayload(original, true);
+    assert.equal(sent.length, 3, "the final state must be sent even when it matches the last acknowledged state");
+    assert.equal(sent.filter(label => label === "original").length, 2);
+    finishDifferent(); await pending;
+    assert.match(w.lastUploadedStateJSON, /"label":"original"/);
+    assert.equal(w.stateUploadsPending, 0);
+  } finally { context.fetch = previousFetch; }
+});
+
+test("a queued save restores acknowledged pixels after an intermediate write", async () => {
+  const previousFetch = context.fetch;
+  const sent = []; let finishDifferent;
+  context.fetch = async (_url, request) => {
+    const state = JSON.parse(request.body).state;
+    sent.push(state.label);
+    if (state.label === "different") return new Promise(resolve => { finishDifferent = () => resolve({ ok: true }); });
+    return { ok: true };
+  };
+  try {
+    const w = widget({ getStateCacheId: () => "saved", saveLocalStateBackup() {}, setStatus() {} });
+    const original = { layers: [], label: "original" };
+    await w.uploadStatePayload(original);
+    const pending = w.uploadStatePayload({ layers: [], label: "different" });
+    const restored = w.uploadStatePayload(original);
+    await Promise.resolve();
+    finishDifferent(); await Promise.all([pending, restored]);
+    assert.deepEqual(sent, ["original", "different", "original"]);
+    assert.match(w.lastUploadedStateJSON, /"label":"original"/);
+    assert.equal(w.stateUploadsPending, 0);
+  } finally { context.fetch = previousFetch; }
+});
+
+test("generation blocks panorama rotation and preserves its request camera while viewport zoom remains available", async () => {
   let release;
   context.fetch = () => new Promise(resolve => { release = () => resolve({ ok: true, json: async () => ({ images: [{ filename: "result.png" }] }) }); });
-  const doc = { settings: settings({ yaw: 10, pitch: 20 }), commit() {} };
+  const doc = { settings: settings({ yaw: 10, pitch: 20 }), commit() {}, endCamera() {}, flushCamera() {},
+    beginCamera: () => true, setCamera(value) { Object.assign(this.settings, value); },
+  };
   // No seed_mode on purpose: the settings-level default is the random dice, and
   // draw() must still reach the request through the fresh-seed branch.
-  const w = widget({ panorama: doc, settings: { batch_size: 1, steps: 1 }, stagingItems: [], drawBtn: {},
+  const w = widget({ panorama: doc, tool: "panorama", settings: { batch_size: 1, steps: 1 }, stagingItems: [], drawBtn: {},
+    canvas: new Element(), view: { x: 0, y: 0, scale: 1 },
+    canvasPointFromEvent: event => ({ x: event.clientX, y: event.clientY }), worldFromEvent: () => ({ x: 0, y: 0 }),
     flushSettingsToWidget() {}, syncPromptControls() {}, normalizeGenerationSettings: () => ({ loader: {} }),
     getInferenceSize: () => ({ width: 1024, height: 1024 }),
     getRasterContentInBboxStats: () => ({ nonzeroAlphaPixels: 1024 * 1024 }),
     getMaskContentInBboxStats: () => ({ nonzeroAlphaPixels: 1 }),
     makeExportCanvas: () => ({ toDataURL: () => "request-view" }), makeSettingsPayload: () => ({}),
+    _isConfigLinked: () => false,
+    getModelBase: () => "sdxl",
     updateGenerationProgress() {}, startDrawProgressPolling() {}, stopDrawProgressPolling() {},
     imageResultToURL: () => "result", loadImage: async () => ({}), render() {},
   });
   const pending = w.draw();
-  doc.settings.yaw = 120; doc.settings.pitch = -30;
+  assert.equal(w.editingBlocked, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(w.drawInProgress, true);
+  const event = { button: 0, pointerId: 1, clientX: 0, clientY: 0, deltaY: 120, preventDefault() {}, stopPropagation() {} };
+  w.onPointerDown(event);
+  w.onPointerMove({ ...event, clientX: 500, clientY: -250 });
+  w.onPointerUp(event);
+  w.onWheel({ ...event, ctrlKey: true });
+  assert.equal(doc.settings.yaw, 10);
+  assert.equal(doc.settings.pitch, 20);
+  assert.equal(w.view.scale, 1);
   release(); await pending;
+  assert.equal(w.editingBlocked, false);
   assert.equal(w.stagingItems.length, 1);
   assert.equal(w.stagingItems[0].panoramaCamera.yaw, 10);
   assert.equal(w.stagingItems[0].panoramaCamera.pitch, 20);
@@ -262,7 +417,8 @@ test("panorama restoration is transactional and rejects incomplete cached pixels
     await w.applySerializedState(state);
     assert.equal(w.panorama.settings.yaw, 45); assert.equal(w.panorama.projected, true);
     assert.equal(w.layers.at(-1).id, "base"); assert.equal(old.disposed, true);
-    assert.equal(w.bbox.width, 1024); assert.equal(w.layers[0].panoramaCanvas.width, 4096);
+    assert.equal(w.bbox.width, 1024); assert.equal(w.layers.find(layer => layer.id === "edit").panoramaCanvas.width, 4096);
+    assert.equal(w.layers.filter(layer => layer.type === "mask").length, 1);
   } finally { context.PanoramaDocument = realDocument; }
 });
 
@@ -281,7 +437,8 @@ test("an older asynchronous panorama restore cannot replace a newer document", a
     const state = name => ({ version: 3, panorama: settings({ baseLayerId: name }), layers: [{ id: name, type: "raster", dataURL: name }] });
     const pending = w.applySerializedState(state("old"));
     await w.applySerializedState(state("new")); release(); await pending;
-    assert.equal(w.layers[0].id, "new"); assert.equal(w.panorama.settings.baseLayerId, "new");
+    assert.equal(w.layers.find(layer => layer.type === "raster").id, "new"); assert.equal(w.panorama.settings.baseLayerId, "new");
+    assert.equal(w.layers.filter(layer => layer.type === "mask").length, 1);
     assert.equal(created[0].disposed, true); assert.equal(created[1].disposed, undefined);
   } finally { context.PanoramaDocument = realDocument; }
 });
@@ -367,7 +524,8 @@ test("deleting the only panorama layer leaves a blank drawable document", async 
 test("deleting an overlay does not close panorama mode or prompt for workspace deletion", () => {
   const w = exitWidget({ confirmInWidget() { assert.fail("not a panorama deletion"); } }), doc = w.panorama;
   w.deleteLayer("edit");
-  assert.equal(w.panorama, doc); assert.equal(w.layers.length, 1); assert.equal(w.layers[0].id, "base");
+  assert.equal(w.panorama, doc); assert.equal(w.layers.length, 2); assert.equal(w.layers.at(-1).id, "base");
+  assert.equal(w.layers[0].type, "mask");
 });
 
 test("deletion restores bbox controls and panorama import", async () => {

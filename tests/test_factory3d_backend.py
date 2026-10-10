@@ -1,5 +1,5 @@
-import ast
-import importlib.util
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import io
 import json
 import sys
@@ -80,28 +80,12 @@ def matrix_to_quat(matrices):
 
 
 def load_modules():
-    root_package = types.ModuleType("vnccs_factory_test")
-    root_package.__path__ = [str(ROOT)]
-    api_package = types.ModuleType("vnccs_factory_test.api")
-    api_package.__path__ = [str(ROOT / "api")]
-    sys.modules[root_package.__name__] = root_package
-    sys.modules[api_package.__name__] = api_package
-
-    gaussian_spec = importlib.util.spec_from_file_location(
-        "vnccs_factory_test.api.gaussian_scene",
-        ROOT / "api" / "gaussian_scene.py",
-    )
-    gaussian = importlib.util.module_from_spec(gaussian_spec)
-    sys.modules[gaussian_spec.name] = gaussian
-    gaussian_spec.loader.exec_module(gaussian)
-
-    factory_spec = importlib.util.spec_from_file_location(
-        "vnccs_factory_test.api.factory3d",
-        ROOT / "api" / "factory3d.py",
-    )
-    factory = importlib.util.module_from_spec(factory_spec)
-    sys.modules[factory_spec.name] = factory
-    factory_spec.loader.exec_module(factory)
+    from helpers.backend_package import service_package
+    load = service_package("vnccs_factory_test")
+    gaussian = load("nodes.factory3d.gaussian_scene")
+    factory = load("nodes.factory3d.storage")
+    load("nodes.factory3d.runtime")
+    load("api.factory3d_scene_editor")
     return gaussian, factory
 
 
@@ -109,6 +93,8 @@ class FactoryBackendTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.gaussian, cls.factory = load_modules()
+        cls.runtime = sys.modules["vnccs_factory_test.nodes.factory3d.runtime"]
+        cls.api = sys.modules["vnccs_factory_test.api.factory3d_scene_editor"]
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -216,6 +202,67 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(self.factory.load_scene(scene["scene_id"])["name"], "Renamed")
         unchanged = self.factory.update_scene(scene["scene_id"], {"name": "Renamed", "objects": []})
         self.assertEqual(unchanged["revision"], 0)
+
+    def test_scene_migration_cannot_overwrite_a_concurrent_edit(self):
+        scene = self.factory.create_scene("Original")
+        path = self.factory.resolve_scene_dir(scene["scene_id"]) / "scene.json"
+        path.write_text(json.dumps({**scene, "schema_version": 10}))
+        entered, release, edit_started, edit_done = (threading.Event() for _ in range(4))
+        write = self.factory._atomic_json
+
+        def pause_migration(target, value):
+            if value["name"] == "Original" and not entered.is_set():
+                entered.set()
+                if not release.wait(5):
+                    raise RuntimeError("test migration timed out")
+            write(target, value)
+
+        def edit():
+            edit_started.set()
+            try:
+                return self.factory.update_scene(scene["scene_id"], {"name": "New edit", "edit_revision": 0})
+            finally:
+                edit_done.set()
+
+        with mock.patch.object(self.factory, "_atomic_json", side_effect=pause_migration), ThreadPoolExecutor(2) as pool:
+            reader = pool.submit(self.factory.load_scene, scene["scene_id"])
+            try:
+                self.assertTrue(entered.wait(5))
+                writer = pool.submit(edit)
+                self.assertTrue(edit_started.wait(5))
+                self.assertFalse(edit_done.wait(.1))
+            finally:
+                release.set()
+            reader.result(timeout=5)
+            updated = writer.result(timeout=5)
+        restored = self.factory.load_scene(scene["scene_id"])
+        self.assertEqual(restored["name"], "New edit")
+        self.assertEqual(restored["edit_revision"], updated["edit_revision"])
+
+    def test_stale_editor_cannot_overwrite_a_newer_scene(self):
+        scene = self.factory.create_scene("Concurrent editors")
+        payload = {"name": "First edit", "edit_revision": scene["edit_revision"]}
+        updated = self.factory.update_scene(scene["scene_id"], payload)
+        self.assertGreater(updated["edit_revision"], scene["edit_revision"])
+        before = (self.factory.resolve_scene_dir(scene["scene_id"]) / "scene.json").read_bytes()
+        with self.assertRaisesRegex(RuntimeError, "another editor"):
+            self.factory.update_scene(scene["scene_id"], {**payload, "name": "Stale edit"})
+        self.assertEqual((self.factory.resolve_scene_dir(scene["scene_id"]) / "scene.json").read_bytes(), before)
+        for revision in [-1, True, "1", 1.5, None]:
+            with self.subTest(revision=revision), self.assertRaisesRegex(ValueError, "edit_revision"):
+                self.factory.update_scene(scene["scene_id"], {"edit_revision": revision})
+        saved = self.factory.update_scene(scene["scene_id"], {"name": "Next edit", "edit_revision": updated["edit_revision"]})
+        self.assertEqual(saved["name"], "Next edit")
+
+    def test_frame_setting_does_not_cancel_object_preview_invalidation(self):
+        scene = self.factory.create_scene("Preview invalidation")
+        created = self.factory.create_primitive_object(scene["scene_id"], {"primitive": {"kind": "plane"}})
+        scene = created["scene"]
+        updated = self.factory.update_scene(scene["scene_id"], {
+            "objects": [{"object_id": scene["objects"][0]["object_id"], "light_transport": "transmissive"}],
+            "render": {**scene["render"], "show_camera_frame": True},
+        })
+        self.assertGreater(updated["render_revision"], scene["render_revision"])
 
     def test_room_can_be_saved_without_a_building(self):
         scene = self.factory.create_scene("Standalone room")
@@ -428,7 +475,7 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(off["lighting"]["shadows"]["quality"], "medium")
 
     def test_experimental_density_modes_are_supported_through_api_and_triposplat(self):
-        capabilities = self.factory.capabilities()
+        capabilities = self.runtime.capabilities()
         self.assertEqual(capabilities["formats"], ["ply", "glb"])
         self.assertEqual(set(capabilities["generators"]), {"triposplat", "pixal3d", "trellis2"})
         self.assertEqual(capabilities["generators"]["pixal3d"]["output_format"], "glb")
@@ -503,7 +550,7 @@ class FactoryBackendTests(unittest.TestCase):
 
         result = self.factory.factory3d_generation._detach_tensor(GradTensor())
         self.assertTrue(result.detached)
-        source = (ROOT / "api" / "factory3d_generation.py").read_text(encoding="utf-8")
+        source = (ROOT / "nodes/factory3d/generation.py").read_text(encoding="utf-8")
         pipeline_index = source.index("def run_mesh_generation")
         remove_index = source.index('"RemoveBackground"', pipeline_index)
         crop_index = source.index('"ImageCropToMask"', remove_index)
@@ -609,7 +656,7 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(events, ["status", "progress"])
 
     def test_mesh_pipeline_uses_inference_mode_and_releases_moge_before_dino(self):
-        source = (ROOT / "api" / "factory3d_generation.py").read_text(encoding="utf-8")
+        source = (ROOT / "nodes/factory3d/generation.py").read_text(encoding="utf-8")
         pipeline_index = source.index("def run_mesh_generation")
         moge_index = source.index('"MoGeInference"', pipeline_index)
         release_index = source.index("del geometry, moge", moge_index)
@@ -621,8 +668,8 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertIn("release_runtime_memory()", source[release_index:clip_index])
 
     def test_factory_model_lifecycle_matches_unicanvas_without_global_unload(self):
-        factory_source = (ROOT / "api" / "factory3d.py").read_text(encoding="utf-8")
-        generation_source = (ROOT / "api" / "factory3d_generation.py").read_text(encoding="utf-8")
+        factory_source = (ROOT / "nodes/factory3d/runtime.py").read_text(encoding="utf-8")
+        generation_source = (ROOT / "nodes/factory3d/generation.py").read_text(encoding="utf-8")
         self.assertNotIn("unload_all_models()", generation_source)
         self.assertIn('getattr(model_management, "cleanup_models", None)', generation_source)
         self.assertIn("with _FactoryModelOperation(job), torch.inference_mode():", factory_source)
@@ -636,7 +683,7 @@ class FactoryBackendTests(unittest.TestCase):
         module = types.ModuleType(module_name)
         module._COMFY_MODEL_OP_LOCK = shared_lock
         with mock.patch.dict(sys.modules, {module_name: module}):
-            self.assertIs(self.factory._model_operation_lock(), shared_lock)
+            self.assertIs(self.runtime._model_operation_lock(), shared_lock)
 
     def test_cancelled_factory_lock_acquisition_cannot_leak_the_lock(self):
         class RecordingLock:
@@ -657,14 +704,14 @@ class FactoryBackendTests(unittest.TestCase):
             "progress": 0,
         }
         job["cancel_event"].set()
-        with mock.patch.object(self.factory, "_model_operation_lock", return_value=lock):
-            with self.assertRaises(self.factory.JobCancelled):
-                with self.factory._FactoryModelOperation(job):
+        with mock.patch.object(self.runtime, "_model_operation_lock", return_value=lock):
+            with self.assertRaises(self.runtime.JobCancelled):
+                with self.runtime._FactoryModelOperation(job):
                     pass
         self.assertFalse(lock.locked)
 
     def test_conditioning_resolution_settings_include_experimental_native_size_mode(self):
-        capabilities = self.factory.capabilities()
+        capabilities = self.runtime.capabilities()
         self.assertEqual(capabilities["conditioning_resolutions"], [1024, 1536, 2048])
         self.assertEqual(capabilities["experimental_conditioning_resolutions"], [1536, 2048])
         self.assertEqual(capabilities["defaults"]["conditioning_resolution"], 1024)
@@ -917,8 +964,8 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(cached.stat().st_size, 2 * 32)
 
     def test_generation_result_embeds_committed_public_scene_for_frontend_hydration(self):
-        source = (ROOT / "api" / "factory3d.py").read_text(encoding="utf-8")
-        self.assertIn('"scene": _public_scene(scene)', source)
+        source = (ROOT / "nodes/factory3d/runtime.py").read_text(encoding="utf-8")
+        self.assertIn('"scene": backend._public_scene(scene)', source)
 
     def test_pixal_generation_commits_a_textured_mesh_asset(self):
         scene = self.factory.create_scene("Pixal")
@@ -930,7 +977,7 @@ class FactoryBackendTests(unittest.TestCase):
             "quality": "preview",
             "seed": "7",
         })
-        job = self.factory._new_job("generation", scene["scene_id"])
+        job = self.runtime._new_job("generation", scene["scene_id"])
 
         def fake_generate(_provider, _image, target, prepared, _settings, **_callbacks):
             target.write_bytes(b"glTF" + b"\0" * 32)
@@ -944,7 +991,7 @@ class FactoryBackendTests(unittest.TestCase):
             }
 
         with mock.patch.object(
-            self.factory,
+            self.runtime,
             "_provider_weights_status",
             return_value={"ready": True},
         ), mock.patch.object(
@@ -952,7 +999,7 @@ class FactoryBackendTests(unittest.TestCase):
             "run_mesh_generation",
             side_effect=fake_generate,
         ):
-            result = self.factory._generate_mesh_object(
+            result = self.runtime._generate_mesh_object(
                 job,
                 image_stream.getvalue(),
                 object_id,
@@ -1404,6 +1451,53 @@ class FactoryBackendTests(unittest.TestCase):
             rf"^/vnccs/3d-factory/scenes/{scene['scene_id']}/reference/preview\?v=\d+$",
         )
 
+    def test_failed_reference_save_preserves_manifest_source_and_preview(self):
+        scene = self.factory.create_scene("Scene")
+        def image(color):
+            stream = io.BytesIO()
+            Image.new("RGB", (64, 64), color).save(stream, "PNG")
+            return stream.getvalue()
+        saved = self.factory.store_scene_reference(scene["scene_id"], image("red"))
+        root = self.factory.resolve_scene_dir(scene["scene_id"])
+        before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        for operation in ("_save_scene", "_write_browser_preview"):
+            with self.subTest(operation=operation), mock.patch.object(
+                self.factory, operation, side_effect=OSError("disk full"),
+            ):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    self.factory.store_scene_reference(scene["scene_id"], image("blue"))
+                self.assertEqual({path: path.read_bytes() for path in root.rglob("*") if path.is_file()}, before)
+        self.assertEqual(self.factory.load_scene(scene["scene_id"])["reference"], saved["reference"])
+
+    def test_explicit_scene_root_ownership_survives_reload_with_buildings(self):
+        scene = self.factory.create_scene("Scene")
+        scene_id = scene["scene_id"]
+        scene = self.factory.update_scene(scene_id, {"architecture": {"buildings": [{"building_id": "b" * 32}]}})
+        created = self.factory.create_primitive_object(scene_id, {"primitive": {"kind": "plane"}})
+        self.factory.update_scene(scene_id, {
+            "objects": [{"object_id": created["object_id"], "building_id": ""}],
+            "cameras": [{"camera_id": "c" * 32, "building_id": ""}],
+            "camera_tracks": [{"track_id": "d" * 32, "building_id": ""}],
+            "lighting": {"lights": [{"light_id": "e" * 32, "building_id": "", "level_id": scene["levels"][0]["level_id"]}]},
+        })
+        restored = self.factory.load_scene(scene_id)
+        for entries in (restored["objects"], restored["cameras"], restored["camera_tracks"], restored["lighting"]["lights"]):
+            self.assertEqual(entries[0]["building_id"], "")
+
+        manifest = self.factory.resolve_scene_dir(scene_id) / "scene.json"
+        for invalid_id in (None, "f" * 32, "invalid"):
+            with self.subTest(building_id=invalid_id):
+                raw = json.loads(manifest.read_text())
+                for entries in (raw["objects"], raw["cameras"], raw["camera_tracks"], raw["lighting"]["lights"]):
+                    if invalid_id is None:
+                        entries[0].pop("building_id", None)
+                    else:
+                        entries[0]["building_id"] = invalid_id
+                manifest.write_text(json.dumps(raw))
+                restored = self.factory.load_scene(scene_id)
+                for entries in (restored["objects"], restored["cameras"], restored["camera_tracks"], restored["lighting"]["lights"]):
+                    self.assertEqual(entries[0]["building_id"], "b" * 32)
+
     def test_skydome_image_settings_and_public_asset_are_scene_persistent(self):
         scene = self.factory.create_scene("Sky")
         stream = io.BytesIO()
@@ -1457,6 +1551,44 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(removed["render_revision"], 3)
         with self.assertRaises(FileNotFoundError):
             self.factory._scene_skydome_file(removed)
+
+    def test_failed_skydome_replacement_preserves_all_previous_assets(self):
+        scene = self.factory.create_scene("Sky")
+        old_stream = io.BytesIO()
+        Image.new("RGB", (16, 8), "red").save(old_stream, "JPEG")
+        saved = self.factory.store_scene_skydome(scene["scene_id"], old_stream.getvalue())
+        root = self.factory.resolve_scene_dir(scene["scene_id"])
+        before = {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        for image_format in ("JPEG", "PNG"):
+            stream = io.BytesIO()
+            Image.new("RGB", (16, 8), "blue").save(stream, image_format)
+            for stage in ("_write_browser_preview", "_save_scene"):
+                with self.subTest(image_format=image_format, stage=stage):
+                    with mock.patch.object(self.factory, stage, side_effect=OSError("disk error")):
+                        with self.assertRaisesRegex(OSError, "disk error"):
+                            self.factory.store_scene_skydome(scene["scene_id"], stream.getvalue())
+                    self.assertEqual(
+                        {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}, before,
+                    )
+                    self.assertEqual(self.factory.load_scene(scene["scene_id"])["skydome"], saved["skydome"])
+        with mock.patch.object(self.factory, "_save_scene", side_effect=OSError("disk error")):
+            with self.assertRaisesRegex(OSError, "disk error"):
+                self.factory.remove_scene_skydome(scene["scene_id"])
+        self.assertEqual(self.factory._scene_skydome_file(saved).read_bytes(), old_stream.getvalue())
+
+    def test_skydome_commit_retires_previous_source_and_viewport(self):
+        scene = self.factory.create_scene("Sky")
+        stream = io.BytesIO()
+        Image.new("RGB", (16, 8), "red").save(stream, "JPEG")
+        old = self.factory.store_scene_skydome(scene["scene_id"], stream.getvalue())
+        previous_source = self.factory._scene_skydome_file(old)
+        previous_viewport = self.factory._scene_skydome_viewport_file(old)
+        new = self.factory.store_scene_skydome(scene["scene_id"], stream.getvalue())
+        self.assertEqual(old["skydome"]["skydome_id"], new["skydome"]["skydome_id"])
+        self.assertFalse(previous_source.exists())
+        self.assertFalse(previous_viewport.exists())
+        self.assertTrue(self.factory._scene_skydome_file(new).is_file())
+        self.assertTrue(self.factory._scene_skydome_viewport_file(new).is_file())
 
     def test_scene_preview_is_a_revision_bound_3d_render(self):
         scene = self.factory.create_scene("Scene")
@@ -1538,6 +1670,51 @@ class FactoryBackendTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(FileNotFoundError, "stale"):
             self.factory._scene_preview_file(changed)
+
+    def test_parallel_capture_cleanup_preserves_the_latest_committed_files(self):
+        scene = self.factory.create_scene("Parallel captures")
+        captures = self.factory.resolve_scene_dir(scene["scene_id"]) / "preview" / "captures"
+        stream = io.BytesIO()
+        Image.new("RGB", (scene["render"]["width"], scene["render"]["height"])).save(stream, "PNG")
+        cleanup_entered, release, second_started, second_done = (threading.Event() for _ in range(4))
+        first_thread = []
+        original_iterdir = Path.iterdir
+
+        def iterdir(path):
+            if path == captures and threading.get_ident() == first_thread[0]:
+                cleanup_entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("capture cleanup was not released")
+            return original_iterdir(path)
+
+        def save(token, first=False):
+            if first:
+                first_thread.append(threading.get_ident())
+            else:
+                second_started.set()
+            result = self.factory.store_scene_capture_set(
+                scene["scene_id"], stream.getvalue(), {}, [],
+                scene["revision"], scene["render_revision"], token,
+            )
+            if not first:
+                second_done.set()
+            return result
+
+        with mock.patch.object(Path, "iterdir", iterdir), ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(save, "a" * 32, True)
+            try:
+                self.assertTrue(cleanup_entered.wait(5))
+                second = pool.submit(save, "b" * 32)
+                self.assertTrue(second_started.wait(5))
+                self.assertFalse(second_done.wait(0.2), "a new capture cannot commit during old cleanup")
+            finally:
+                release.set()
+            first.result(timeout=5)
+            second.result(timeout=5)
+        saved = self.factory.load_scene(scene["scene_id"])
+        self.assertEqual(saved["capture_set"]["capture_token"], "b" * 32)
+        self.assertTrue(all(path.is_file() for path in self.factory._scene_capture_files(saved)))
+        self.assertFalse((captures / ("a" * 32)).exists())
 
     def test_execution_capture_set_is_atomic_ordered_and_scene_export_sized(self):
         scene = self.factory.create_scene("Camera captures")
@@ -1706,7 +1883,7 @@ class FactoryBackendTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"weight")
 
-        status = self.factory._weights_status()
+        status = self.runtime._weights_status()
         self.assertTrue(status["ready"])
         self.assertEqual(Path(status["root"]), model_root)
         self.assertTrue(all(Path(item["resolved_path"]).is_file() for item in status["files"]))
@@ -1728,9 +1905,9 @@ class FactoryBackendTests(unittest.TestCase):
             path.write_bytes(b"weight")
             expected[relative] = path.resolve()
 
-        paths = self.factory._weight_paths()
+        paths = self.runtime._weight_paths()
         self.assertEqual(paths, expected)
-        self.assertTrue(self.factory._weights_status()["ready"])
+        self.assertTrue(self.runtime._weights_status()["ready"])
 
     def test_all_factory_api_routes_are_registered_on_the_comfy_route_table(self):
         class RouteTableStub:
@@ -1762,12 +1939,12 @@ class FactoryBackendTests(unittest.TestCase):
         aiohttp_stub = types.ModuleType("aiohttp")
         aiohttp_stub.web = types.SimpleNamespace()
         routes = RouteTableStub()
-        self.factory._REGISTERED = False
+        self.api._REGISTERED = False
         try:
             with mock.patch.dict(sys.modules, {"aiohttp": aiohttp_stub}):
-                self.factory.register_routes(routes)
+                self.api.register_routes(routes)
         finally:
-            self.factory._REGISTERED = False
+            self.api._REGISTERED = False
         registered = {(method, path) for method, path, _handler in routes.definitions}
         expected = {
             ("GET", "/vnccs/3d-factory/capabilities"),
@@ -1810,6 +1987,78 @@ class FactoryBackendTests(unittest.TestCase):
             ("DELETE", "/vnccs/3d-factory/library/items/{asset_id}"),
         }
         self.assertTrue(expected.issubset(registered), expected.difference(registered))
+        preview_handler = next(handler for method, path, handler in routes.definitions
+                               if method == "POST" and path == "/vnccs/3d-factory/scenes/{scene_id}/preview")
+        preview_scene = self.factory.create_scene("Preview worker")
+        thread_ids = []
+        png = io.BytesIO()
+        Image.new("RGB", (1024, 1024)).save(png, "PNG")
+        payload = png.getvalue()
+
+        def read_preview(limit):
+            thread_ids.append(threading.get_ident())
+            return payload[:limit]
+
+        original_store_preview = self.factory.store_scene_preview
+
+        def save_preview(*args):
+            thread_ids.append(threading.get_ident())
+            return original_store_preview(*args)
+
+        aiohttp_stub.web.json_response = lambda body, status=200: (status, body)
+        preview_request = types.SimpleNamespace(headers={}, match_info={"scene_id": preview_scene["scene_id"]},
+                                               post=mock.AsyncMock(return_value={"image": types.SimpleNamespace(
+                                                   file=types.SimpleNamespace(read=read_preview))}))
+        with mock.patch.object(self.factory, "store_scene_preview", side_effect=save_preview):
+            status, _body = asyncio.run(preview_handler(preview_request))
+        self.assertEqual(status, 201, _body)
+        self.assertEqual(len(thread_ids), 2)
+        self.assertTrue(all(thread_id != threading.get_ident() for thread_id in thread_ids))
+
+        handler = next(handler for method, path, handler in routes.definitions
+                       if method == "PATCH" and path == "/vnccs/3d-factory/scenes/{scene_id}")
+        aiohttp_stub.web.json_response = lambda body, status=200: (status, body)
+        scene = self.factory.create_scene("Guarded HTTP save")
+        request = types.SimpleNamespace(headers={"Content-Length": "20"}, match_info={"scene_id": scene["scene_id"]})
+        request.json = mock.AsyncMock(return_value={"name": "Legacy writer"})
+        status, _body = asyncio.run(handler(request))
+        self.assertEqual(status, 400)
+        payload = {"name": "Current writer", "edit_revision": scene["edit_revision"]}
+        request.json = mock.AsyncMock(return_value=payload)
+        status, _body = asyncio.run(handler(request))
+        self.assertEqual(status, 200)
+        status, body = asyncio.run(handler(request))
+        self.assertEqual(status, 409)
+        self.assertIn("another editor", body["error"])
+
+        object_handler = next(handler for method, path, handler in routes.definitions
+                              if method == "PATCH" and path == "/vnccs/3d-factory/scenes/{scene_id}/objects/{object_id}")
+        original = self.factory.create_scene("Object route")
+        original = self.factory.create_primitive_object(original["scene_id"], {"primitive": {"kind": "plane"}})["scene"]
+        upgraded = self.factory.upgrade_scene(original["scene_id"])
+        for scene in (original, upgraded):
+            with self.subTest(schema_version=scene["schema_version"]):
+                object_id = scene["objects"][0]["object_id"]
+                request.match_info = {"scene_id": scene["scene_id"], "object_id": object_id}
+                payload = {"schema_version": scene["schema_version"], "edit_revision": scene["edit_revision"],
+                           "object_id": "other-object", "name": "Renamed object"}
+                request.json = mock.AsyncMock(return_value=payload)
+                status, body = asyncio.run(object_handler(request))
+                self.assertEqual(status, 200, body)
+                self.assertEqual(body["objects"][0]["object_id"], object_id)
+                self.assertEqual(body["objects"][0]["name"], "Renamed object")
+                before = self.factory.load_scene(scene["scene_id"])
+                status, body = asyncio.run(object_handler(request))
+                self.assertEqual(status, 409, body)
+                self.assertEqual(self.factory.load_scene(scene["scene_id"]), before)
+                request.json = mock.AsyncMock(return_value={"name": "Missing revision"})
+                status, body = asyncio.run(object_handler(request))
+                self.assertEqual(status, 400, body)
+                if scene["schema_version"] == 12:
+                    request.json = mock.AsyncMock(return_value={"edit_revision": before["edit_revision"], "name": "Old writer"})
+                    status, body = asyncio.run(object_handler(request))
+                    self.assertEqual(status, 400, body)
+                    self.assertEqual(self.factory.load_scene(scene["scene_id"]), before)
 
 
 if __name__ == "__main__":

@@ -2,21 +2,22 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs?v=1790494137676";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./vnccs_unicanvas_pose_state.mjs?v=1790494137676";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791668982934";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791668982934";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./vnccs_unicanvas_panorama_orbit.mjs?v=1790494137676";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790494137676";
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790494137676";
-import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs?v=1790494137676";
-import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs?v=1790494137676";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./vnccs_unicanvas_model_memory.mjs?v=1790494137676";
-import { installInferenceScaleEdit } from "./vnccs_unicanvas_scale_edit.mjs?v=1790494137676";
-import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs?v=1790494137676";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs?v=1790494137676";
-import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs?v=1790494137676";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs?v=1790494137676";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791668982934";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791668982934";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791668982934";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791668982934";
+import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791668982934";
+import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791668982934";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791668982934";
+import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791668982934";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791668982934";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791668982934";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791668982934";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791668982934";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -48,11 +49,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./vnccs_unicanvas_transform.mjs?v=1790494137676";
+} from "./unicanvas/transform.mjs?v=1791668982934";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./vnccs_unicanvas_presets.mjs?v=1790494137676";
+} from "./unicanvas/presets.mjs?v=1791668982934";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -60,9 +61,10 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./vnccs_unicanvas_modes.mjs?v=1790494137676";
-import { UNICANVAS_QWEN21_MODULE, syncQwen21Panel } from "./vnccs_unicanvas_qwen21.mjs?v=1790494137676";
-import { installUniCanvasHelpTooltips } from "./vnccs_unicanvas_help.mjs?v=1790494137676";
+} from "./unicanvas/modes.mjs?v=1791668982934";
+import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791668982934";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791668982934";
+import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791668982934";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -75,7 +77,7 @@ import { installUniCanvasHelpTooltips } from "./vnccs_unicanvas_help.mjs?v=17904
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1790494137676";
+const VNCCS_UNICANVAS_VERSION = "1791668982934";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -105,7 +107,7 @@ const VNCCS_UNICANVAS_VERSION = "1790494137676";
 // Self-contained safety net for the history keys: while the fullscreen portal
 // or the standalone shell is open, Ctrl+Z / Ctrl+Y must never fall through to
 // ComfyUI's graph undo (which reverts the workflow and collapses fullscreen).
-// vnccs_unicanvas_modes.mjs owns the full keyboard contract; this shield only
+// unicanvas/modes.mjs owns the full keyboard contract; this shield only
 // exists so that even a stale cached modes module cannot leak the keys, and it
 // is deliberately dependency-free (no imports, hardcoded markers).
 (() => {
@@ -118,16 +120,17 @@ const VNCCS_UNICANVAS_VERSION = "1790494137676";
     const target = event.target;
     if (target?.closest?.("input, textarea, select, [contenteditable]")) return;
     const fullscreenOpen = Boolean(document.querySelector(".vnccs-uc2-fullscreen-portal"));
-    const standaloneOpen = document.body.classList.contains("vnccs-unicanvas-standalone-mode");
+    const standaloneOpen = document.body.classList.contains("vnccs-unicanvas-standalone-mode")
+      && Boolean(target?.closest?.(".vnccs-uc2-standalone-shell"));
     if (!fullscreenOpen && !standaloneOpen) return;
     event.stopImmediatePropagation();
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs?v=1790494137676";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./vnccs_unicanvas_prompt_enhance.mjs?v=1790494137676";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791668982934";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791668982934";
 
-const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
+const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
 const STYLES = `
 .vnccs-unicanvas [hidden] { display:none !important; }
@@ -189,6 +192,7 @@ const STYLES = `
 .vnccs-uc-layer-group + .vnccs-uc-layer-group { margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,143,163,.24); }
 .vnccs-uc-layer-group-head { display:flex; align-items:center; justify-content:space-between; padding:2px 3px 4px; color:var(--uc-muted); font-weight:800; font-size:10px; letter-spacing:0; text-transform:uppercase; }
 .vnccs-uc-layer-group-head.mask { color:#ffd45c; }
+.vnccs-uc-layer-group-head .vnccs-uc-icon { width:24px; height:24px; }
 .vnccs-uc-layer-group-empty { padding:7px 8px; border:1px dashed rgba(255,255,255,.10); border-radius:8px; color:var(--uc-muted); background:rgba(255,255,255,.025); }
 .vnccs-uc-layer-subhead { padding:8px; border-bottom:1px solid var(--uc-border); display:grid; grid-template-columns:92px minmax(0,1fr); gap:8px; align-items:center; }
 .vnccs-uc-layer-subhead .vnccs-uc-select { width:100%; }
@@ -210,9 +214,9 @@ const STYLES = `
 .vnccs-uc-layer-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-layer-type { color:var(--uc-muted); font-size:10px; }
 .vnccs-uc-bottom { grid-column:2; grid-row:1; position:relative; zoom:var(--vnccs-uc-ui-scale); display:flex; gap:8px; align-items:center; padding:8px; border-bottom:1px solid var(--uc-border); background:rgba(6,5,12,.75); box-sizing:border-box; min-width:0; }
-/* Standalone "New canvas" button: centered in the top bar without disturbing the
-   left (undo/redo/Fit) and right (grid/gear/exit) flex clusters. */
-.vnccs-uc-bottom .vnccs-uc-new-canvas { position:absolute; left:50%; transform:translateX(-50%); }
+/* Keep the manager centered, with creation immediately to its right. */
+.vnccs-uc-bottom .vnccs-uc-canvas-actions { position:absolute; left:50%; transform:translateX(-50%); display:flex; align-items:center; }
+.vnccs-uc-bottom .vnccs-uc-new-canvas { position:absolute; left:calc(100% + 6px); }
 .vnccs-uc-tools { position:absolute; z-index:6; left:16px; top:50%; zoom:var(--vnccs-uc-ui-scale); transform:translateY(-50%); display:flex; flex-direction:column; align-items:stretch; gap:9px; padding:12px; border:1px solid var(--uc-border); border-radius:18px; background:rgba(10,10,15,.84); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; max-height:calc((100% - 16px) / var(--vnccs-uc-ui-scale)); overflow-y:auto; overflow-x:hidden; }
 /* Tool settings are a docked sidebar section above Layers (no stage overlay anymore):
    the section head carries the tool title, the body scrolls if a transform session
@@ -250,7 +254,7 @@ const STYLES = `
 .vnccs-uc-tools svg { width:36px; height:36px; display:block; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
 .vnccs-uc-tools svg .fill { fill:currentColor; stroke:none; }
 .vnccs-uc-btn:hover, .vnccs-uc-icon:hover { background:var(--uc-hover); border-color:rgba(255,255,255,.16); }
-.vnccs-uc-btn:disabled, .vnccs-uc-icon:disabled { opacity:.38; cursor:not-allowed; }
+.vnccs-uc-btn:disabled, .vnccs-uc-icon:disabled, .vnccs-unicanvas :is(button, input, select, textarea)[inert] { opacity:.38; cursor:not-allowed; }
 .vnccs-uc-btn:disabled:hover, .vnccs-uc-icon:disabled:hover { background:var(--uc-surface); border-color:var(--uc-border); }
 .vnccs-uc-btn.primary { background:linear-gradient(135deg,var(--uc-accent),var(--uc-accent-2)); color:#120b13; font-weight:800; border:0; }
 .vnccs-uc-btn.primary:disabled,
@@ -291,7 +295,6 @@ const STYLES = `
 .vnccs-uc-config-linked .vnccs-uc-turbo-section,
 .vnccs-uc-config-linked .vnccs-uc-lora-stack,
 .vnccs-uc-config-linked .vnccs-uc-refs-btn,
-.vnccs-uc-config-linked .vnccs-uc-qwen21-panel,
 .vnccs-uc-config-linked [data-family-field],
 .vnccs-uc-config-linked [data-mode-control] { display:none !important; }
 .vnccs-uc-model-card-list { display:flex; flex-direction:column; gap:7px; }
@@ -339,6 +342,7 @@ const STYLES = `
 .vnccs-uc-edit-steps-row { display:flex; align-items:flex-end; gap:6px; }
 .vnccs-uc-edit-steps-row .vnccs-uc-field { flex:1 1 auto; }
 .vnccs-uc-refs-btn { position:relative; flex:0 0 auto; }
+.vnccs-uc-refs-wide { display:none; }
 .vnccs-uc-refs-badge { position:absolute; top:-4px; right:-4px; min-width:14px; height:14px; padding:0 3px; border-radius:999px; background:var(--uc-accent); color:#14101e; font-size:9px; font-weight:900; line-height:14px; text-align:center; }
 /* Edit model reference images popover (same surface as the settings popover). */
 .vnccs-uc-refs-popover {
@@ -437,7 +441,7 @@ const STYLES = `
   box-sizing:border-box;
 }
 /* Help "?" buttons. The tooltip text is rendered by the shared body-level layer
-   (see vnccs_unicanvas_help.mjs): a pseudo-element tooltip would be clipped by the
+   (see unicanvas/help.mjs): a pseudo-element tooltip would be clipped by the
    sidebars' scroll containers, so the icons only carry data-tip. */
 .vnccs-uc-field-head .vnccs-uc-help { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; flex:0 0 auto; border-radius:50%; border:1px solid var(--uc-border); color:var(--uc-muted); font-size:10px; line-height:1; cursor:help; }
 .vnccs-uc-field-head { display:flex; align-items:center; gap:5px; min-width:0; }
@@ -464,7 +468,7 @@ const STYLES = `
 if (!document.getElementById("vnccs-unicanvas-styles")) {
   const style = document.createElement("style");
   style.id = "vnccs-unicanvas-styles";
-  style.textContent = STYLES + PROMPT_GUIDE_CSS + PROMPT_ENHANCE_CSS;
+  style.textContent = STYLES + PROMPT_GUIDE_CSS + PROMPT_ENHANCE_CSS + MODEL_DEPENDENCIES_CSS;
   document.head.appendChild(style);
 }
 
@@ -779,31 +783,6 @@ const UNICANVAS_MODEL_MODULES = {
       denoise: 1,
     },
   },
-  qwen_image_edit: {
-    key: "qwen_image_edit",
-    aliases: ["qwen-edit", "qwen_edit", "qwen-image-edit", "qwen_image_edit_2511"],
-    label: "Qwen Edit",
-    base: "qwen_image_edit",
-    isEditModel: true,
-    detect: ["qwen-image-edit", "qwen_image_edit", "qwen-edit", "qwen"],
-    defaults: {
-      generation_mode: "qwen_image_edit",
-      model_loader: "gguf",
-      gguf_model_name: "qwen-image-edit-2511-Q5_0.gguf",
-      clip_name: "qwen_2.5_vl_7b_fp8_scaled.safetensors",
-      vae_name: "qwen_image_vae.safetensors",
-      clip_type: "qwen_image",
-      sampler_name: "euler",
-      scheduler: "simple",
-      steps: 4,
-      cfg: 1,
-      denoise: 1,
-      qwen_lora_name: "",
-      qwen_lora_strength: 0,
-      qwen_2511: true,
-      qwen_target_vl_size: 384,
-    },
-  },
   minimax_h3: {
     key: "minimax_h3",
     aliases: ["minimaxh3", "minimax-h3", "h3"],
@@ -910,8 +889,8 @@ function makeDefaultUniCanvasSettings() {
     // Performance (settings popover): ComfyUI EasyCache on, tiled VAE for low memory off.
     step_cache: true,
     vae_chunking: false,
-    // Inpaint generates only the area around the mask at full resolution (crop and stitch).
-    inpaint_crop_to_mask: true,
+    // Inpaint keeps the full bbox; non-edit models can opt into crop and stitch.
+    inpaint_crop_to_mask: false,
     auto_name_layers: false,
     remove_bg_edit_model: "qwen_image21",
     edit_reference_images: [],
@@ -1017,6 +996,7 @@ bindEnhanceSettingsReader((id) => {
 class UniCanvasWidget {
   constructor(node) {
     this.node = node;
+    this.standalone = node?.unicanvasStandalone === true;
     this.container = document.createElement("div");
     this.container.className = "vnccs-unicanvas";
     this.layers = [];
@@ -1054,13 +1034,14 @@ class UniCanvasWidget {
     this._isRestoring = true;
     this.stateCacheId = this.readStateCacheIdFromWidget() || this.createStateCacheId();
     this.stateBackupKey = null;
-    // Free the shared localStorage from old multi-MB backups once the restore had its chance.
+    // Only server-confirmed backups may be retired to free browser storage.
     window.setTimeout(() => {
       if (this._disposed) return;
       const key = this.getStateBackupKey();
       if (!key.startsWith("vnccs_unicanvas_backup_")) return; // standalone keeps its document
       try {
-        if ((window.localStorage?.getItem(key)?.length || 0) > LOCAL_STATE_BACKUP_MAX_CHARS) window.localStorage.removeItem(key);
+        const raw = window.localStorage?.getItem(key);
+        if (raw?.length > LOCAL_STATE_BACKUP_MAX_CHARS && JSON.parse(raw)?.confirmed === true) window.localStorage.removeItem(key);
       } catch (_) {
         // Storage unavailable.
       }
@@ -1121,8 +1102,10 @@ class UniCanvasWidget {
     installUniCanvasLayerTools(this);
     this._removeScaleEdit = installInferenceScaleEdit(this);
     this._createInitialLayers();
-    this._loadFromNode().finally(() => {
-      if (this._disposed) return;
+    const initialRestore = this._loadFromNode();
+    const initialRevision = this._stateLoadRevision;
+    initialRestore.finally(() => {
+      if (this._disposed || initialRevision !== this._stateLoadRevision) return;
       this._isRestoring = false;
       if (this.settings.debug_mode) this.applyDebugMode();
       this.fitInitialView();
@@ -1130,8 +1113,9 @@ class UniCanvasWidget {
       this.renderLayerList();
       this.render();
     });
-    this._loadAssets();
+    this._assetsReady = this._loadAssets();
     this._attachEvents();
+    installCanvasDocuments(this);
     this.resize();
     this.render();
   }
@@ -1162,13 +1146,14 @@ class UniCanvasWidget {
     this.stagingCount.className = "vnccs-uc-staging-count";
     this.stagingNextBtn = this._button(STAGING_ICONS.next, "vnccs-uc-icon", () => this.selectRelativeStaging(1), "Next result");
     this.stagingToggleBtn = this._button(STAGING_ICONS.show, "vnccs-uc-icon", () => this.toggleStagingVisibility(), "Hide result preview");
+    this.stagingAcceptBtn = this._button(STAGING_ICONS.accept, "vnccs-uc-icon", () => this.acceptStaging(), "Accept as layer");
     this.stagingControls.append(
       this._button(STAGING_ICONS.discard, "vnccs-uc-icon danger", () => this.discardStaging(), "Discard"),
       this.stagingPrevBtn,
       this.stagingCount,
       this.stagingNextBtn,
       this.stagingToggleBtn,
-      this._button(STAGING_ICONS.accept, "vnccs-uc-icon", () => this.acceptStaging(), "Accept as layer")
+      this.stagingAcceptBtn
     );
     this.stageWrap.appendChild(this.stagingControls);
     this.transformControls = document.createElement("div");
@@ -1294,7 +1279,6 @@ class UniCanvasWidget {
     layersBody.append(this.layerSubhead, this.layersTopActions, this.layerList, this.flattenLayersFooter);
     const layersSection = this._section("Layers", layersBody, [
       [UI_ICONS.plus, "Add raster", () => this.addLayer("raster")],
-      [UI_ICONS.mask, "Add mask", () => this.addLayer("mask")],
       [POSE_ICON, "Add pose layer", () => this.addPoseLayer()],
       [UI_ICONS.duplicate, "Duplicate selected", () => this.duplicateActiveLayer()],
       [UI_ICONS.up, "Move selected up", () => this.moveActiveLayer(-1)],
@@ -1357,6 +1341,7 @@ class UniCanvasWidget {
       <div class="vnccs-uc-h3-panel" data-edit-steps-panel style="display:none">
         <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field"><span class="vnccs-uc-field-head"><span>Steps</span><span class="vnccs-uc-help" data-edit-steps-help data-tip hidden>?</span></span><input class="vnccs-uc-input" data-setting="steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (Krea2 Edit: 1, others: up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
       </div>
+      <button class="vnccs-uc-btn vnccs-uc-refs-wide" type="button" data-action="edit-refs" data-standalone-refs data-config-override hidden>Reference Images</button>
       <div class="vnccs-uc-generation-grid">
         <label class="vnccs-uc-field" data-generic-steps>Steps<input class="vnccs-uc-input" data-setting="steps" type="number"></label>
         <label class="vnccs-uc-field">Sampler<select class="vnccs-uc-select" data-setting="sampler_name"></select></label>
@@ -1592,7 +1577,7 @@ class UniCanvasWidget {
   async deletePanoramaLayer(id) {
     const panorama = this.panorama;
     if (!panorama || panorama.settings.baseLayerId !== id || this._panoramaDeletePending) return false;
-    if (this._isRestoring || this.transformDraft || this.isPointerDown) {
+    if (this.editingBlocked || this._isRestoring || this.transformDraft || this.isPointerDown) {
       this.setStatus("Finish the current edit before deleting the panorama", true);
       return false;
     }
@@ -1604,7 +1589,7 @@ class UniCanvasWidget {
         "Delete panorama"
       );
       if (!confirmed || this._disposed || this.panorama !== panorama) return false;
-      if (this._isRestoring || this.transformDraft || this.isPointerDown) return false;
+      if (this.editingBlocked || this._isRestoring || this.transformDraft || this.isPointerDown) return false;
       // Allocate the empty document before releasing the current workspace.
       const layers = [
         { id: uid(), name: "Inpaint Mask", type: "mask" },
@@ -1687,6 +1672,74 @@ class UniCanvasWidget {
       onClick?.();
     });
     return btn;
+  }
+
+  get editingBlocked() {
+    return Boolean(this._generationPreparing || this._generationLocked || this.drawInProgress || this._canvasOperation);
+  }
+
+  get generationEditSelector() {
+    return '.vnccs-uc-layers-section, [data-transform-action], [data-control^="transform-"], .vnccs-uc-pose-root, .vnccs-uc-panorama-controls, .vnccs-uc-sam-panel, .vnccs-uc-layer-menu, [data-tool="pose"], [data-enhance], [data-preset-download], [data-turbo-download]';
+  }
+
+  isInteractionBlocked(event) {
+    if (!this.editingBlocked) return false;
+    if (this._canvasOperation) return true;
+    if (this.stopBtn?.contains(event.target)) return false;
+    if (event.target === this.canvas) {
+      if (event.type === "pointerdown") return !(event.button === 1 || (event.button === 0 && (this.tool === "pan" || (this.tool === "move" && event.altKey))));
+      if (["pointermove", "pointerup"].includes(event.type)) return !["pan", "zoom-drag"].includes(this.pointerMode);
+      return !["wheel", "keydown"].includes(event.type);
+    }
+    const navigation = event.type === "wheel" || (event.type?.startsWith("pointer") && (event.button === 1 || event.buttons === 4));
+    if (navigation && !event.target?.closest?.('.vnccs-uc-pose-root, .vnccs-uc-panorama-controls')) return false;
+    return [this.drawBtn, this.undoBtn, this.redoBtn, this.transformControls, this.stagingAcceptBtn].some(control => control?.contains(event.target))
+      || Boolean(event.target?.closest?.(this.generationEditSelector));
+  }
+
+  syncInteractionLock() {
+    if (!this.container?.children) return;
+    const locked = this.editingBlocked;
+    if (locked) {
+      if (!this._lockedChildren?.size) this._interactionPreviousFocus = document.activeElement;
+      this._lockedChildren ||= new Map();
+      const children = this._canvasOperation ? [...this.container.children]
+        : [this.drawBtn, this.undoBtn, this.redoBtn, this.transformControls, this.stagingAcceptBtn, ...this.container.querySelectorAll(this.generationEditSelector)].filter(Boolean);
+      for (const child of children) {
+        if (!this._canvasOperation && !child.matches('button, input, select, textarea, canvas, .vnccs-uc-pose-root, .vnccs-uc-panorama-controls, .vnccs-uc-staging-popover, .vnccs-uc-sam-panel')) {
+          children.push(...child.querySelectorAll('button, input, select, textarea, canvas'));
+          continue;
+        }
+        if (!this._lockedChildren.has(child)) {
+          this._lockedChildren.set(child, child.inert);
+          child.inert = true;
+        }
+      }
+    } else {
+      for (const [child, inert] of this._lockedChildren || []) child.inert = inert;
+      this._lockedChildren?.clear();
+      if (this._interactionPreviousFocus?.isConnected && this.stopBtn?.contains(document.activeElement)) this._interactionPreviousFocus.focus({ preventScroll: true });
+      this._interactionPreviousFocus = null;
+    }
+    this.showStopButton(locked && !this._canvasOperation);
+    if (locked && !this._canvasOperation && this.isInteractionBlocked({ target: document.activeElement })) this.stopBtn?.focus({ preventScroll: true });
+  }
+
+  createEmptyCanvasState() {
+    const stateId = this.createStateCacheId();
+    const layerId = uid();
+    return {
+      version: 2, storage: "server_cache", state_id: stateId, output_id: `${stateId}_out`,
+      origin: { x: -512, y: -512 }, size: { width: 2048, height: 2048 },
+      bbox: { x: 0, y: 0, width: 1024, height: 1024 },
+      settings: makeDefaultUniCanvasSettings(), snapToGrid: false, resizeTransformMode: "free",
+      layers: [
+        { id: uid(), name: "Inpaint Mask", type: "mask" },
+        { id: layerId, name: "Base Layer", type: "raster" },
+      ].map(layer => ({ ...layer, visible: true, locked: false,
+        opacity: 1, blendMode: "source-over", crop: null, dataURL: null, cached: false })),
+      activeLayerId: layerId,
+    };
   }
 
   parseNumericInput(input, fallback = 0) {
@@ -1849,7 +1902,6 @@ class UniCanvasWidget {
   _createInitialLayers() {
     if (this.layers.length) return;
     this.addLayer("raster", "Base Layer");
-    this.addLayer("mask", "Inpaint Mask");
     this.activeLayerId = this.layers.find((layer) => layer.type === "raster")?.id || this.layers[0]?.id || null;
   }
 
@@ -1866,6 +1918,12 @@ class UniCanvasWidget {
 
   normalizeLayerOrder() {
     const masks = this.layers.filter((layer) => layer.type === "mask");
+    if (!masks.length) {
+      const mask = { id: uid(), name: "Inpaint Mask", type: "mask", visible: true, locked: false,
+        opacity: 1, blendMode: "source-over", canvas: this._createCanvas() };
+      this.invalidateLayerCaches(mask);
+      masks.push(mask);
+    }
     const rasters = this.layers.filter((layer) => layer.type !== "mask");
     this.layers = [...masks, ...rasters];
     if (this.panorama) {
@@ -1913,12 +1971,32 @@ class UniCanvasWidget {
 
   invalidateLayerCaches(layer) {
     if (!layer) return;
+    layer._pixelRevision = (layer._pixelRevision || 0) + 1;
+    layer._serializedPixels = null;
     if (this.panorama) layer._panoramaDirty = true;
     layer._boundsCache = undefined;
     layer._boundsHint = undefined;
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
     layer._hiresRenderLodCache = null;
+  }
+
+  captureLayerEditState(layer) {
+    return {
+      layer, canvas: layer.canvas, revision: layer._pixelRevision,
+      width: layer.canvas.width, height: layer.canvas.height,
+      originX: this.origin.x, originY: this.origin.y,
+      panorama: this.panorama, panoramaRevision: this.panorama?.revision,
+    };
+  }
+
+  isLayerEditStateCurrent(state, allowLocked = false) {
+    return state && !this._disposed && !this.editingBlocked && (allowLocked || !state.layer.locked) && this.layers.includes(state.layer)
+      && state.canvas === state.layer.canvas && state.revision === state.layer._pixelRevision
+      && state.width === state.layer.canvas.width && state.height === state.layer.canvas.height
+      && this.transformDraft?.layerId !== state.layer.id && this.dragStart?.layerId !== state.layer.id
+      && state.originX === this.origin.x && state.originY === this.origin.y
+      && state.panorama === this.panorama && state.panoramaRevision === this.panorama?.revision;
   }
 
   invalidateLayerThumbnail(layer) {
@@ -1928,6 +2006,8 @@ class UniCanvasWidget {
 
   invalidateLayerRenderCaches(layer) {
     if (!layer) return;
+    layer._pixelRevision = (layer._pixelRevision || 0) + 1;
+    layer._serializedPixels = null;
     if (this.panorama) layer._panoramaDirty = true;
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
@@ -1936,6 +2016,8 @@ class UniCanvasWidget {
 
   markLayerPixelsChanged(layer, bounds = null, expandOnly = false) {
     if (!layer) return;
+    layer._pixelRevision = (layer._pixelRevision || 0) + 1;
+    layer._serializedPixels = null;
     if (this.panorama) layer._panoramaDirty = true;
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
@@ -2003,10 +2085,11 @@ class UniCanvasWidget {
   }
 
   setTool(tool, force = false) {
+    if (!force && this.editingBlocked && (this._canvasOperation || tool === "pose")) return;
     if (this.tool === tool && !force) return;
     const previousTool = this.tool;
     if (previousTool === "pose" && tool !== "pose") {
-      this.poseEditor?.commit();
+      if (!this.editingBlocked) this.poseEditor?.commit({ saveView: Boolean(this.standalone && this.poseEditSession) });
       this.poseEditor?.setVisible(false);
       this.endPoseEditSession();
     }
@@ -2104,8 +2187,8 @@ class UniCanvasWidget {
       view: { ...this.view },
       intendedScale: this.intendedScale,
     };
-    // Frame the pose rect so the mannequin is large enough to work on.
-    this.centerBbox(true, layer.pose.rect, 2);
+    // The standalone workspace keeps the user's framing throughout pose editing.
+    if (!this.standalone) this.centerBbox(true, layer.pose.rect, 2);
     this.requestRender();
     this.updateHistoryButtons();
     this.setStatus("Editing pose - Save pose (Enter) or Cancel when done. Ctrl+Z / Ctrl+Y undo and redo pose changes.");
@@ -2128,6 +2211,7 @@ class UniCanvasWidget {
   }
 
   restorePoseEditView(session) {
+    if (this.standalone) return;
     if (!session?.view) return;
     this.view = { ...session.view };
     this.intendedScale = session.intendedScale ?? this.view.scale;
@@ -2221,12 +2305,6 @@ class UniCanvasWidget {
     this.requestRender();
     this.syncToNode();
     this.setStatus(`Rasterized ${layer.name}`);
-  }
-
-  async preparePoseForQueue() {
-    await this.poseEditor?.flush();
-    this.panorama?.commit();
-    if (await this.uploadStatePayload(this.buildSerializedState(true)) === false) throw new Error("Pose state could not be saved; queue stopped to protect the latest edits");
   }
 
   toolNeedsCanvasRender(tool) {
@@ -2388,6 +2466,14 @@ class UniCanvasWidget {
     this._eventAbortController?.abort();
     this._eventAbortController = new AbortController();
     const eventSignal = this._eventAbortController.signal;
+    const blockEditing = event => {
+      if (!this.isInteractionBlocked(event)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    for (const type of ["pointerdown", "pointermove", "pointerup", "click", "dblclick", "input", "change", "keydown", "wheel", "drop", "paste", "contextmenu"]) {
+      this.container.addEventListener(type, blockEditing, { capture: true, passive: false, signal: eventSignal });
+    }
     enableUniCanvasGraphNavigationForwarding(this.container);
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(this.container);
@@ -2456,6 +2542,7 @@ class UniCanvasWidget {
         if (this.recallModelChoice()) this.syncPromptControls();
         this.renderModelSelectionControls();
         this.syncSettingsToWidget();
+        void checkModelDependencies(this, this.settings.model_selection_mode === "presets" ? this.getActivePreset() : null);
       } else if (btn.dataset.presetPickerToggle) {
         e.preventDefault();
         this.presetPickerOpen = !this.presetPickerOpen;
@@ -2481,6 +2568,7 @@ class UniCanvasWidget {
       const target = e.target;
       const layer = this.activeLayer;
       if (!layer || !(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) return;
+      this.recordInputHistory(target);
       if (target.dataset.layerControl === "blendMode") layer.blendMode = target.value || "source-over";
       if (target.dataset.layerControl === "opacity") {
         layer.opacity = Number(target.value);
@@ -2588,6 +2676,9 @@ class UniCanvasWidget {
       if (key === "inference_scale") this.syncInferenceControls(target);
       if (key in MODEL_MEMORY_ASSET_FIELDS || key === "clip_type" || key === "gguf_arch") this.rememberModelChoice();
       this.syncSettingsToWidget();
+      if (["generation_mode", "model_loader", "ckpt_name", "diffusion_model_name", "gguf_model_name"].includes(key)) {
+        void checkModelDependencies(this);
+      }
     });
     this.left.addEventListener("change", (e) => {
       const target = e.target;
@@ -2658,10 +2749,12 @@ class UniCanvasWidget {
   }
 
   async loadPresets() {
+    if (this._disposed) return;
     try {
       const res = await fetch(`/vnccs/unicanvas/presets?t=${Date.now()}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Preset list failed");
+      if (this._disposed) return;
       this.presets = Array.isArray(data.presets) ? data.presets : [];
       this.presetDownloads = data.downloads || {};
     } catch (err) {
@@ -2940,15 +3033,16 @@ class UniCanvasWidget {
       "flux klein9b": "Flux",
       "z-image": "Z-image",
       "z_image": "Z-image",
-      qie2511: "QIE2511",
-      qwen_image_edit: "QIE2511",
     };
     return map[raw.toLowerCase()] || raw;
   }
 
   groupPresetsByType() {
     const groups = new Map();
-    for (const preset of this.presets || []) {
+    const priority = new Map([["sdxl", 0], ["qwen_image21", 1], ["krea2_edit", 2]]);
+    const presets = [...(this.presets || [])].sort((a, b) =>
+      (priority.get(a.id) ?? priority.size) - (priority.get(b.id) ?? priority.size));
+    for (const preset of presets) {
       const label = this.getPresetGroupLabel(preset);
       if (!groups.has(label)) groups.set(label, []);
       groups.get(label).push(preset);
@@ -3024,7 +3118,6 @@ class UniCanvasWidget {
     // their reference convention (spec section 9 style, user request); the
     // generic Steps row is hidden for every family that owns one.
     const editStepsHints = {
-      qwen_image_edit: "Region edit - the working area is the source image; the first Edit model reference (reference_image_1) conditions the subject. Steps control the edit sampling (fewer steps stay closer to the source).",
       flux_klein: "Guided edit - the working area is re-sampled under the prompt and denoise settings; Edit model references condition the result. Steps control the sampling depth.",
       qwen_image21: "Reference edit - working area is <image1>, Edit model references are <image2..5>; the prompt is the edit instruction in the <image N> convention.",
       krea2_edit: "Identity edit - the working area is the background (image 1); one Edit model reference is the character to put into it (image 2). Krea2 takes at most these two pictures.",
@@ -3046,8 +3139,24 @@ class UniCanvasWidget {
       genericSteps.style.display = ownsSteps ? "none" : "";
     }
     // Qwen-Image-2.1 family: mount and gate the QI2.1 settings panel.
-    syncQwen21Panel(this);
+    this.syncStandaloneGenerationControls();
     this.updateEditRefsBadge();
+  }
+
+  syncStandaloneGenerationControls() {
+    if (!this.standalone) return;
+    const module = getUniCanvasModelModule(this.settings.generation_mode);
+    const steps = this.container.querySelector("[data-generic-steps]");
+    if (steps) {
+      steps.style.display = "";
+      const input = steps.querySelector("input");
+      input.dataset.setting = module.key === "minimax_h3" ? "minimax_h3_steps" : "steps";
+      input.value = String(this.settings[input.dataset.setting] ?? 24);
+    }
+    const refs = this.container.querySelector("[data-standalone-refs]");
+    if (refs) refs.hidden = !module.isEditModel;
+    if (this._editRefsFamily !== module.key) this.closeEditReferenceImages();
+    this._editRefsFamily = module.key;
   }
 
   presetRuntimeSettingKeys(preset) {
@@ -3125,6 +3234,7 @@ class UniCanvasWidget {
     // No auto-download: the header card shows the description and a Download button when missing.
     this.syncPromptControls();
     this.syncSettingsToWidget();
+    void checkModelDependencies(this, preset);
   }
 
   isPresetTurboEnabled(preset) {
@@ -3133,7 +3243,7 @@ class UniCanvasWidget {
     const setting = turbo.setting || "dmd_lora_name";
     const strengthSetting = turbo.strength_setting || "dmd_lora_strength";
     if (turbo.enable_setting && this.settings[turbo.enable_setting] !== true) return false;
-    return this.normalizeRelName(this.settings[setting]) === this.normalizeRelName(turbo.asset.relative_name)
+    return this.normalizeRelName(this.settings[setting]).split("/").pop() === this.normalizeRelName(turbo.asset.relative_name).split("/").pop()
       && Number(this.settings[strengthSetting] ?? 0) > 0;
   }
 
@@ -3145,7 +3255,6 @@ class UniCanvasWidget {
     const fallbackTurboSettings = {
       sdxl: { steps: 4, cfg: 1 },
       anima: { steps: 12, cfg: 1 },
-      qwen_image_edit: { steps: 4, cfg: 1 },
     };
     return {
       ...(fallbackTurboSettings[preset.id] || fallbackTurboSettings[preset.settings?.generation_mode] || {}),
@@ -3231,20 +3340,24 @@ class UniCanvasWidget {
   }
 
   startPresetDownloadPolling() {
-    if (this._disposed || this.presetDownloadTimer) return;
-    this.presetDownloadTimer = window.setInterval(() => this.refreshPresetDownloadStatus(), 2000);
+    if (this._disposed) return;
+    this._presetDownloadRevision = (this._presetDownloadRevision || 0) + 1;
+    if (this.presetDownloadTimer) return;
+    this.presetDownloadTimer = window.setInterval(() => this.refreshPresetDownloadStatus(), 750);
     this.refreshPresetDownloadStatus();
   }
 
   async refreshPresetDownloadStatus() {
-    if (this._disposed) return;
+    if (this._disposed || this._presetStatusRefreshing) return;
+    this._presetStatusRefreshing = true;
+    const revision = this._presetDownloadRevision;
     try {
       const res = await fetch(`/vnccs/unicanvas/presets/status?t=${Date.now()}`);
       const data = await res.json();
-      if (this._disposed) return;
+      if (this._disposed || revision !== this._presetDownloadRevision) return;
       if (!res.ok) throw new Error(data.error || "Status failed");
       this.presetDownloads = data || {};
-      await this.loadPresets();
+      this._dependencyDialog?.update(this.presetDownloads);
       this.renderModelSelectionControls();
       const active = Object.values(this.presetDownloads).some((item) => ["queued", "downloading"].includes(item?.status));
       if (!active && this.presetDownloadTimer) {
@@ -3253,11 +3366,11 @@ class UniCanvasWidget {
         await this._loadAssets();
       }
     } catch (err) {
-      if (this.presetDownloadTimer) {
-        window.clearInterval(this.presetDownloadTimer);
-        this.presetDownloadTimer = null;
-      }
+      if (this._disposed) return;
+      this._dependencyDialog?.error(`Status unavailable: ${err.message || err}. Retrying…`);
       this.setStatus(`Preset status failed: ${err.message || err}`, true);
+    } finally {
+      this._presetStatusRefreshing = false;
     }
   }
 
@@ -3294,7 +3407,6 @@ class UniCanvasWidget {
       this.applyInferenceModuleDefaults(key, { preserveModelSelection: true });
       this.syncInferenceControls();
       this.syncPromptControls();
-      syncQwen21Panel(this);
       this.syncSettingsToWidget();
     } finally {
       this._syncingConfigFamily = false;
@@ -3331,8 +3443,9 @@ class UniCanvasWidget {
 
   normalizeGenerationSettings() {
     this.forceSelectedPresetModelSettings();
-    // The scale sliders span 0.5–3; anything else (restored or preset-driven) is pulled back in.
+    // Stored scales remain side multipliers; the standalone UI uses VNCCS megapixel steps.
     this.settings.inference_scale = Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1));
+    if (this.standalone) this.settings.inference_scale = inferenceScaleFromMegapixels(inferenceScaleMegapixels(this.settings.inference_scale));
     const loader = getUniCanvasModelLoader(this.settings.model_loader);
     this.settings.model_loader = loader.key;
     if (this.settings.model_selection_mode !== "presets") {
@@ -3379,7 +3492,6 @@ class UniCanvasWidget {
     this.syncInferenceControls();
     this.syncPromptControls();
     // Re-gate the Qwen-Image-2.1 settings panel for the new family.
-    syncQwen21Panel(this);
   }
 
   applyModelLoaderDefaults(loaderType) {
@@ -3454,17 +3566,25 @@ class UniCanvasWidget {
   syncInferenceControls(source = null) {
     // Both panels (Presets and Custom) carry an inference scale slider; keep them in lockstep.
     const scaleInputs = this.container.querySelectorAll('[data-setting="inference_scale"]');
-    const scale = Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1));
+    if (this.standalone && source) this.settings.inference_scale = inferenceScaleFromMegapixels(source.value);
+    let scale = Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1));
+    if (this.standalone) scale = inferenceScaleFromMegapixels(inferenceScaleMegapixels(scale));
     this.settings.inference_scale = scale;
     scaleInputs.forEach((scaleInput) => {
-      if (scaleInput !== source) scaleInput.value = this.formatSettingNumber(scale, 3);
+      scaleInput.min = this.standalone ? INFERENCE_SCALE_MP_MIN : 0.5;
+      scaleInput.max = this.standalone ? INFERENCE_SCALE_MP_MAX : 3;
+      scaleInput.step = this.standalone ? INFERENCE_SCALE_MP_STEP : 0.05;
+      if (this.standalone || scaleInput !== source) scaleInput.value = this.standalone
+        ? inferenceScaleMegapixels(scale).toFixed(1) : this.formatSettingNumber(scale, 3);
     });
     this.updateInferenceSizeLabels();
   }
 
-  // Live "W×H" preview(s) next to the inference scale sliders; duplicates the HUD `infer` chip.
+  // The standalone tab displays the scale itself; the node keeps its size preview.
   updateInferenceSizeLabels(size = this.getInferenceSize()) {
-    const text = `${size.width}×${size.height}`;
+    const text = this.standalone
+      ? `${inferenceScaleMegapixels(this.settings.inference_scale).toFixed(1)} MP`
+      : `${size.width}×${size.height}`;
     this.container.querySelectorAll("[data-inference-size]").forEach((el) => {
       if (el.textContent !== text) el.textContent = text;
     });
@@ -3518,9 +3638,11 @@ class UniCanvasWidget {
     const dpr = window.devicePixelRatio || 1;
     const nextWidth = Math.max(1, Math.floor(size.width * dpr));
     const nextHeight = Math.max(1, Math.floor(size.height * dpr));
+    let changed = this.canvas.width !== nextWidth || this.canvas.height !== nextHeight;
     if (this.canvas.width !== nextWidth) this.canvas.width = nextWidth;
     if (this.canvas.height !== nextHeight) this.canvas.height = nextHeight;
     if (this.previewCanvas) {
+      changed ||= this.previewCanvas.width !== nextWidth || this.previewCanvas.height !== nextHeight;
       if (this.previewCanvas.width !== nextWidth) this.previewCanvas.width = nextWidth;
       if (this.previewCanvas.height !== nextHeight) this.previewCanvas.height = nextHeight;
       this.previewCanvas.style.width = "100%";
@@ -3530,8 +3652,9 @@ class UniCanvasWidget {
     this.canvas.style.height = "100%";
     if (!this.didInitialCenter && size.width > 0 && size.height > 0) {
       this.fitInitialView();
+      changed = true;
     }
-    this.render();
+    if (changed) this.requestRender();
   }
 
   requestRender() {
@@ -3547,6 +3670,10 @@ class UniCanvasWidget {
 
   clearToolPreviewOverlay() {
     if (!this.previewCanvas) return;
+    if (this.standalone && this.poseEditor?.visible) {
+      this.updateToolPreviewOverlay();
+      return;
+    }
     const ctx = this.previewCanvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -3561,6 +3688,14 @@ class UniCanvasWidget {
     const h = this.previewCanvas.height / dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
+    // Keep the generation frame above the embedded 3D viewport, including its wall.
+    if (this.standalone && this.poseEditor?.visible) {
+      ctx.save();
+      ctx.translate(this.view.x, this.view.y);
+      ctx.scale(this.view.scale, this.view.scale);
+      this.drawBbox(ctx);
+      ctx.restore();
+    }
     if (this.tool === "sam" || this.sam.maskCanvas) {
       ctx.save();
       ctx.translate(this.view.x, this.view.y);
@@ -3652,10 +3787,22 @@ class UniCanvasWidget {
     if (!this.container) return;
     const width = this.container.clientWidth || this.node?.size?.[0] || 1040;
     const height = this.container.clientHeight || this.node?.size?.[1] || 720;
-    const scale = Math.max(0.35, Math.min(2.5, Math.min(width / UNICANVAS_LAYOUT_BASE_WIDTH, height / UNICANVAS_LAYOUT_BASE_HEIGHT)));
+    const scale = this.standalone
+      ? Math.max(0.75, Math.min(1, width / 1440, height / 900))
+      : Math.max(0.35, Math.min(2.5, Math.min(width / UNICANVAS_LAYOUT_BASE_WIDTH, height / UNICANVAS_LAYOUT_BASE_HEIGHT)));
     const next = scale.toFixed(3);
     if (this.container.style.getPropertyValue("--vnccs-uc-ui-scale") !== next) {
       this.container.style.setProperty("--vnccs-uc-ui-scale", next);
+    }
+    if (this.standalone && this.tools) {
+      const stageHeight = this.stageWrap?.clientHeight || height;
+      this.tools.classList.toggle("vnccs-uc-tools-compact", stageHeight < 400);
+      // Measure the full toolbar before fitting it, so every tool stays accessible without scrolling.
+      const toolScale = Math.min(scale, Math.max(0.1, (stageHeight - 16) / (this.tools.scrollHeight + 2)));
+      const toolNext = (Math.floor(toolScale * 1000) / 1000).toFixed(3);
+      if (this.container.style.getPropertyValue("--vnccs-uc-toolbar-scale") !== toolNext) {
+        this.container.style.setProperty("--vnccs-uc-toolbar-scale", toolNext);
+      }
     }
   }
 
@@ -3682,6 +3829,7 @@ class UniCanvasWidget {
   }
 
   onPointerHover(e) {
+    if (this.editingBlocked) return;
     this.hoverPointerType = e.pointerType || "mouse";
     this.hoverPoint = this.worldFromEvent(e);
     this.updateContextCursor(this.hoverPoint);
@@ -3689,6 +3837,7 @@ class UniCanvasWidget {
   }
 
   onPointerLeave(e) {
+    if (this.editingBlocked) return;
     if (this.isPointerDown) return;
     this.hoverPointerType = e.pointerType || "mouse";
     this.hoverPoint = null;
@@ -3697,15 +3846,17 @@ class UniCanvasWidget {
   }
 
   onPointerDown(e) {
-    if (this._isRestoring || this._disposed) return;
-    if (this.panorama) {
+    if (this.isPointerDown) return;
+    const navigation = e.button === 1 || (e.button === 0 && (this.tool === "pan" || (this.tool === "move" && e.altKey)));
+    if (this._isRestoring || this._disposed || this._canvasOperation || (this.editingBlocked && !navigation)) return;
+    if (this.panorama && !this.editingBlocked) {
       if (this.panoramaOrbit?.gesture) this.panoramaOrbit.finish();
       this.panorama.flushCamera();
       if (e.button === 0 && this.tool === "panorama") {
         if (!this.panorama.beginCamera()) return;
         e.preventDefault(); e.stopPropagation(); this.canvas.setPointerCapture?.(e.pointerId);
         this.isPointerDown = true; this.pointerMode = "panorama";
-        this.dragStart = { screen: this.canvasPointFromEvent(e), camera: { ...this.panorama.settings } };
+        this.dragStart = { pointerId: e.pointerId, screen: this.canvasPointFromEvent(e), camera: { ...this.panorama.settings } };
         this.lastPoint = this.worldFromEvent(e);
         return;
       }
@@ -3727,8 +3878,8 @@ class UniCanvasWidget {
     this.hoverPoint = point;
     this.clearToolPreviewOverlay();
     this.lastPoint = point;
-    this.dragStart = { point, screen, view: { ...this.view }, bbox: { ...this.bbox } };
-    this.pointerMode = e.button === 1 ? "pan" : this.tool;
+    this.dragStart = { pointerId: e.pointerId, point, screen, view: { ...this.view }, bbox: { ...this.bbox } };
+    this.pointerMode = navigation ? "pan" : this.tool;
     if (e.button === 1 && (e.ctrlKey || e.metaKey)) {
       this.pointerMode = "zoom-drag";
       this.zoomDragStart = {
@@ -3818,6 +3969,8 @@ class UniCanvasWidget {
   }
 
   onPointerMove(e) {
+    if (this.isPointerDown && e.pointerId !== this.dragStart?.pointerId) return;
+    if (this._canvasOperation || (this.editingBlocked && !["pan", "zoom-drag"].includes(this.pointerMode))) return;
     if (this.panorama && this.isPointerDown && this.pointerMode === "panorama") {
       e.preventDefault(); e.stopPropagation();
       const point = this.canvasPointFromEvent(e), start = this.dragStart;
@@ -3872,7 +4025,8 @@ class UniCanvasWidget {
   }
 
   onPointerUp(e) {
-    if (!this.isPointerDown) return;
+    if (this._canvasOperation || (this.editingBlocked && !["pan", "zoom-drag"].includes(this.pointerMode))) return;
+    if (!this.isPointerDown || (e && e.pointerId !== this.dragStart?.pointerId)) return;
     if (this.panorama && this.pointerMode === "panorama") {
       e?.preventDefault?.(); e?.stopPropagation?.();
       this.isPointerDown = false; this.pointerMode = null; this.lastPoint = null; this.dragStart = null;
@@ -3927,7 +4081,7 @@ class UniCanvasWidget {
       this.syncLightStateToWidget();
     } else if (["bbox-move", "bbox-resize"].includes(finishedMode)) {
       this.syncSettingsToWidget();
-    } else {
+    } else if (!["pan", "zoom-drag"].includes(finishedMode)) {
       this.syncSettingsToWidget();
     }
   }
@@ -4100,6 +4254,8 @@ class UniCanvasWidget {
   }
 
   clearSamMask(update = true) {
+    this.sam.requestRevision = (this.sam.requestRevision || 0) + 1;
+    this.sam.layerState = null;
     this.sam.maskCanvas = null;
     this.sam.crop = null;
     this.sam.layerId = null;
@@ -4120,8 +4276,7 @@ class UniCanvasWidget {
   }
 
   async segmentSamMask() {
-    const requestPanorama = this.panorama;
-    const panoramaRevision = requestPanorama?.revision;
+    if (this.sam.busy) return;
     const layer = this.activeLayer;
     if (!layer || layer.type !== "raster") {
       this.setSamStatus("Select a raster layer", true);
@@ -4152,6 +4307,9 @@ class UniCanvasWidget {
       this.setSamStatus("SAM points are outside crop", true);
       return;
     }
+    this.clearSamMask(false);
+    const requestRevision = this.sam.requestRevision;
+    const layerState = this.captureLayerEditState(layer);
     const source = this.cloneCanvasCrop(layer.canvas, crop);
     this.sam.busy = true;
     this.sam.status = "Segmenting...";
@@ -4160,6 +4318,7 @@ class UniCanvasWidget {
     // A seconds counter keeps it visibly alive; the first run of a model loads (or downloads) it.
     const started = performance.now();
     const ticker = setInterval(() => {
+      if (requestRevision !== this.sam.requestRevision || this._disposed) return;
       const seconds = Math.round((performance.now() - started) / 1000);
       this.sam.status = seconds >= 5
         ? `Segmenting... ${seconds}s (first use loads the model${this.sam.model === "sam3" ? ", SAM 3 downloads ~3.4 GB" : ""})`
@@ -4179,7 +4338,10 @@ class UniCanvasWidget {
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       const img = await this.loadImage(data.mask);
-      if (this._disposed || requestPanorama !== this.panorama || panoramaRevision !== this.panorama?.revision) return;
+      if (requestRevision !== this.sam.requestRevision || !this.isLayerEditStateCurrent(layerState)) {
+        this.sam.status = "SAM input changed; segment again";
+        return;
+      }
       const maskCanvas = document.createElement("canvas");
       maskCanvas.width = crop.width;
       maskCanvas.height = crop.height;
@@ -4187,6 +4349,7 @@ class UniCanvasWidget {
       this.sam.maskCanvas = maskCanvas;
       this.sam.crop = { ...crop };
       this.sam.layerId = layer.id;
+      this.sam.layerState = layerState;
       this.sam.status = data.note ? "Mask ready (SAM2 fallback)" : "Mask ready";
       this.setStatus(data.note ? `SAM mask ready - ${data.note}` : "SAM mask ready", Boolean(data.note));
     } catch (err) {
@@ -4201,7 +4364,12 @@ class UniCanvasWidget {
   }
 
   applySamMask() {
-    const layer = this.layers.find((item) => item.id === this.sam.layerId) || this.activeLayer;
+    if (!this.isLayerEditStateCurrent(this.sam.layerState)) {
+      this.clearSamMask(false);
+      this.setSamStatus("SAM input changed; segment again", true);
+      return;
+    }
+    const layer = this.sam.layerState.layer;
     if (!layer || layer.type !== "raster" || !this.sam.maskCanvas || !this.sam.crop) {
       this.setSamStatus("No SAM mask to apply", true);
       return;
@@ -4395,6 +4563,7 @@ class UniCanvasWidget {
   restoreHistorySnapshot(snapshot) {
     if (!snapshot) return;
     this.cancelDeferredCanvasCommit();
+    this._documentRevision = (this._documentRevision || 0) + 1;
     this.poseEditor?.release();
     this.historyRestoring = true;
     this.panorama?.dispose();
@@ -4451,6 +4620,7 @@ class UniCanvasWidget {
   }
 
   undo() {
+    if (this.editingBlocked) return;
     if (this.tool === "sam" && this.undoSamPoint()) {
       this.setStatus("SAM point undo");
       return;
@@ -4484,6 +4654,7 @@ class UniCanvasWidget {
   }
 
   redo() {
+    if (this.editingBlocked) return;
     if (this.tool === "sam" && this.redoSamPoint()) {
       this.setStatus("SAM point redo");
       return;
@@ -4519,6 +4690,10 @@ class UniCanvasWidget {
     if (!entry?.kind) return;
     this.cancelDeferredCanvasCommit();
     this.historyRestoring = true;
+    // Document restoration may have replaced the layer object kept by history.
+    if (direction === "undo" && entry.layer) {
+      entry.layer = this.layers.find((layer) => layer.id === entry.layer.id) || entry.layer;
+    }
     if (entry.kind === "acceptStaging") {
       if (direction === "undo") {
         this.layers = this.layers.filter((layer) => layer.id !== entry.layer.id);
@@ -4563,11 +4738,11 @@ class UniCanvasWidget {
     this.renderLayerList();
     this.requestRender();
     this.syncLightStateToWidget();
-    if (this.panorama || entry.layer?.type === "pose" || this.layers.some(layer => layer.type === "pose")) this.scheduleFullSync();
+    this.scheduleFullSync();
   }
 
   updateHistoryButtons() {
-    if (this.panorama) trimPanoramaHistory(this.undoStack, this.redoStack);
+    trimPanoramaHistory(this.undoStack, this.redoStack);
     if (this.tool === "pose" && this.poseEditSession && this.poseEditor) {
       // The buttons drive Pose Studio's history during a pose edit; they stay enabled because
       // mannequin edits are recorded inside Pose Studio without notifying the canvas.
@@ -4606,7 +4781,7 @@ class UniCanvasWidget {
   // Free Transform (Photoshop style). The draft keeps the layer's ORIGINAL pixels
   // (sourceCanvas over sourceBounds) plus a frame: quad (4 world corners) and, once Warp
   // was used, a 4x4 Bezier mesh. Gestures edit the frame from its state at gesture start;
-  // pixels are resampled once, on Apply. Math lives in vnccs_unicanvas_transform.mjs.
+  // pixels are resampled once, on Apply. Math lives in unicanvas/transform.mjs.
   // ---------------------------------------------------------------------------
 
   transformHitOptions() {
@@ -4983,6 +5158,9 @@ class UniCanvasWidget {
     if (this.canSnapMovedLayer(layer, crop)) {
       ({ dx, dy } = this.snapMovedLayerDelta(dx, dy, crop, sourceOrigin));
     }
+    // Layer pixels and hi-res world rectangles both render at integer placement.
+    dx = Math.round(dx);
+    dy = Math.round(dy);
     start.previewDx = dx;
     start.previewDy = dy;
   }
@@ -5124,6 +5302,7 @@ class UniCanvasWidget {
   }
 
   onWheel(e) {
+    if (this._canvasOperation) { e.preventDefault(); return; }
     e.preventDefault();
     e.stopPropagation();
     if (e.ctrlKey || e.metaKey) return;
@@ -5181,8 +5360,6 @@ class UniCanvasWidget {
       if (Math.abs(this.intendedScale - this.activeSnapPoint) > threshold) {
         this.activeSnapPoint = null;
         this.applyStageScale(this.intendedScale, center);
-      } else {
-        this.intendedScale = this.activeSnapPoint;
       }
       return;
     }
@@ -5344,10 +5521,20 @@ class UniCanvasWidget {
       if (this.poseEditor?.hidesLayerPixels(layer)) continue;
       if (hideMaskOverlays && layer.type === "mask") continue;
       ctx.save();
+      const transformDraft = this.getLayerTransformDraft(layer);
+      const movePreview = transformDraft ? null : this.getLayerMovePreview(layer);
+      const visibleWorldRect = this._visibleWorldRectForRender;
+      if (movePreview) {
+        ctx.translate(movePreview.dx, movePreview.dy);
+        this._visibleWorldRectForRender = {
+          ...visibleWorldRect,
+          x: visibleWorldRect.x - movePreview.dx,
+          y: visibleWorldRect.y - movePreview.dy,
+        };
+      }
       if (layer.type === "mask") {
-        const transformDraft = this.getLayerTransformDraft(layer);
         if (transformDraft) {
-          ctx.globalAlpha = 1;
+          ctx.globalAlpha = layer.opacity;
           this.drawMaskTransformDraft(ctx, transformDraft);
         } else {
           this.drawMaskLayer(ctx, layer);
@@ -5355,21 +5542,10 @@ class UniCanvasWidget {
       } else {
         ctx.globalAlpha = layer.opacity;
         ctx.globalCompositeOperation = layer.blendMode || "source-over";
-        const transformDraft = this.getLayerTransformDraft(layer);
-        const movePreview = transformDraft ? null : this.getLayerMovePreview(layer);
-        const visibleWorldRect = this._visibleWorldRectForRender;
-        if (movePreview) {
-          ctx.translate(movePreview.dx, movePreview.dy);
-          this._visibleWorldRectForRender = {
-            ...visibleWorldRect,
-            x: visibleWorldRect.x - movePreview.dx,
-            y: visibleWorldRect.y - movePreview.dy,
-          };
-        }
         if (transformDraft) this.drawTransformDraft(ctx, transformDraft);
         else this.drawRasterLayerVisible(ctx, layer);
-        if (movePreview) this._visibleWorldRectForRender = visibleWorldRect;
       }
+      if (movePreview) this._visibleWorldRectForRender = visibleWorldRect;
       ctx.restore();
     }
     this._visibleWorldRectForRender = null;
@@ -5378,7 +5554,7 @@ class UniCanvasWidget {
     this.drawLassoDraft(ctx);
     this.drawResizeOverlay(ctx);
     if (this.panorama) ctx.restore();
-    // The generation box is not drawn while a pose is being edited: the 3D view owns the stage.
+    // Standalone pose editing draws the frame on the preview canvas above the 3D view.
     if (!this.poseEditor?.hidesBbox()) this.drawBbox(ctx);
     ctx.restore();
     const inferenceSize = this.getInferenceSize();
@@ -5396,10 +5572,11 @@ class UniCanvasWidget {
   }
 
   drawBackground(ctx, w, h) {
-    ctx.fillStyle = "#07070c";
+    const theme = this.standalone ? getComputedStyle(this.canvas) : null;
+    ctx.fillStyle = theme?.backgroundColor || "#07070c";
     ctx.fillRect(0, 0, w, h);
     const step = Math.max(8, 64 * this.view.scale);
-    ctx.strokeStyle = "rgba(255,255,255,.045)";
+    ctx.strokeStyle = theme?.color || "rgba(255,255,255,.045)";
     ctx.lineWidth = 1;
     const ox = this.view.x % step;
     const oy = this.view.y % step;
@@ -5503,7 +5680,7 @@ class UniCanvasWidget {
 
   drawRasterLayerVisible(ctx, layer) {
     if (layer.hiresCanvas && layer.hiresRect) {
-      const visible = this.visibleWorldRect();
+      const visible = this._visibleWorldRectForRender || this.visibleWorldRect();
       this.drawRasterLayerToWorldRect(ctx, layer, visible, visible, false, this.shouldUseLayerLod(layer));
       return;
     }
@@ -6087,7 +6264,6 @@ class UniCanvasWidget {
     const rasters = this.layers.filter((layer) => layer.type !== "mask");
     this.maskLayerList.append(this.createLayerGroupHead("Masks", masks.length, "mask"));
     for (const layer of masks) this.maskLayerList.append(this.createLayerRow(layer));
-    if (!masks.length) this.maskLayerList.append(this.createLayerGroupEmpty("No masks"));
     this.rasterLayerList.append(this.createLayerGroupHead("Image Layers", rasters.length, "raster"));
     for (const layer of rasters) this.rasterLayerList.append(this.createLayerRow(layer));
     if (!rasters.length) this.rasterLayerList.append(this.createLayerGroupEmpty("No raster layers"));
@@ -6100,7 +6276,18 @@ class UniCanvasWidget {
   createLayerGroupHead(label, count, type) {
     const head = document.createElement("div");
     head.className = `vnccs-uc-layer-group-head ${type === "mask" ? "mask" : ""}`;
-    head.innerHTML = `<span>${this._escape(label)}</span><span>${count}</span>`;
+    head.innerHTML = `<span>${this._escape(label)}</span>`;
+    if (type === "mask") {
+      const add = this._button(UI_ICONS.plus, "vnccs-uc-icon", () => {
+        if (!this.editingBlocked && !this._disposed) this.addLayer("mask");
+      }, "Add mask layer");
+      add.setAttribute("aria-label", "Add mask layer");
+      head.append(add);
+    } else {
+      const badge = document.createElement("span");
+      badge.textContent = count;
+      head.append(badge);
+    }
     return head;
   }
 
@@ -6187,7 +6374,7 @@ class UniCanvasWidget {
     label.addEventListener("dblclick", async (e) => {
       e.stopPropagation();
       const next = await this.promptInWidget("Rename Layer", "Layer name", layer.name);
-      if (next !== null) {
+      if (next !== null && !this.editingBlocked && !this._disposed && this.layers.includes(layer)) {
         layer.name = String(next).trim() || layer.name;
         layer.nameSource = "user"; // auto naming never replaces a name the user typed
         this.updateLayerRow(row, layer);
@@ -6440,10 +6627,12 @@ class UniCanvasWidget {
   }
 
   deleteLayer(id) {
+    if (this.editingBlocked || this._disposed) return;
     if (this.panorama?.settings.baseLayerId === id) {
       return this.deletePanoramaLayer(id);
     }
-    if (this.layers.length <= 1) return;
+    const layer = this.layers.find(layer => layer.id === id);
+    if (!layer || (this.layers.length <= 1 && layer.type !== "mask")) return;
     if (this.transformDraft) {
       this.setStatus("Apply or cancel the active transform first", true);
       return;
@@ -6454,6 +6643,7 @@ class UniCanvasWidget {
     this.recordHistoryBefore();
     if (this.poseEditor?.layer?.id === id) this.poseEditor.release();
     this.layers = this.layers.filter((l) => l.id !== id);
+    this.normalizeLayerOrder();
     if (this.activeLayerId === id) {
       this.activeLayerId = this.layers[0]?.id || null;
       this.syncPoseToolToActiveLayer();
@@ -6554,10 +6744,10 @@ class UniCanvasWidget {
     }
     const confirmed = await this.confirmInWidget(
       "Flatten Layers",
-      "All visible raster layers will be flattened into one master layer. All other layers will be removed. Undo (Ctrl+Z) brings them back.",
+      "All visible raster layers will be flattened into one master layer. All other layers will be removed and an empty mask layer will be created. Undo (Ctrl+Z) brings them back.",
       "Flatten"
     );
-    if (!confirmed) return;
+    if (!confirmed || this.editingBlocked || this._disposed) return;
     this.flattenLayersToMaster();
   }
 
@@ -6613,6 +6803,7 @@ class UniCanvasWidget {
   }
 
   async importFile(file) {
+    if (this.editingBlocked) return;
     if (!file) return;
     const importRevision = this._importRevision = (this._importRevision || 0) + 1;
     this._panoramaImportClose?.();
@@ -6625,10 +6816,10 @@ class UniCanvasWidget {
     try { img = await this.loadImage(url); }
     catch (error) { this.setStatus(`Image import failed: ${error.message || error}`, true); return; }
     finally { URL.revokeObjectURL(url); this.fileInput.value = ""; }
-    if (this._disposed || importRevision !== this._importRevision) return;
+    if (this._disposed || this.editingBlocked || importRevision !== this._importRevision) return;
     if (!this.panorama && isPanoramaCandidate(img.width, img.height)) {
       const choice = await this.choosePanoramaImport(img);
-      if (choice === "cancel" || this._disposed || importRevision !== this._importRevision) return;
+      if (choice === "cancel" || this._disposed || this.editingBlocked || importRevision !== this._importRevision) return;
       if (choice === "panorama") {
         if (this.isStagingActive() || this.sam.busy) { this.setStatus("Finish generation and segmentation before entering panorama mode", true); return; }
         try { await this.importPanorama(img, file.name.replace(/\.[^.]+$/, "")); }
@@ -6986,8 +7177,61 @@ class UniCanvasWidget {
     return out;
   }
 
+  captureGenerationSettings() {
+    if (this._isConfigLinked()) this.syncConfigFamily();
+    const { loader } = this.normalizeGenerationSettings();
+    if ((this.settings.seed_mode || DEFAULT_SEED_MODE) === "randomize") {
+      this.settings.seed = this.generateRandomSeed();
+      this.syncPromptControls();
+    }
+    this.flushSettingsToWidget();
+    return { settings: this.makeSettingsPayload(), loader, modelBase: this.getModelBase(),
+      inferenceSize: this.getInferenceSize(),
+      config: this._isConfigLinked() ? resolveConfigDrawSettings(this.node?.graph || app.graph, this.node) : null };
+  }
+
   async draw() {
+    if (this.editingBlocked || this._isRestoring || this._disposed) return;
+    if (this.isPointerDown || this.transformDraft || this.poseEditor?.isGestureActive?.()) {
+      this.setStatus("Finish the current edit before generating.", true);
+      return;
+    }
+    this.closeColorMatchPreview?.(true);
+    this.poseEditor?.studio?.animationTimeline?.stopPlayback?.();
+    if (this.poseEditor?.studio) this.poseEditor.studio._libraryLoadToken = (this.poseEditor.studio._libraryLoadToken || 0) + 1;
+    this.poseEditor?.commit();
+    clearTimeout(this.poseEditor?.commitTimer);
+    this.poseEditor?.flushBackdropSync?.();
+    this.panorama?.endCamera();
+    this._documentRevision = (this._documentRevision || 0) + 1;
+    this._importRevision = (this._importRevision || 0) + 1;
+    this._stopRequested = false;
+    this._drawDebugId = null;
+    this._generationPreparing = true;
+    this.syncInteractionLock();
+    try {
+      const request = this.captureGenerationSettings();
+      await this.stateUploadPromise;
+      await this._assetsReady;
+      if (!this._disposed && !this._stopRequested) {
+        this._generationLocked = true;
+        this._generationPreparing = false;
+        await this.runGeneration(request);
+      }
+    } catch (error) {
+      this.setStatus(`Generation failed: ${error.message || error}`, true);
+    } finally {
+      this._generationPreparing = false;
+      this._generationLocked = false;
+      this.drawInProgress = false;
+      if (this.drawBtn) this.drawBtn.disabled = false;
+      this.syncInteractionLock();
+    }
+  }
+
+  async runGeneration({ settings: requestSettings, loader, modelBase, inferenceSize, config } = this.captureGenerationSettings()) {
     if (this.drawInProgress) return;
+    const requestDocumentRevision = this._documentRevision || 0;
     const poseLayer = poseGenerationLayer(this);
     let poseRequest = null;
     if (poseLayer) {
@@ -7001,11 +7245,11 @@ class UniCanvasWidget {
         this.setStatus(poseLayer.locked ? "Unlock the pose layer to choose a character image." : characterIssue, true);
         return;
       }
-      if (!["qwen_image_edit", "flux_klein"].includes(this.getModelBase())) {
-        this.setStatus("Pose layers require QiE2511 or Klein9b. Select a compatible model or hide the pose layer.", true);
+      if (!["flux_klein", "qwen_image21"].includes(modelBase)) {
+        this.setStatus("Pose layers require Flux Klein or Qwen Edit 2.1. Select a compatible model or hide the pose layer.", true);
         return;
       }
-      const preparationKey = () => JSON.stringify([this.bbox, this.getInferenceSize(), this.getModelBase(),
+      const preparationKey = () => JSON.stringify([this.bbox,
         this.panorama && [this.panorama.settings.yaw, this.panorama.settings.pitch, this.panorama.settings.roll, this.panorama.settings.fov]]);
       const beforePreparation = preparationKey();
       const preparationDocument = this.panorama;
@@ -7013,50 +7257,47 @@ class UniCanvasWidget {
       this.drawBtn.disabled = true;
       try {
         this.poseEditor ||= new UniCanvasPoseEditor(this);
-        poseRequest = await this.poseEditor.generation(poseLayer, this.getInferenceSize());
-        if (this._disposed || preparationDocument !== this.panorama || preparationKey() !== beforePreparation) throw new Error("The canvas changed while preparing the pose. Generate again.");
+        poseRequest = await this.poseEditor.generation(poseLayer, inferenceSize, requestSettings.positive);
+        if (this._disposed || preparationDocument !== this.panorama || requestDocumentRevision !== (this._documentRevision || 0) || preparationKey() !== beforePreparation) throw new Error("The canvas changed while preparing the pose. Generate again.");
       } catch (error) { this.setStatus(`Pose generation: ${error.message || error}`, true); return; }
       finally { this.drawInProgress = false; this.drawBtn.disabled = false; }
     }
     this.panorama?.commit();
     const requestPanorama = this.panorama;
     const panoramaCamera = this.panorama ? { ...this.panorama.settings } : null;
-    this.flushSettingsToWidget();
     // A linked VNCSS Config whose models come from plain loader nodes runs inside UniCanvas with
     // the same files (no ComfyUI queue); anything else still queues the workflow.
     let configOverrides = null;
-    if (this._isConfigLinked()) {
-      const resolved = resolveConfigDrawSettings(this.node?.graph || app.graph, this.node);
+    if (config) {
+      const resolved = config;
       if (resolved.unsupported) {
         this.setStatus(`VNCSS Config: ${resolved.unsupported} - queueing the workflow for this draw.`);
       } else {
-        this.syncConfigFamily();
+        this.drawInProgress = true;
+        this.drawBtn.disabled = true;
         try {
           const refs = await loadConfigReferences(resolved.references);
-          configOverrides = { ...resolved.settings, edit_reference_images: refs };
+          configOverrides = { ...resolved.settings, edit_reference_images: refs, edit_use_layers_as_reference: true };
         } catch (err) {
           this.setStatus(`VNCSS Config references: ${err.message || err} - queueing the workflow for this draw.`);
+        } finally {
+          this.drawInProgress = false;
+          this.drawBtn.disabled = false;
         }
       }
     }
-    const configLinked = this._isConfigLinked() && !configOverrides;
-    const { loader } = this.normalizeGenerationSettings();
+    if (this._disposed || this._stopRequested || requestDocumentRevision !== (this._documentRevision || 0)) return;
+    const configLinked = Boolean(config && !configOverrides);
     // A linked config forwards the model/clip/vae tensors through the graph, so the node's own loader
     // asset rules do not apply to this draw and must not block it.
-    const validationError = configLinked ? null : loader.validate?.(this.settings);
+    const validationError = configLinked ? null : loader.validate?.(requestSettings);
     if (validationError) {
       this.setStatus(validationError, true);
       return;
     }
-    if ((this.settings.seed_mode || DEFAULT_SEED_MODE) === "randomize") {
-      this.settings.seed = this.generateRandomSeed();
-      this.syncPromptControls();
-      this.flushSettingsToWidget();
-    }
     this.drawInProgress = true;
     const debugId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const requestBbox = { ...this.bbox };
-    const inferenceSize = this.getInferenceSize();
     const outputSize = {
       width: Math.max(64, Math.round(requestBbox.width)),
       height: Math.max(64, Math.round(requestBbox.height)),
@@ -7066,7 +7307,7 @@ class UniCanvasWidget {
     const bboxPixels = Math.max(1, Math.round(this.bbox.width) * Math.round(this.bbox.height));
     const hasRaster = rasterStats.nonzeroAlphaPixels > 0;
     const rasterCoversBbox = rasterStats.nonzeroAlphaPixels >= bboxPixels;
-    if (!hasRaster && this.getModelBase() === "krea2_edit") {
+    if (!hasRaster && modelBase === "krea2_edit") {
       this.drawInProgress = false;
       this.setStatus("Krea2 Edit requires an image inside the bbox. Import an image and describe the edit.", true);
       return;
@@ -7078,31 +7319,34 @@ class UniCanvasWidget {
     });
     const userMaskCanvas = this.makeExportCanvas("mask", inferenceSize);
     const maskCanvas = mode === "outpaint" ? this.makeOutpaintMaskCanvas(userMaskCanvas, inferenceSize) : userMaskCanvas;
-    const batchSize = Math.max(1, Math.min(99, Math.round(Number(this.settings.batch_size) || 1)));
-    this.settings.batch_size = batchSize;
+    const batchSize = Math.max(1, Math.min(99, Math.round(Number(requestSettings.batch_size) || 1)));
+    requestSettings.batch_size = batchSize;
     this.setStatus(`Generating ${mode} ${inferenceSize.width}×${inferenceSize.height}${batchSize > 1 ? ` ×${batchSize}` : ""}...`);
-    this.updateGenerationProgress({ progress: 0.01, message: "Starting generation", step: 0, steps: Number(this.settings.steps) || 0 }, true);
-    const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, poseRequest, panoramaCamera, requestPanorama };
+    this.updateGenerationProgress({ progress: 0.01, message: "Starting generation", step: 0, steps: Number(requestSettings.steps) || 0 }, true);
+    const drawContext = { settings: requestSettings, mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, poseRequest, panoramaCamera, requestPanorama, requestDocumentRevision };
+    const drawId = configLinked ? `uc_${Date.now().toString(36)}` : debugId;
     if (configLinked) {
       // External model/clip/vae tensors only exist during graph execution, so the composition is
       // handed to the node as settings.queued_draw and the draw is queued as a normal prompt.
-      this.settings.draw_id = `uc_${Date.now().toString(36)}`;
+      requestSettings.draw_id = drawId;
+      this.settings.draw_id = drawId;
       // Held outside settings: the composition carries MBs of base64 images and must never reach
       // widget.value, which ComfyUI persists in the workflow draft (localStorage quota).
       // stateWidget.serializeValue adds it to the queued prompt only.
       this._queuedDraw = this._buildDrawPayload(drawContext);
+      this._queuedDrawSettings = requestSettings;
       // The widget value has to be current before queuePrompt serializes the graph, so the
       // debounced settings sync is flushed synchronously here.
       this.flushSettingsToWidget();
-      this.startDrawProgressPolling(this.settings.draw_id);
+      this.startDrawProgressPolling(drawId);
     } else {
       this.startDrawProgressPolling(debugId);
     }
     this.drawBtn.disabled = true;
-    if (this.batchInput) this.batchInput.disabled = true;
     this._stopRequested = false;
     this._drawViaQueue = configLinked;
-    this._drawDebugId = configLinked ? this.settings.draw_id : debugId;
+    this._drawDebugId = drawId;
+    this._queuedDrawPromptId = null;
     this.showStopButton(true);
     let performance = "";
     try {
@@ -7113,7 +7357,11 @@ class UniCanvasWidget {
           // The queued prompt id scopes both the failure events and the queue-membership check to
           // this draw, so an unrelated node failure in the same prompt cannot abort it.
           const promptId = await this._queuedPromptId(queueResponse);
-          result = await this._pollForResult(this.settings.draw_id, promptId);
+          this._queuedDrawPromptId = promptId;
+          if (this._stopRequested && promptId) {
+            await fetch("/queue", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ delete: [promptId] }) });
+          }
+          result = await this._pollForResult(drawId, promptId);
         } finally {
           // The composition is one-shot: once the poll settles (success or failure) the payload must
           // stop travelling with the workflow, otherwise it would re-run the stale draw under the old
@@ -7135,7 +7383,7 @@ class UniCanvasWidget {
       }
       this.render();
       this.setStatus(`GENERATE complete (${this.stagingItems.length} staged)${performance ? ` - ${performance}` : ""}`);
-      this.updateGenerationProgress({ progress: 1, message: "Complete", step: Number(this.settings.steps) || 0, steps: Number(this.settings.steps) || 0 }, true);
+      this.updateGenerationProgress({ progress: 1, message: "Complete", step: Number(requestSettings.steps) || 0, steps: Number(requestSettings.steps) || 0 }, true);
     } catch (err) {
       if (err?.cancelled || this._stopRequested) {
         this.setStatus("Generation stopped - VRAM freed");
@@ -7145,11 +7393,11 @@ class UniCanvasWidget {
         this.updateGenerationProgress({ progress: 1, message: `Failed: ${err.message || err}`, stage: "error" }, true);
       }
     } finally {
+      this._queuedDrawPromptId = null;
       this.showStopButton(false);
       this.stopDrawProgressPolling();
       this.drawInProgress = false;
       this.drawBtn.disabled = false;
-      if (this.batchInput) this.batchInput.disabled = false;
       window.setTimeout(() => {
         if (!this.drawInProgress) this.generationProgress?.classList.remove("visible");
       }, 1800);
@@ -7163,22 +7411,21 @@ class UniCanvasWidget {
     this.drawControl?.classList.toggle("generating", visible);
   }
 
-  // Stop: ComfyUI's interrupt flag ends the draw at the next step; the backend then drops its tensors
-  // and unloads the models. A config-linked draw runs as a queued ComfyUI prompt, so it goes through
-  // ComfyUI's own /interrupt (and /free for the memory).
+  // Stop only this draw; queued graph prompts are removed by their own prompt id.
   async stopDraw() {
-    if (!this.drawInProgress || this._stopRequested) return;
+    if ((!this.drawInProgress && !this._generationLocked && !this._generationPreparing) || this._stopRequested) return;
+    if (!this._drawDebugId) { this._stopRequested = true; this.setStatus("Stopping request preparation…"); return; }
     this._stopRequested = true;
     this.stopBtn.disabled = true;
     this.setStatus("Stopping...");
     this.updateGenerationProgress({ message: "Stopping...", stage: "status" }, false);
+    const queuedPromptId = this._drawViaQueue ? this._queuedDrawPromptId : null;
     const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
     try {
-      if (this._drawViaQueue) {
-        await post("/interrupt");
-        await post("/free", { unload_models: true, free_memory: true });
-      } else {
-        await post("/vnccs/unicanvas/interrupt", { draw_id: this._drawDebugId });
+      const response = await post("/vnccs/unicanvas/interrupt", { draw_id: this._drawDebugId });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (queuedPromptId) {
+        await post("/queue", { delete: [queuedPromptId] });
       }
     } catch (err) {
       this.setStatus(`Stop failed: ${err.message || err}`, true);
@@ -7198,12 +7445,14 @@ class UniCanvasWidget {
   }
 
   async acceptStaging() {
+    if (this.editingBlocked) return;
     const staging = this.activeStaging;
     if (!staging) return;
     const previousStagingItems = this.stagingItems;
     const previousActiveStagingIndex = this.activeStagingIndex;
     const previousActiveLayerId = this.activeLayerId;
     const img = staging.img || await this.loadImage(staging.url);
+    if (this.editingBlocked || this._disposed || staging !== this.activeStaging) return;
     const placement = this.normalizeLayerWorldRect(this.getStagingImageRect());
     if (!this.ensureWorldBounds(placement.x + placement.width, placement.y + placement.height, 128)) return;
     if (!this.ensureWorldBounds(placement.x, placement.y, 128)) return;
@@ -7280,29 +7529,30 @@ class UniCanvasWidget {
       if (this.panorama) {
         this.panorama.commit();
         const { width, height } = this.panorama.settings;
-        const children = [...this.layers].reverse().filter(layer => isImageLayer(layer) && layer.visible).map(layer => ({
+        const children = [...this.layers].reverse().filter(layer => isImageLayer(layer)).map(layer => ({
           name: layer.name, left: 0, top: 0, right: width, bottom: height,
-          opacity: Math.round(Math.max(0, Math.min(1, layer.opacity)) * 255),
-          blendMode: layer.blendMode === "source-over" ? "normal" : layer.blendMode,
+          hidden: layer.visible === false,
+          opacity: Math.max(0, Math.min(1, layer.opacity)),
+          blendMode: compositeBlendModeToPsd(layer.blendMode),
           canvas: layer.panoramaCanvas,
         }));
         const buffer = writePsd({ width, height, channels: 3, bitsPerChannel: 8, colorMode: 3, children });
         this.downloadBlob(new Blob([buffer], { type: "application/octet-stream" }), "unicanvas-panorama.psd");
         this.setStatus(`Panorama PSD exported: ${width} × ${height}`); return;
       }
-      const visibleLayers = this.layers.filter((layer) => layer.visible && isImageLayer(layer) && this.getCanvasAlphaBounds(layer.canvas));
-      if (!visibleLayers.length) {
-        this.setStatus("No visible raster layers to export", true);
+      const rasterLayers = this.layers.filter((layer) => isImageLayer(layer) && this.getCanvasAlphaBounds(layer.canvas));
+      if (!rasterLayers.length) {
+        this.setStatus("No raster layers to export", true);
         return;
       }
-      const visibleRect = this.getLayersVisibleWorldRect(visibleLayers);
+      const visibleRect = this.getLayersVisibleWorldRect(rasterLayers);
       const maxDimension = 8192;
       const maxArea = maxDimension * maxDimension;
       if (visibleRect.width <= 0 || visibleRect.height <= 0) throw new Error("Invalid PSD bounds");
       if (visibleRect.width > maxDimension || visibleRect.height > maxDimension || visibleRect.width * visibleRect.height > maxArea) {
         throw new Error("Canvas is too large for PSD export");
       }
-      const psdLayers = [...visibleLayers].reverse();
+      const psdLayers = [...rasterLayers].reverse();
       const children = psdLayers.map((layer, index) => {
         const crop = this.getCanvasAlphaBounds(layer.canvas);
         const canvas = document.createElement("canvas");
@@ -7317,9 +7567,9 @@ class UniCanvasWidget {
           top: Math.floor(worldY - visibleRect.y),
           right: Math.floor(worldX - visibleRect.x + canvas.width),
           bottom: Math.floor(worldY - visibleRect.y + canvas.height),
-          opacity: Math.floor(Math.max(0, Math.min(1, layer.opacity)) * 255),
-          hidden: false,
-          blendMode: layer.blendMode === "source-over" ? "normal" : (layer.blendMode || "normal"),
+          opacity: Math.max(0, Math.min(1, layer.opacity)),
+          hidden: layer.visible === false,
+          blendMode: compositeBlendModeToPsd(layer.blendMode),
           canvas,
         };
       });
@@ -7412,11 +7662,12 @@ class UniCanvasWidget {
 
   // The HTTP path consumes this payload as the POST body; the queued path stores it in
   // settings.queued_draw of the queued prompt (see serializeStateForPrompt), where the node forwards exactly the composition keys to _run_unicanvas_draw.
-  _buildDrawPayload({ includeDebugId = false, debugId = "", mode, imageCanvas, maskCanvas, bbox, inferenceSize, outputSize, poseRequest = null, configOverrides = null }) {
+  _buildDrawPayload({ includeDebugId = false, debugId = "", mode, imageCanvas, maskCanvas, bbox, inferenceSize, outputSize, poseRequest = null, configOverrides = null, settings = null }) {
     const payload = {
       mode,
       image: poseRequest ? undefined : imageCanvas.toDataURL("image/png"),
       pose_edit: poseRequest?.pose_edit,
+      positive: poseRequest?.positive,
       mask: poseRequest ? undefined : maskCanvas.toDataURL("image/png"),
       source_empty: mode === "txt2img",
       bbox,
@@ -7426,7 +7677,7 @@ class UniCanvasWidget {
     if (includeDebugId) {
       payload.debug_id = debugId;
       // A pose edit writes its own prompt, so automatic enhance stays out of it.
-      payload.settings = { ...this.makeSettingsPayload(), ...(configOverrides || {}), ...(poseRequest ? { positive: poseRequest.positive, denoise: 1, prompt_enhance: undefined } : {}) };
+      payload.settings = { ...(settings || this.makeSettingsPayload()), ...(configOverrides || {}), ...(poseRequest ? { positive: poseRequest.positive, denoise: 1, prompt_enhance: undefined } : {}) };
     }
     return payload;
   }
@@ -7453,6 +7704,7 @@ class UniCanvasWidget {
     let resultMaskCanvas = null;
     if (result.mask) {
       const maskImg = await this.loadImage(this.resultImageURL(result.mask));
+      if (this._stopRequested) throw Object.assign(new Error("Generation stopped"), { cancelled: true });
       resultMaskCanvas = this.makeAlphaMaskCanvasFromImage(maskImg, outputSize.width, outputSize.height, {
         clearEdgeConnected: mode === "inpaint",
         preserveCanvas: stagingMaskCanvas,
@@ -7462,8 +7714,9 @@ class UniCanvasWidget {
     for (const image of resultImages) {
       const url = this.resultImageURL(image);
       const img = await this.loadImage(url);
-      // A panorama swapped or closed while the draw ran makes this result stale.
-      if (this._disposed || context.requestPanorama !== this.panorama) return;
+      if (this._stopRequested) throw Object.assign(new Error("Generation stopped"), { cancelled: true });
+      // A replaced document makes the result stale, including flat-to-flat resets.
+      if (this._disposed || context.requestPanorama !== this.panorama || (context.requestDocumentRevision || 0) !== (this._documentRevision || 0)) return;
       this.addStagingItem({
         panoramaCamera: context.panoramaCamera ?? null,
         url,
@@ -7487,6 +7740,7 @@ class UniCanvasWidget {
   releaseQueuedDraw() {
     if (!this.settings) return;
     this._queuedDraw = null;
+    this._queuedDrawSettings = null;
     if (this.settings.queued_draw === undefined && !this.settings.draw_id) return;
     delete this.settings.queued_draw;
     this.settings.draw_id = "";
@@ -7549,6 +7803,7 @@ class UniCanvasWidget {
     api.addEventListener("execution_interrupted", onExecutionInterrupted);
     try {
       while (Date.now() - started < timeoutMs) {
+        if (this._stopRequested) throw Object.assign(new Error("Generation stopped"), { cancelled: true });
         if (executionFailure) throw executionFailure;
         const res = await fetch(`/vnccs/unicanvas/result/${encodeURIComponent(drawId)}?t=${Date.now()}`);
         if (!res.ok) throw new Error(`Queued result request failed: HTTP ${res.status}`);
@@ -7570,6 +7825,7 @@ class UniCanvasWidget {
     const { loader } = this.normalizeGenerationSettings();
     const negativeInput = this.container.querySelector('[data-setting="negative"]');
     if (negativeInput) {
+      negativeInput.closest(".vnccs-uc-field").hidden = Boolean(this.standalone && this.isPresetTurboEnabled(this.getActivePreset()));
       const groundedEdit = this.getModelBase() === "krea2_edit";
       negativeInput.disabled = groundedEdit;
       negativeInput.title = groundedEdit ? "Krea2 Edit uses the same source image with an empty instruction for negative conditioning." : "";
@@ -7612,7 +7868,8 @@ class UniCanvasWidget {
         el.value = this.formatSettingNumber(this.settings[key], key === "inference_scale" ? 3 : 2);
       } else if (el instanceof HTMLSelectElement) {
         if (key !== "scheduler") this.ensureSelectOption(el, this.settings[key]);
-        if (key === "scheduler" && this.settings[key] && !Array.from(el.options).some((option) => option.value === String(this.settings[key]))) {
+        // Empty options mean the assets are still loading; never erase the saved scheduler then.
+        if (key === "scheduler" && el.options.length && !Array.from(el.options).some((option) => option.value === String(this.settings[key]))) {
           this.settings[key] = Array.from(el.options).some((option) => option.value === "simple") ? "simple" : (el.options[0]?.value || "");
         }
         el.value = this.settings[key];
@@ -7742,35 +7999,53 @@ class UniCanvasWidget {
     btn.setAttribute("aria-pressed", randomMode ? "true" : "false");
   }
 
-  syncToNode() {
-    if (this._disposed || this._isRestoring) return;
-    clearTimeout(this.settingsSyncTimer);
-    this.settingsSyncTimer = null;
-    clearTimeout(this.fullSyncTimer);
-    this.fullSyncTimer = null;
+  syncToNode(snapshot = null) {
+    if (this._disposed || this._isRestoring || this._stateRestoreFailed) return;
+    if (this._pendingStateCacheId && !snapshot) {
+      this.scheduleStateUpload();
+      return;
+    }
+    // Publishing a saved snapshot must preserve timers for newer edits.
+    if (!snapshot) {
+      clearTimeout(this.settingsSyncTimer);
+      this.settingsSyncTimer = null;
+      clearTimeout(this.fullSyncTimer);
+      this.fullSyncTimer = null;
+    }
     const widget = this.node.widgets?.find((w) => w.name === "unicanvas_state");
     if (!widget) return;
-    const state = this.buildSerializedState(false);
+    const state = snapshot || this.buildSerializedState(false);
     const compactState = {
       ...state,
       settings: widgetSettings(state.settings),
-      layers: state.layers.map((layer) => ({ ...layer, cached: layer.crop !== null })),
+      layers: state.layers.map((layer) => ({ ...layer, dataURL: null, hiresDataURL: null,
+        pose: serializePose(layer.pose, false), cached: layer.crop !== null })),
     };
     widget.value = JSON.stringify(compactState);
     widget.callback?.(widget.value);
     app.graph?.setDirtyCanvas?.(true, true);
-    this.scheduleStateUpload();
+    if (!snapshot) this.scheduleStateUpload();
+  }
+
+  snapshotForWorkflow() {
+    if (this._disposed || this._isRestoring || this._stateRestoreFailed) return Promise.resolve(false);
+    const pending = this.flushStateUpload();
+    this.syncToNode();
+    const output = this.standalone ? pending.then(saved => saved && this.uploadOutputSnapshot()) : this.uploadOutputSnapshot();
+    // A serialized workflow owns this snapshot; later edits must copy it before writing.
+    if (!this.standalone && !this.canvasId) this._frozenStateJSON = this._capturedStateJSON;
+    return Promise.all([pending, output]).then(([saved, exported]) => saved && exported);
   }
 
   // Prompt-only view of the state widget: the widget value stays light (workflow draft), the
   // one-shot queued draw composition is merged in only while a draw is queued.
   // Reference images are kept out of the widget value, so the prompt gets them back here.
   serializeStateForPrompt(value) {
-    const refs = this.editReferenceImages();
+    const refs = this._queuedDrawSettings ? this._queuedDrawSettings.edit_reference_images || [] : this.editReferenceImages();
     if (!this._queuedDraw && !refs.length) return value;
     try {
       const state = JSON.parse(value);
-      state.settings = { ...(state.settings || {}) };
+      state.settings = { ...(this._queuedDrawSettings || state.settings || {}) };
       if (refs.length) state.settings.edit_reference_images = refs;
       if (this._queuedDraw) state.settings.queued_draw = this._queuedDraw;
       return JSON.stringify(state);
@@ -7798,7 +8073,11 @@ class UniCanvasWidget {
   }
 
   writeLightStateToWidget() {
-    if (this._isRestoring) return;
+    if (this._isRestoring || this._stateRestoreFailed) return;
+    if (this._pendingStateCacheId) {
+      this.scheduleStateUpload();
+      return;
+    }
     const widget = this.node.widgets?.find((w) => w.name === "unicanvas_state");
     if (!widget) return;
     let state = null;
@@ -7812,9 +8091,11 @@ class UniCanvasWidget {
     }
     state.version = this.panorama ? 3 : 2;
     state.panorama = this.panorama ? { ...this.panorama.settings } : null;
-    state.output_id = this.panorama ? this.getOutputCacheId() : null;
+    state.output_id = this.getOutputCacheId();
     state.storage = "server_cache";
     state.state_id = this.getStateCacheId();
+    if (this.canvasId) state.canvas_id = this.canvasId;
+    else delete state.canvas_id;
     state.origin = this.origin;
     state.size = this.size;
     state.bbox = this.bbox;
@@ -7853,7 +8134,7 @@ class UniCanvasWidget {
       this.fullSyncTimer = null;
       const run = () => {
         if (this._disposed) return;
-        if (this.isPointerDown || this.drawInProgress || this.poseEditor?.isGestureActive?.()) {
+        if (this.isPointerDown || this.editingBlocked || this.poseEditor?.isGestureActive?.()) {
           this.scheduleFullSync(delay);
           return;
         }
@@ -7874,9 +8155,10 @@ class UniCanvasWidget {
     return {
       version: this.panorama ? 3 : 2,
       panorama: this.panorama ? { ...this.panorama.settings } : null,
-      output_id: this.panorama ? this.getOutputCacheId() : null,
+      output_id: this.getOutputCacheId(),
       storage: "server_cache",
       state_id: stateId,
+      ...(this.canvasId ? { canvas_id: this.canvasId } : {}),
       origin: this.origin,
       size: this.size,
       bbox: this.bbox,
@@ -7899,7 +8181,7 @@ class UniCanvasWidget {
   }
 
   createStateCacheId() {
-    return `vnccs_unicanvas_${this.node?.id ?? "node"}_${uid()}`;
+    return `vnccs_unicanvas_${this.standalone ? "standalone" : this.node?.id ?? "node"}_${uid()}`;
   }
 
   isLegacyStateCacheId(id) {
@@ -7924,10 +8206,15 @@ class UniCanvasWidget {
     return Array.isArray(state?.layers) && state.layers.some((layer) => Boolean(layer?.dataURL || layer?.hiresDataURL));
   }
 
+  stateHasMissingLayerPixels(state) {
+    return state.layers.some(layer => (layer.cached !== false && (layer.cached === true || layer.crop)
+      && !layer.dataURL && !(layer.hiresRect && layer.hiresDataURL))
+      || (layer.hiresRect && !layer.hiresDataURL));
+  }
+
   // localStorage (~5 MB per origin) is shared with ComfyUI's own workflow drafts: a multi-MB
   // canvas backup there makes every draft save fail ("Failed to save workflow draft"). The server
-  // state cache is the real persistence, so the local backup stays small and only the newest
-  // canvas keeps one.
+  // state cache is the real persistence; small unsaved drafts stay until acknowledged.
   pruneLocalStateBackups(keepKey = null) {
     try {
       const storage = window.localStorage;
@@ -7935,7 +8222,11 @@ class UniCanvasWidget {
       const stale = [];
       for (let index = 0; index < storage.length; index += 1) {
         const key = storage.key(index);
-        if (key && key.startsWith("vnccs_unicanvas_backup_") && key !== keepKey) stale.push(key);
+        if (key && key.startsWith("vnccs_unicanvas_backup_") && key !== keepKey) {
+          try {
+            if (JSON.parse(storage.getItem(key))?.confirmed === true) stale.push(key);
+          } catch (_) { /* Retain legacy or damaged recovery data. */ }
+        }
       }
       for (const key of stale) storage.removeItem(key);
     } catch (_) {
@@ -7946,10 +8237,9 @@ class UniCanvasWidget {
   saveLocalStateBackup(state) {
     if (this.localStateBackupDisabled || !this.stateHasLayerPixels(state)) return;
     try {
-      const payload = JSON.stringify({ saved_at: Date.now(), state });
-      this.pruneLocalStateBackups(this.getStateBackupKey());
+      const key = state.state_id ? `vnccs_unicanvas_backup_${state.state_id}` : this.getStateBackupKey();
+      const payload = JSON.stringify({ saved_at: Date.now(), state, confirmed: false });
       if (payload.length > LOCAL_STATE_BACKUP_MAX_CHARS) {
-        window.localStorage?.removeItem(this.getStateBackupKey());
         this.localStateBackupDisabled = true;
         if (!this.localStateBackupWarned) {
           this.localStateBackupWarned = true;
@@ -7957,7 +8247,9 @@ class UniCanvasWidget {
         }
         return;
       }
-      window.localStorage?.setItem(this.getStateBackupKey(), payload);
+      this.pruneLocalStateBackups(key);
+      window.localStorage?.setItem(key, payload);
+      return { key, payload };
     } catch (err) {
       this.localStateBackupDisabled = true;
       if (!this.localStateBackupWarned) {
@@ -7965,6 +8257,16 @@ class UniCanvasWidget {
         console.info("[VNCCS UniCanvas] Local backup disabled: browser localStorage quota is not enough; server cache remains active.");
       }
     }
+  }
+
+  confirmLocalStateBackup(backup) {
+    if (!backup) return;
+    try {
+      const storage = window.localStorage;
+      if (storage?.getItem(backup.key) !== backup.payload) return;
+      storage.setItem(backup.key, JSON.stringify({ ...JSON.parse(backup.payload), confirmed: true }));
+      this.pruneLocalStateBackups(backup.key);
+    } catch (_) { /* Retain the draft if browser storage is unavailable. */ }
   }
 
   loadLocalStateBackup() {
@@ -7994,6 +8296,7 @@ class UniCanvasWidget {
   }
 
   flushStateUpload(keepalive = false) {
+    if (this._isRestoring || this._stateRestoreFailed) return Promise.resolve(false);
     clearTimeout(this.stateUploadTimer);
     const state = this.buildSerializedState(true);
     this.pendingStateUpload = null;
@@ -8001,8 +8304,8 @@ class UniCanvasWidget {
   }
 
   async uploadStateSnapshot() {
-    if (!this.pendingStateUpload) return;
-    if (this.isPointerDown || this.drawInProgress || this.poseEditor?.isGestureActive?.()) {
+    if (!this.pendingStateUpload || this._isRestoring || this._stateRestoreFailed) return;
+    if (this.isPointerDown || this.editingBlocked || this.poseEditor?.isGestureActive?.()) {
       this.scheduleStateUpload();
       return;
     }
@@ -8012,27 +8315,126 @@ class UniCanvasWidget {
   }
 
   async uploadStatePayload(state, keepalive = false) {
-    // The first flat snapshot after exit must follow any pending spherical upload.
-    if (state.panorama || state.layers?.some(layer => layer.type === "pose") || this.panoramaUploadPromise) {
-      const run = () => this.performStateUpload(state, keepalive);
-      const pending = (this.panoramaUploadPromise || Promise.resolve()).then(run, run);
-      this.panoramaUploadPromise = pending;
-      return pending;
+    let stateJSON = JSON.stringify(state);
+    const previousJSON = (state.canvas_id && this._pendingStateCacheId && this._capturedStateJSON) || this._frozenStateJSON;
+    if ((!this.standalone || state.canvas_id) && (!this._pendingStateCacheId || state.canvas_id) && previousJSON && stateJSON !== previousJSON) {
+      const confirmed = this._frozenStateJSON && JSON.parse(this._frozenStateJSON);
+      this.stateCacheId = this.createStateCacheId();
+      this._pendingStateCacheId = this.stateCacheId;
+      this.stateCacheRevision = -1;
+      if (confirmed) this.syncToNode(confirmed);
+      this.stateBackupKey = null;
+      if (!state.canvas_id) this._frozenStateJSON = null;
+      this.lastUploadedStateJSON = null;
+      state = { ...state, state_id: this.stateCacheId, output_id: this.getOutputCacheId() };
+      stateJSON = JSON.stringify(state);
+      this.setStatus("Saving canvas snapshot; workflows keep the last saved canvas until the upload completes.");
     }
-    return this.performStateUpload(state, keepalive);
+    this._capturedStateJSON = stateJSON;
+    // Every snapshot follows the previous upload, including flat raster canvases.
+    const revision = this.stateUploadRevision = Math.max(Date.now(), (this.stateUploadRevision || 0) + 1);
+    const loadRevision = this._stateLoadRevision;
+    const deduplicate = !this.stateUploadsPending;
+    const run = async () => {
+      if ((this.standalone || state.canvas_id) && loadRevision !== this._stateLoadRevision) return false;
+      let captured = JSON.parse(stateJSON);
+      if (this.standalone && !captured.canvas_id) captured = { ...captured, state_id: this.getStateCacheId(), output_id: this.getOutputCacheId() };
+      let saved = await this.performStateUpload(captured, keepalive, revision, deduplicate);
+      if ((this.standalone || captured.canvas_id) && this._stateUploadConflict === revision && loadRevision === this._stateLoadRevision) {
+        this._stateUploadConflict = null;
+        this.stateCacheId = this.createStateCacheId();
+        this.stateCacheRevision = -1;
+        this.stateBackupKey = null;
+        this.lastUploadedStateJSON = this.lastUploadedOutputJSON = null;
+        captured = { ...captured, state_id: this.stateCacheId, output_id: this.getOutputCacheId() };
+        const managed = Boolean(captured.canvas_id);
+        delete captured.canvas_id;
+        this._capturedStateJSON = JSON.stringify(captured);
+        saved = await this.performStateUpload(captured, keepalive, revision, false);
+        if (saved && managed && loadRevision === this._stateLoadRevision && !this._disposed) {
+          let document;
+          try { ({ document } = await canvasRequest("", "POST", { state_id: captured.state_id, name: "Recovered canvas" })); }
+          catch (error) { this.setStatus(`Canvas save failed: ${error.message || error}`, true); return false; }
+          if (loadRevision !== this._stateLoadRevision || this._disposed) return false;
+          captured.canvas_id = document.canvas_id;
+          this.canvasId = document.canvas_id;
+          this._canvasPublishedStateId = captured.state_id;
+          this.lastUploadedStateJSON = JSON.stringify({ state_id: captured.state_id, state: captured });
+          this._capturedStateJSON = JSON.stringify(captured);
+          if (this.standalone) {
+            try { await canvasRequest("/active", "POST", { canvas_id: document.canvas_id }); }
+            catch (_) { /* The acknowledged canvas and browser pointer still retain this draft. */ }
+            if (loadRevision !== this._stateLoadRevision || this._disposed) return false;
+          }
+          this._pendingStateCacheId = captured.state_id;
+        }
+        if (saved && loadRevision === this._stateLoadRevision && !this._disposed && !this._isRestoring) {
+          this.syncToNode(captured);
+          this.setStatus("Another tab changed the canvas. Your edits were saved as a separate canvas draft.");
+        }
+      }
+      if (saved && this._pendingStateCacheId && this._pendingStateCacheId === captured.state_id && revision === this.stateUploadRevision
+          && loadRevision === this._stateLoadRevision && !this._disposed && !this._isRestoring) {
+        this._pendingStateCacheId = null;
+        if (!captured.canvas_id) this.syncToNode(captured);
+        this.setStatus("Canvas snapshot saved.");
+      }
+      if (saved && captured.canvas_id && loadRevision === this._stateLoadRevision && !this._disposed) {
+        this._frozenStateJSON = JSON.stringify(captured);
+        if (!this._isRestoring) this.syncToNode(captured);
+      }
+      return saved;
+    };
+    this.stateUploadsPending = (this.stateUploadsPending || 0) + 1;
+    try {
+      // Standalone saves must use the preceding acknowledgement's base revision.
+      if (keepalive && !this.standalone && !state.canvas_id) return await run();
+      const pending = (this.stateUploadPromise || Promise.resolve()).then(run, run);
+      this.stateUploadPromise = pending;
+      return await pending;
+    } finally {
+      this.stateUploadsPending--;
+    }
+  }
+
+  async clearStateCache() {
+    clearTimeout(this.stateUploadTimer);
+    clearTimeout(this.fullSyncTimer);
+    clearTimeout(this.settingsSyncTimer);
+    this.pendingStateUpload = null;
+    await this.stateUploadPromise;
+    const revision = Math.max(Date.now(), (this.stateUploadRevision || 0) + 1, (this.outputUploadRevision || 0) + 1);
+    const res = await fetch("/vnccs/unicanvas_state_delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state_id: this.getStateCacheId(), revision,
+        ...(this.standalone ? { base_revision: this.stateCacheRevision ?? -1 } : {}) }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    if ((await res.json?.())?.status === "stale_ignored") throw new Error("A newer canvas is already saved. Reload before clearing it.");
+    this.stateUploadRevision = this.outputUploadRevision = revision;
+    if (this.standalone) this.stateCacheRevision = revision;
+    this.lastUploadedStateJSON = this.lastUploadedOutputJSON = null;
+    this._frozenStateJSON = this._capturedStateJSON = null;
+    this._pendingStateCacheId = null;
+    try {
+      window.localStorage?.removeItem(this.getStateBackupKey());
+      window.localStorage?.removeItem(this.getLegacyStateBackupKey());
+    } catch (_) { /* Browser storage may be unavailable; server deletion still succeeded. */ }
   }
 
   async preparePanoramaForQueue() {
-    if (this.layers.some(layer => layer.type === "pose")) await this.preparePoseForQueue();
-    if (!this.panorama) return;
-    if (this._isRestoring || this.isPointerDown || this.transformDraft) throw new Error("Finish the UniCanvas edit before queueing the panorama");
-    this.panorama.commit();
-    this.panorama.endCamera();
+    if (this._isRestoring || this.isPointerDown || this.transformDraft) throw new Error("Finish the UniCanvas edit before queueing");
+    if (this.layers.some(layer => layer.type === "pose")) await this.poseEditor?.flush();
+    this.panorama?.commit();
+    this.panorama?.endCamera();
+    // Copy a frozen document before naming its flattened output, and refresh raster bounds.
+    const saved = await this.flushStateUpload();
     this.syncToNode();
-    // The node output is the flattened, bbox-cropped view, so it never depends on the (huge)
-    // spherical layers reaching the server.
-    if (await this.uploadOutputSnapshot() === false) throw new Error("The panorama output could not be sent; queue stopped");
-    if (await this.flushStateUpload() === false) this.setStatus("The panorama layers are too large to save on the server; the output was sent, but reopening this workflow may lose edits", true);
+    if (!this.panorama && saved === false) throw new Error("UniCanvas state could not be saved; queue stopped to protect the latest edits");
+    // Both document modes export the bbox composite; large source layers never need server decoding.
+    if (await this.uploadOutputSnapshot() === false) throw new Error("The canvas output could not be sent; queue stopped");
+    if (saved === false) this.setStatus("The panorama layers are too large to save on the server; the output was sent, but reopening this workflow may lose edits", true);
   }
 
   getOutputCacheId() {
@@ -8050,42 +8452,64 @@ class UniCanvasWidget {
       version: 2, storage: "server_cache", origin: { x: 0, y: 0 }, size: { width: canvas.width, height: canvas.height },
       bbox: { x: 0, y: 0, width: canvas.width, height: canvas.height }, layers: [layer],
     };
+    const payload = JSON.stringify({ state_id: this.getOutputCacheId(), state });
+    if (!this.outputUploadsPending && payload === this.lastUploadedOutputJSON) return true;
+    const revision = this.outputUploadRevision = Math.max(Date.now(), (this.outputUploadRevision || 0) + 1);
+    this.outputUploadsPending = (this.outputUploadsPending || 0) + 1;
     try {
       const res = await fetch("/vnccs/unicanvas_state_upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state_id: this.getOutputCacheId(), state }),
+        body: JSON.stringify({ state_id: this.getOutputCacheId(), state, revision }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+      if ((await res.json?.())?.status === "stale_ignored") throw new Error("A newer canvas output is already saved. Reload before queueing.");
+      if (revision === this.outputUploadRevision) this.lastUploadedOutputJSON = payload;
       return true;
     } catch (err) {
       this.setStatus(`Output upload failed: ${err.message || err}`, true);
       return false;
+    } finally {
+      this.outputUploadsPending--;
     }
   }
 
-  async performStateUpload(state, keepalive = false) {
-    const payload = JSON.stringify({ state_id: this.getStateCacheId(), state });
-    if (payload === this.lastUploadedStateJSON) return true;
-    this.lastUploadedStateJSON = payload;
-    this.saveLocalStateBackup(state);
+  async performStateUpload(state, keepalive = false, revision = null, deduplicate = true) {
+    const stateId = state.state_id || this.getStateCacheId();
+    const payload = JSON.stringify({ state_id: stateId, state });
+    if (deduplicate && payload === this.lastUploadedStateJSON) return true;
+    const backup = this.saveLocalStateBackup(state);
+    if (revision === null) revision = this.stateUploadRevision = Math.max(Date.now(), (this.stateUploadRevision || 0) + 1);
+    const body = JSON.stringify({ state_id: stateId, state, revision,
+      ...(this.standalone || state.canvas_id ? { base_revision: this.stateCacheRevision ?? -1 } : {}),
+      ...(state.canvas_id ? { canvas_base_state_id: this._canvasPublishedStateId || stateId } : {}) });
     try {
-      const safeKeepalive = keepalive && payload.length <= 60000;
+      const safeKeepalive = keepalive && body.length <= 60000;
       const res = await fetch("/vnccs/unicanvas_state_upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: payload,
+        body,
         keepalive: safeKeepalive,
       });
       if (!res.ok) {
+        if (res.status === 409 && (this.standalone || state.canvas_id)) {
+          this._stateUploadConflict = revision;
+          return false;
+        }
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || `HTTP ${res.status}`);
       }
+      if ((await res.json?.())?.status === "stale_ignored") throw new Error("A newer canvas snapshot is already saved. Reload before saving.");
+      if (stateId === this.getStateCacheId()) this.stateCacheRevision = revision;
+      if (state.canvas_id && state.canvas_id === this.canvasId) this._canvasPublishedStateId = stateId;
+      this.confirmLocalStateBackup(backup);
+      if (revision === this.stateUploadRevision) this.lastUploadedStateJSON = payload;
       return true;
     } catch (err) {
-      this.lastUploadedStateJSON = "";
       console.warn("[VNCCS UniCanvas] State cache upload failed", err);
-      this.setStatus(`State cache failed: ${err.message || err}`, true);
+      if (revision === this.stateUploadRevision) {
+        this.setStatus(`State cache failed: ${err.message || err}`, true);
+      }
       return false;
     }
   }
@@ -8119,12 +8543,24 @@ class UniCanvasWidget {
       hiresDataURL: null,
     };
     if (!crop || !includeData) return payload;
+    // Metadata-only saves reuse PNGs; encoding every unchanged layer stalls navigation.
+    const pixelKey = [layer._pixelRevision || 0, layer.canvas.width, layer.canvas.height,
+      crop.x, crop.y, crop.width, crop.height, Boolean(layer.hiresRect),
+      layer.hiresCanvas?.width || 0, layer.hiresCanvas?.height || 0].join(":");
+    const cached = layer._serializedPixels;
+    if (cached?.key === pixelKey && cached.canvas === layer.canvas && cached.hiresCanvas === layer.hiresCanvas) {
+      payload.dataURL = cached.dataURL;
+      payload.hiresDataURL = cached.hiresDataURL;
+      return payload;
+    }
     const out = document.createElement("canvas");
     out.width = crop.width;
     out.height = crop.height;
     this.configureImageContext(out.getContext("2d")).drawImage(layer.canvas, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
     payload.dataURL = out.toDataURL("image/png");
     if (layer.hiresCanvas && layer.hiresRect) payload.hiresDataURL = layer.hiresCanvas.toDataURL("image/png");
+    layer._serializedPixels = { key: pixelKey, canvas: layer.canvas, hiresCanvas: layer.hiresCanvas,
+      dataURL: payload.dataURL, hiresDataURL: payload.hiresDataURL };
     return payload;
   }
 
@@ -8176,40 +8612,75 @@ class UniCanvasWidget {
   }
 
 
+  mergeCachedState(state, cached) {
+    const cachedById = new Map(cached.layers.map(layer => [layer.id, layer]));
+    return { ...cached, ...state,
+      settings: { ...(cached.settings || {}), ...(state.settings || {}) },
+      layers: state.layers.map(layer => {
+        const pixels = layer.cached === false ? null : cachedById.get(layer.id);
+        const hiresRect = layer.hiresRect === undefined ? pixels?.hiresRect : layer.hiresRect;
+        // Light sync can mark a new empty layer cached before its first full snapshot.
+        const emptyCachedLayer = layer.cached === true && layer.crop === null && pixels?.crop === null
+          && pixels.cached !== true && !pixels.dataURL && !pixels.hiresRect;
+        return { ...layer,
+          ...(emptyCachedLayer ? { cached: false } : {}),
+          dataURL: layer.dataURL || pixels?.dataURL,
+          crop: layer.dataURL ? layer.crop : layer.crop || pixels?.crop,
+          hiresRect,
+          hiresDataURL: layer.hiresDataURL || (hiresRect ? pixels?.hiresDataURL : null),
+          pose: layer.type === "pose" ? mergePoseCache(layer.pose, cachedById.get(layer.id)?.pose) : layer.pose,
+        };
+      }),
+    };
+  }
+
   async _loadFromNode() {
     const loadRevision = this._stateLoadRevision = (this._stateLoadRevision || 0) + 1;
+    this._stateRestoreRevision = (this._stateRestoreRevision || 0) + 1;
+    this._pendingStateCacheId = null;
     const widget = this.node.widgets?.find((w) => w.name === "unicanvas_state");
     if (!widget?.value || widget.value === "{}") return;
     try {
       let state = JSON.parse(widget.value);
-      if (![1, 2, 3].includes(state?.version) || !Array.isArray(state.layers)) return;
-      // The workflow's own settings (model, CLIP, VAE, sampler, LoRAs...) are the newest ones: the
-      // server cache and the local backup only refresh with the layer pixels, so they must never
-      // win over what was saved in the workflow.
+      if (![1, 2, 3].includes(state?.version) || !Array.isArray(state.layers)) throw new Error("Unsupported or invalid canvas state.");
+      if (this.standalone && state.server_selection) {
+        const catalog = await canvasRequest();
+        if (this._disposed || loadRevision !== this._stateLoadRevision) return;
+        const selected = catalog.documents.find(item => item.canvas_id === catalog.active_canvas_id);
+        if (selected) state = { version: 2, storage: "server_cache", state_id: selected.state_id, canvas_id: selected.canvas_id, layers: [] };
+      } else if (this.standalone && state.canvas_id) {
+        const { document } = await canvasRequest(`/${state.canvas_id}`);
+        if (this._disposed || loadRevision !== this._stateLoadRevision) return;
+        state = { ...state, state_id: document.state_id };
+      }
+      const workflowState = state;
       const workflowSettings = state.settings && typeof state.settings === "object" ? state.settings : null;
-      const withWorkflowSettings = (next) => (workflowSettings
-        ? { ...next, settings: { ...(next?.settings || {}), ...workflowSettings } }
-        : next);
+      // Workflow metadata wins; caches supply pixels only for the workflow's surviving layers.
+      const sharedCache = state.state_id && this.node.graph?._nodes?.some(node =>
+        node !== this.node && !node.uniCanvasWidget?._disposed && node.uniCanvasWidget?.stateCacheId === state.state_id);
       if (state.state_id) this.stateCacheId = state.state_id;
+      this.canvasId = state.canvas_id || null;
+      this._canvasPublishedStateId = state.state_id;
+      this.stateCacheRevision = -1;
       let cacheRestoreFailed = false;
       if (state.storage === "server_cache" && state.state_id) {
         try {
           const res = await fetch(`/vnccs/unicanvas_state/${encodeURIComponent(state.state_id)}`);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          if (!res.ok) {
+            // A first-ever standalone document has no server snapshot yet.
+            if (this.standalone && !this.canvasId && res.status === 404) { cacheRestoreFailed = false; }
+            else throw new Error(`HTTP ${res.status}`);
+          }
           const cached = await res.json();
           if (this._disposed || loadRevision !== this._stateLoadRevision) return;
-          if (cached?.state?.version && Array.isArray(cached.state.layers)) {
-            if (Boolean(state.panorama) !== Boolean(cached.state.panorama)) throw new Error("Cached document mode does not match the workflow");
-            if (state.panorama && cached.state.panorama) {
-              const cachedById = new Map(cached.state.layers.map(layer => [layer.id, layer]));
-              state = { ...cached.state, ...state, layers: state.layers.map(layer => ({
-                ...cachedById.get(layer.id), ...layer,
-                dataURL: layer.dataURL || cachedById.get(layer.id)?.dataURL,
-                crop: layer.crop || cachedById.get(layer.id)?.crop,
-                pose: mergePoseCache(layer.pose, cachedById.get(layer.id)?.pose),
-              })) };
-            } else state = cached.state;
-            this.stateCacheId = state.state_id || this.stateCacheId;
+          this.stateUploadRevision = Math.max(this.stateUploadRevision || 0, Number(cached?.revision) || 0);
+          this.stateCacheRevision = Number.isInteger(cached?.revision) ? cached.revision : -1;
+          if ([1, 2, 3].includes(cached?.state?.version) && Array.isArray(cached.state.layers)) {
+            if (!this.standalone && Boolean(state.panorama) !== Boolean(cached.state.panorama)) throw new Error("Cached document mode does not match the workflow");
+            state = this.standalone ? cached.state : this.mergeCachedState(workflowState, cached.state);
+            if (this.standalone) this.canvasId = state.canvas_id || workflowState.canvas_id || null;
+          } else if (res.ok) {
+            throw new Error("Cached canvas state is invalid.");
           }
         } catch (err) {
           cacheRestoreFailed = true;
@@ -8217,26 +8688,60 @@ class UniCanvasWidget {
           this.setStatus("State cache missing; trying local backup", true);
         }
       }
-      if (!this.stateHasLayerPixels(state)) {
+      if (!this.stateHasLayerPixels(state) || this.stateHasMissingLayerPixels(state)) {
         const backup = this.loadLocalStateBackup();
         if (backup) {
-          state = backup;
+          state = this.mergeCachedState(state, backup);
           this.setStatus(cacheRestoreFailed ? "Restored canvas from local backup" : "Restored canvas backup");
         } else if (cacheRestoreFailed) {
           this.setStatus("State cache missing and no local image backup found", true);
-          if (workflowSettings && !this._disposed && loadRevision === this._stateLoadRevision) this.applySerializedSettings(workflowSettings);
+          if (!this._disposed && loadRevision === this._stateLoadRevision) {
+            this._stateRestoreFailed = true;
+            this.setStatus("Canvas restore failed. Reload to recover saved pixels, or start a new canvas before saving.", true);
+            if (workflowSettings) this.applySerializedSettings(workflowSettings);
+          }
           return;
         }
       }
-      state = withWorkflowSettings(state);
-      if (this.isLegacyStateCacheId(this.stateCacheId) && this.stateHasLayerPixels(state)) {
+      if (this.stateHasMissingLayerPixels(state)) {
+        this._stateRestoreFailed = true;
+        this.setStatus("Canvas restore failed: some saved layer pixels are missing. Reload to recover them, or start a new canvas before saving.", true);
+        if (workflowSettings) this.applySerializedSettings(workflowSettings);
+        return;
+      }
+      if (this._disposed || loadRevision !== this._stateLoadRevision) return;
+      this._frozenStateJSON = null;
+      const forkCache = sharedCache || (this.isLegacyStateCacheId(this.stateCacheId) && this.stateHasLayerPixels(state));
+      if (forkCache) {
         this.stateCacheId = this.createStateCacheId();
+        this._pendingStateCacheId = this.stateCacheId;
         this.stateBackupKey = null;
         state.state_id = this.stateCacheId;
+        if (sharedCache) { this.canvasId = null; delete state.canvas_id; }
+        this.stateCacheRevision = -1;
       }
-      if (!this._disposed && loadRevision === this._stateLoadRevision) await this.applySerializedState(state);
+      const restored = await this.applySerializedState(state);
+      if (this._disposed || loadRevision !== this._stateLoadRevision) return;
+      if (restored) this._stateRestoreFailed = false;
+      if (restored && forkCache && !this._disposed && loadRevision === this._stateLoadRevision) {
+        // Copy pixels before changing the workflow reference, so an immediate save can reopen it.
+        if (await this.uploadStatePayload(state) && !this._disposed && loadRevision === this._stateLoadRevision) {
+          this._pendingStateCacheId = null;
+          const compact = { ...workflowState, state_id: this.stateCacheId };
+          if (sharedCache) delete compact.canvas_id;
+          if (state.panorama && await this.uploadOutputSnapshot()) compact.output_id = this.getOutputCacheId();
+          if (!this._disposed && loadRevision === this._stateLoadRevision) widget.value = JSON.stringify(compact);
+        }
+      }
+      if (restored && (!this.standalone || this.canvasId) && !this._disposed && loadRevision === this._stateLoadRevision) {
+        this._frozenStateJSON = JSON.stringify(state);
+      }
     } catch (err) {
       console.warn("[VNCCS UniCanvas] Failed to restore state", err);
+      if (!this._disposed && loadRevision === this._stateLoadRevision) {
+        this._stateRestoreFailed = true;
+        this.setStatus("Canvas restore failed. Original workflow data preserved; reload or start a new canvas before saving.", true);
+      }
     }
   }
 
@@ -8247,22 +8752,24 @@ class UniCanvasWidget {
     this.syncPromptControls();
   }
 
-  async applySerializedState(state) {
+  async applySerializedState(state, { replaceDocument = false } = {}) {
     const restoreRevision = this._stateRestoreRevision = (this._stateRestoreRevision || 0) + 1;
     let restoredPanorama = null, previous = null;
     try {
-      if (!this.stateHasLayerPixels(state)) {
+      if (!this.stateHasLayerPixels(state) || this.stateHasMissingLayerPixels(state)) {
         const backup = this.loadLocalStateBackup();
-        if (backup && this.stateHasLayerPixels(backup)) {
-          state = backup;
+        const merged = backup ? this.mergeCachedState(state, backup) : null;
+        if (merged && this.stateHasLayerPixels(merged)) {
+          state = merged;
           this.setStatus("Recovered canvas images from local backup");
-        } else if (this.layers.some((layer) => this.getLayerAlphaBounds(layer))) {
+        } else if (!replaceDocument && !this.stateHasMissingLayerPixels(state) && state.layers.some(layer => layer.cached !== false) && this.layers.some((layer) => this.getLayerAlphaBounds(layer))) {
           this.setStatus("Skipped metadata-only canvas restore to protect existing images", true);
           // The existing pixels are protected, but the saved model/generation settings still apply.
           if (state.settings) this.applySerializedSettings(state.settings);
           return;
         }
       }
+      if (this.stateHasMissingLayerPixels(state)) throw new Error("Some saved layer pixels are missing");
       const panoramaSettings = normalizePanorama(state.panorama);
       restoredPanorama = panoramaSettings ? new PanoramaDocument(this, panoramaSettings) : null;
       const nextOrigin = panoramaSettings ? { x: 0, y: 0 } : (state.origin || this.origin);
@@ -8311,19 +8818,20 @@ class UniCanvasWidget {
       if (this._disposed || restoreRevision !== this._stateRestoreRevision) return;
       if (restoredPanorama && !layers.some(layer => layer.id === panoramaSettings.baseLayerId && layer.type === "raster")) throw new Error("The panorama base layer is missing");
       previous = Object.fromEntries(["panorama", "origin", "size", "bbox", "snapToGrid", "resizeTransformMode", "settings", "layers", "activeLayerId"].map(key => [key, this[key]]));
+      this._documentRevision = (this._documentRevision || 0) + 1;
       this.poseEditor?.release();
       this.panorama = restoredPanorama; this.origin = nextOrigin; this.size = nextSize; this.bbox = nextBbox;
       this.snapToGrid = state.snapToGrid === true;
       this.resizeTransformMode = normalizeTransformMode(state.resizeTransformMode);
-      this.settings = { ...this.settings, ...(state.settings || {}) };
+      this.settings = { ...(replaceDocument ? makeDefaultUniCanvasSettings() : this.settings), ...(state.settings || {}) };
       this.applySeedModeDefault();
-      if (layers.length) {
+      if (layers.length || replaceDocument) {
         this.layers = layers;
         this.normalizeLayerOrder();
         this.panorama?.project();
         this.activeLayerId = state.activeLayerId && this.layers.some((layer) => layer.id === state.activeLayerId)
           ? state.activeLayerId
-          : this.layers.find((layer) => layer.type !== "mask")?.id || this.layers[0].id;
+          : this.layers.find((layer) => layer.type !== "mask")?.id || this.layers[0]?.id || null;
         this.saveLocalStateBackup(state);
       }
       this.syncPromptControls();
@@ -8331,8 +8839,10 @@ class UniCanvasWidget {
       this.updatePanoramaControls();
       this.renderLayerList();
       previous.panorama?.dispose();
+      return true;
     } catch (err) {
       if (previous) Object.assign(this, previous);
+      if (!this._disposed && restoreRevision === this._stateRestoreRevision) this._stateRestoreFailed = true;
       this.updatePanoramaControls();
       this.setStatus(`Canvas restore failed: ${err.message || err}`, true);
       console.warn("[VNCCS UniCanvas] Failed to restore state", err);
@@ -8433,7 +8943,7 @@ class UniCanvasWidget {
 
   // How many reference pictures the active family reads besides the working area (Krea2 Edit: 1).
   maxEditReferenceImages() {
-    const perFamily = { krea2_edit: 1 };
+    const perFamily = { krea2_edit: this.settings.edit_use_layers_as_reference === false ? 2 : 1 };
     return perFamily[this.getModelBase()] ?? 4;
   }
 
@@ -8468,6 +8978,11 @@ class UniCanvasWidget {
     const panel = document.createElement("div");
     panel.className = "vnccs-uc-refs-popover";
     panel.dataset.editRefsPopover = "1";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", "Reference images");
+    panel.addEventListener("keydown", event => {
+      if (event.key === "Escape") { event.stopPropagation(); this.closeEditReferenceImages(); }
+    });
     const head = document.createElement("div");
     head.className = "vnccs-uc-refs-head";
     const title = document.createElement("div");
@@ -8491,13 +9006,37 @@ class UniCanvasWidget {
     fileInput.multiple = true;
     fileInput.className = "vnccs-uc-file";
     panel.append(head, hint, grid, fileInput);
+    const useLayers = this.standalone ? this._button("Use Layers as 1st reference image", "vnccs-uc-btn", () => {
+      this.settings.edit_use_layers_as_reference = this.settings.edit_use_layers_as_reference === false;
+      this.syncSettingsToWidget();
+      render();
+    }) : null;
+    if (useLayers) {
+      useLayers.dataset.useLayersReference = "1";
+      useLayers.setAttribute("aria-label", "Use Layers as 1st reference image");
+      useLayers.innerHTML = '<span>Use Layers as 1st reference image</span><span class="vnccs-uc-reference-state" aria-hidden="true"></span><span class="vnccs-uc-toggle" aria-hidden="true"></span>';
+      useLayers.title = "Use all visible image layers inside the selection bbox as the first reference image";
+      panel.insertBefore(useLayers, grid);
+    }
     const render = () => {
       grid.innerHTML = "";
       const max = this.maxEditReferenceImages();
       const list = this.editReferenceImages();
-      count.textContent = `${list.length} / ${max}`;
+      const layersFirst = this.settings.edit_use_layers_as_reference !== false;
+      useLayers?.setAttribute("aria-pressed", String(layersFirst));
+      useLayers?.classList.toggle("active", layersFirst);
+      if (useLayers) {
+        useLayers.querySelector(".vnccs-uc-toggle").classList.toggle("active", layersFirst);
+        useLayers.querySelector(".vnccs-uc-reference-state").textContent = layersFirst ? "On" : "Off";
+      }
+      count.textContent = this.standalone
+        ? `${list.length + Number(layersFirst)} / ${max + Number(layersFirst)}`
+        : `${list.length} / ${max}`;
+      if (this.standalone) hint.textContent = layersFirst
+        ? "Image 1 uses all visible image layers inside the selection bbox. Uploaded images follow it."
+        : "Uploaded images start at image 1. Canvas layers are not used as a reference.";
       list.forEach((data, index) => {
-        const label = referenceSlotName(this.modelDescriptors, this.settings.generation_mode, index + 2).text;
+        const label = referenceSlotName(this.modelDescriptors, this.settings.generation_mode, index + (layersFirst ? 2 : 1)).text;
         const cell = document.createElement("div");
         cell.className = "vnccs-uc-refs-cell";
         cell.title = label;
@@ -8529,6 +9068,7 @@ class UniCanvasWidget {
     };
     render();
     fileInput.addEventListener("change", () => {
+      const documentRevision = this._documentRevision;
       const files = [...(fileInput.files || [])];
       fileInput.value = "";
       const max = this.maxEditReferenceImages();
@@ -8537,6 +9077,7 @@ class UniCanvasWidget {
       files.slice(0, Math.max(0, room)).forEach((file) => {
         const reader = new FileReader();
         reader.onload = () => {
+          if (this._disposed || this._canvasOperation || documentRevision !== this._documentRevision) return;
           if (typeof reader.result !== "string") return;
           const next = this.editReferenceImages();
           if (next.length >= max) return;
@@ -8547,9 +9088,13 @@ class UniCanvasWidget {
         reader.readAsDataURL(file);
       });
     });
-    this.container.appendChild(panel);
-    const anchor = this.container.querySelector("[data-action='edit-refs']");
-    if (anchor) this.anchorPopoverTo(panel, anchor, this.container);
+    (this.standalone ? this.stageWrap : this.container).appendChild(panel);
+    const anchor = this.container.querySelector(this.standalone ? "[data-standalone-refs]" : "[data-action='edit-refs']");
+    if (this.standalone) {
+      panel.style.left = "8px";
+      panel.style.bottom = "8px";
+      panel.style.maxHeight = "calc(100% - 16px)";
+    } else if (anchor) this.anchorPopoverTo(panel, anchor, this.container);
     else {
       panel.style.left = "24px";
       panel.style.top = "48px";
@@ -8668,7 +9213,7 @@ class UniCanvasWidget {
     };
 
     // Background removal (spec 10.3): the backend and, for the Edit model backend, its own
-    // generation settings (vnccs_unicanvas_remove_bg.mjs).
+    // generation settings (unicanvas/remove_bg.mjs).
     section("remove_bg", "Remove background");
     buildRemoveBgSettings(s, {
       bind,
@@ -8709,8 +9254,8 @@ class UniCanvasWidget {
     checkboxRow("VAE chunking (tiled encode/decode for low RAM/VRAM, slower)", Boolean(s.vae_chunking), (checked) => { s.vae_chunking = checked; commit(); });
 
     section("inpaint", "Inpaint");
-    checkboxRow("Crop and stitch: generate only around the mask, at full resolution", s.inpaint_crop_to_mask !== false, (checked) => { s.inpaint_crop_to_mask = checked; commit(); },
-      "Like ComfyUI-Inpaint-CropAndStitch: the mask plus some context is cropped, generated at the working resolution and pasted back into the mask only. Off: the whole bbox is generated and the mask cut out of it.");
+    checkboxRow("Crop and stitch (non-edit models only)", s.inpaint_crop_to_mask === true, (checked) => { s.inpaint_crop_to_mask = checked; commit(); },
+      "Generate around the mask with extra context, then paste the masked pixels back. Off: generate the whole bbox. Edit models always generate the whole bbox and apply only the mask.");
 
     // Diagnostics for bug reports and AI agents.
     section("debug", "Debug");
@@ -8761,11 +9306,13 @@ class UniCanvasWidget {
     this.poseEditor?.dispose();
     if (this._disposed) return;
     try {
-      void this.flushStateUpload(true);
+      this.closeColorMatchPreview?.(true);
+      if (!this._isRestoring) void this.flushStateUpload(true);
     } catch (err) {
       console.warn("[VNCCS UniCanvas] Final state flush failed during disposal", err);
     }
     this._disposed = true;
+    disposeModelDependencies(this);
     this._removeScaleEdit?.();
     this.closeEditReferenceImages();
     teardownUniCanvasWidgetModes(this);
@@ -8906,7 +9453,10 @@ app.registerExtension({
         if (!this.uniCanvasWidget) return;
         syncUniCanvasDOMWidgetWidth(this);
         this.uniCanvasWidget._isRestoring = true;
-        await this.uniCanvasWidget._loadFromNode();
+        const restore = this.uniCanvasWidget._loadFromNode();
+        const revision = this.uniCanvasWidget._stateLoadRevision;
+        await restore;
+        if (!this.uniCanvasWidget || this.uniCanvasWidget._disposed || revision !== this.uniCanvasWidget._stateLoadRevision) return;
         this.uniCanvasWidget._isRestoring = false;
         this.uniCanvasWidget.renderLayerList();
         this.uniCanvasWidget.resize();
@@ -8931,19 +9481,14 @@ app.registerExtension({
 
     const onSerialize = nodeType.prototype.onSerialize;
     nodeType.prototype.onSerialize = function (o) {
-      // A settings change still inside its 250 ms debounce must land in the saved workflow too.
       const canvasWidget = this.uniCanvasWidget;
-      if (canvasWidget?.settingsSyncTimer && !canvasWidget._isRestoring) {
+      if (canvasWidget && !canvasWidget._isRestoring) {
         const stateWidget = this.widgets?.find((w) => w.name === "unicanvas_state");
         const staleValue = stateWidget?.value;
-        canvasWidget.flushSettingsToWidget();
+        void canvasWidget.snapshotForWorkflow();
         if (Array.isArray(o?.widgets_values) && stateWidget && stateWidget.value !== staleValue) {
           o.widgets_values = o.widgets_values.map((value) => (value === staleValue ? stateWidget.value : value));
         }
-      }
-      if (this.uniCanvasWidget?.panorama && !this.uniCanvasWidget._isRestoring) {
-        this.uniCanvasWidget.syncToNode();
-        void this.uniCanvasWidget.flushStateUpload();
       }
       return onSerialize?.apply(this, arguments);
     };

@@ -67,8 +67,8 @@ test("pose layers: explicit edit session, move outside it, layer-row right-click
   expect(await rect()).toEqual(moved);
 });
 
-// Navigation inside the edit session is inspection-only: the framing stays pinned to the wall.
-test("pose editor: orbit and wheel inspect without rewriting the framing", async ({ page }) => {
+// Navigation keeps the wall stable during the gesture; Save adopts the final view.
+test("pose editor: orbit and wheel become the saved camera framing", async ({ page }) => {
   await openUnicanvas(page);
   await openPoseTool(page);
   const pose = await poseLayer(page);
@@ -96,4 +96,10 @@ test("pose editor: orbit and wheel inspect without rewriting the framing", async
     return wrap ? { hostsCanvas: Boolean(wrap.querySelector("canvas")), visible: !wrap.hidden && wrap.offsetParent !== null } : null;
   });
   expect(popover).toEqual({ hostsCanvas: true, visible: true });
+  await page.locator(".vnccs-uc-pose-editbar button", { hasText:"Save pose" }).click();
+  const saved = await page.evaluate(id => globalThis.__VNCCS_UC_E2E__.getLayerPose(id), pose.id);
+  expect(saved.viewport).not.toEqual(before.viewport);
+  await page.locator(`${SHELL} .vnccs-uc-layer[data-layer-id="${pose.id}"]`).click({ button:"right" });
+  await page.locator(".vnccs-uc-layer-menu").getByText("Edit pose", { exact:true }).click();
+  await expect.poll(() => page.evaluate(id => globalThis.__VNCCS_UC_E2E__.getLayerPose(id).viewport, pose.id)).toEqual(saved.viewport);
 });

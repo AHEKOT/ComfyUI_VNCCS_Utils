@@ -271,19 +271,19 @@ class UniCanvasModelModule:
 def _reference_image_slots(image_tensor: Any, gen_settings: dict[str, Any] | None) -> dict[int, Any]:
     """Map Edit model reference images to their numbered slots (spec 3 and 9).
 
-    Slot 1 is the canvas working area; slots 2..11 hold the VNCSS Config
+    Slot 1 is the canvas working area by default; slots 2..11 hold the VNCSS Config
     reference images (reference_image_1..10) in socket order. Gaps are
     preserved: a reference in socket position N always occupies slot N+1.
-    Shared by the MiniMax H3 (<Picture N>) and Qwen-Image-2.1 (<image N>)
-    modules.
+    Disabling the canvas reference starts uploaded references at slot 1.
     """
     from ...vncss_config import REFERENCE_INPUTS
 
     slots: dict[int, Any] = {}
-    if image_tensor is not None:
-        slots[1] = image_tensor
+    use_layers = (gen_settings or {}).get("edit_use_layers_as_reference") is not False
+    if image_tensor is not None and use_layers:
+        slots[1] = (gen_settings or {}).get("_edit_layers_reference", image_tensor)
     external_refs = ((gen_settings or {}).get("_external") or {}).get("references") or {}
-    for slot, name in enumerate(REFERENCE_INPUTS, start=2):
+    for slot, name in enumerate(REFERENCE_INPUTS, start=2 if use_layers else 1):
         value = external_refs.get(name)
         if value is not None:
             slots[slot] = value

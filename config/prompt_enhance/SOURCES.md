@@ -6,7 +6,6 @@ marker at the end); the rest are written for this project because no official fl
 | Family | Files | Origin |
 | --- | --- | --- |
 | `qwen_image21` | positive, edit | Official: https://github.com/QwenLM/Qwen-Image-2.1/tree/main/prompt_rewrite/prompts (`system_prompt_t2i.txt`, `system_prompt_edit.txt`) |
-| `qwen_image_edit` | positive, edit | Official: https://github.com/QwenLM/Qwen-Image `src/examples/tools/prompt_utils.py` (`polish_prompt_en`, `polish_edit_prompt`) |
 | `flux_klein` | positive, edit | Official: https://github.com/black-forest-labs/flux2 `src/flux2/system_messages.py` (`SYSTEM_MESSAGE_UPSAMPLING_T2I`, `_I2I`) |
 | `z_image` | positive | Official PE template: https://huggingface.co/spaces/Tongyi-MAI/Z-Image-Turbo `pe.py` (plus one line asking for English output) |
 | `anima` | positive, negative | Written here from https://huggingface.co/circlestone-labs/Anima and the tag conventions in `models/anima.py` |
