@@ -21,7 +21,7 @@ from PIL import Image
 from ..comfy_bridge import _call_comfy_node
 from ..debug import _conditioning_debug, _latent_debug, _uc_log
 from ..loaders import _load_generation_assets
-from ..imaging import _decode_data_url, _pil_rgba_to_image_tensor
+from ..imaging import _decode_data_url, _pil_rgba_to_image_tensor, _pil_to_mask_image
 from ..latents import _unwrap_latent_samples
 from .. import loras
 from ..loras import LoraRequirement, _lora_name_matches
@@ -349,7 +349,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         background.alpha_composite(source_rgba.convert("RGBA"))
         if mask_image is not None:
             # Keep the conditioning hole solid gray; feathering belongs to the paste mask.
-            hole = mask_image.convert("RGBA").getchannel("A").point(lambda alpha: 255 if alpha > 8 else 0)
+            hole = _pil_to_mask_image(mask_image).point(lambda value: 255 if value > 8 else 0)
             background.paste((*QWEN21_OUTPAINT_FILL, 255), (0, 0, *source_rgba.size), hole)
         _uc_log(draw_id, "QI2.1 outpaint reference flattened on gray", {"source_size": source_rgba.size})
         return background.convert("RGB")

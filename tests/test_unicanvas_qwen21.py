@@ -95,6 +95,11 @@ def test_masked_qwen_edit_removes_source_pixels_and_keeps_canvas_coordinates(mod
     mask = Image.new("RGBA", source.size)
     mask.paste((255, 255, 255, 255), (47, 19, 63, 36))
     mask.putpixel((46, 20), (255, 255, 255, 128))
+    if mode == "outpaint":
+        from nodes.unicanvas.masking import _combine_mask_with_source_alpha
+
+        source.putpixel((70, 20), (0, 0, 0, 0))
+        mask = _combine_mask_with_source_alpha(mask, source)
     ctx = SimpleNamespace(mode=mode, source_rgba=source, source=source.convert("RGB"),
                           reference_source=source.convert("RGB"), mask_image=mask, draw_id="hole")
     if mode == "outpaint":
@@ -104,6 +109,8 @@ def test_masked_qwen_edit_removes_source_pixels_and_keeps_canvas_coordinates(mod
     assert ctx.reference_source.getpixel((48, 20)) == (128, 128, 128), "The mask is a hole, not a retained source pixel"
     assert ctx.reference_source.getpixel((46, 20)) == (128, 128, 128), "Feather the paste, not the gray reference"
     assert ctx.reference_source.getpixel((45, 20)) == (10, 30, 50)
+    if mode == "outpaint":
+        assert ctx.reference_source.getpixel((70, 20)) == (128, 128, 128)
     assert source.getpixel((48, 20)) == (10, 30, 50, 255)
 
 
