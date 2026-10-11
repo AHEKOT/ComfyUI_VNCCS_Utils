@@ -31,6 +31,17 @@ def _data_url(image):
 
 
 class UniCanvasRenderTests(unittest.TestCase):
+    def test_qi2_uploaded_reference_preserves_alpha_after_preset_resolution(self):
+        image = Image.new("RGBA", (2, 2), (100, 200, 50, 64))
+        with mock.patch.object(UNICANVAS.models.qwen_image21, "_pil_rgba_to_image_tensor", side_effect=lambda value: np.asarray(value)):
+            settings = UNICANVAS.draw_request._request_settings({"settings": {
+                "model_selection_mode": "presets", "selected_preset_id": "qwen_image21",
+                "edit_reference_images": [_data_url(image)], "denoise": 0.2,
+            }}, None)
+        reference = settings["_external"]["references"]["reference_image_1"]
+        self.assertEqual(tuple(reference[0, 0]), (100, 200, 50, 64))
+        self.assertEqual(settings["denoise"], 1.0)
+
     def test_incomplete_cache_cannot_render_a_successful_blank_canvas(self):
         state = {"version": 2, "storage": "server_cache", "state_id": "partial",
                  "bbox": {"x": 0, "y": 0, "width": 1, "height": 1},
@@ -67,8 +78,8 @@ class UniCanvasRenderTests(unittest.TestCase):
     def test_uploaded_reference_gaps_keep_their_socket_numbers(self):
         uploads = [None, "", "third", *([None] * 6), "tenth", "outside_limit"]
         with (
-            mock.patch.object(UNICANVAS.draw_request, "_decode_data_url", side_effect=lambda value, mode: value),
-            mock.patch.object(UNICANVAS.draw_request, "_pil_to_image_tensor", side_effect=lambda value: value),
+            mock.patch.object(UNICANVAS.models.base, "_decode_data_url", side_effect=lambda value, mode: value),
+            mock.patch.object(UNICANVAS.models.base, "_pil_to_image_tensor", side_effect=lambda value: value),
         ):
             settings = UNICANVAS.draw_request._request_settings({"settings": {"edit_reference_images": uploads}}, None)
         self.assertEqual(settings["_external"]["references"], {"reference_image_3": "third", "reference_image_10": "tenth"})

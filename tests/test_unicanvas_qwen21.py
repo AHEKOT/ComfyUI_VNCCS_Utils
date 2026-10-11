@@ -1,4 +1,3 @@
-import math
 import pytest
 torch = pytest.importorskip("torch")
 
@@ -8,6 +7,24 @@ from nodes.unicanvas.models.qwen_image21 import (
     QwenImage21UniCanvasModule,
 )
 from nodes.unicanvas.models.registry import _get_unicanvas_model_module
+
+
+@pytest.fixture(autouse=True)
+def native_latent_and_decode_nodes(monkeypatch):
+    import nodes
+
+    class EmptyLatentImage:
+        def generate(self, width, height, batch_size):
+            return ({"samples": torch.zeros(batch_size, 4, height // 8, width // 8), "downscale_ratio_spacial": 8},)
+
+    class VAEDecode:
+        FUNCTION = "decode"
+
+        def decode(self, samples, vae):
+            return (vae.decode(samples["samples"]),)
+
+    monkeypatch.setattr(nodes, "EmptyLatentImage", EmptyLatentImage, raising=False)
+    monkeypatch.setattr(nodes, "NODE_CLASS_MAPPINGS", {"VAEDecode": VAEDecode}, raising=False)
 
 
 def test_module_registered_with_aliases():
@@ -47,10 +64,12 @@ def test_generation_size_follows_the_canvas():
     assert module.resolve_generation_size(1024, 768, {"qwen21_aspect_preset": "2400x1792"}) == (1024, 768)
 
 
-def test_create_empty_latent_uses_64_channel_16x_compression():
+@pytest.mark.parametrize("width,height", [(1024, 768), (2048, 2048)])
+def test_create_empty_latent_uses_native_empty_latent_with_scale_metadata(width, height):
     module = _get_unicanvas_model_module("qwen_image21")
-    latent = module.create_empty_latent(1024, 768, {"batch_size": 1}, draw_id="t")
-    assert tuple(latent["samples"].shape) == (1, 64, 48, 64)
+    latent = module.create_empty_latent(width, height, {"batch_size": 1}, draw_id="t")
+    assert tuple(latent["samples"].shape) == (1, 4, height // 8, width // 8)
+    assert latent["downscale_ratio_spacial"] == 8
 
 
 def test_reference_prompt_is_only_the_user_text():
@@ -74,12 +93,11 @@ def test_reference_wiring_slots_and_prompt():
         "reference_image_4": torch.full((1, 8, 8, 3), 4.0),
     }
     slots = module.reference_image_slots(working, {"_external": {"references": refs}})
-    # Working area is <image1>, Edit model references are <image2..5> in socket order.
+    # Native QI2 numbers only connected images, without gaps.
     assert slots[1] is working
     assert slots[2] is refs["reference_image_1"]
-    assert 3 not in slots
-    assert slots[4] is refs["reference_image_3"]
-    assert slots[5] is refs["reference_image_4"]
+    assert slots[3] is refs["reference_image_3"]
+    assert slots[4] is refs["reference_image_4"]
     text = module.assemble_instruction("edit", slots)
     assert text == "edit"
 
@@ -103,8 +121,7 @@ def test_prepare_reference_conditioning_wires_slots_and_preserves_user_prompt(mo
 
     class FakeVae:
         def encode(self, pixels):
-            captured["vae_pixels"] = pixels
-            return {"samples": torch.zeros(1, 64, 1, 1)}
+            pytest.fail("A reference must not also become the sampling latent")
 
     monkeypatch.setattr(QwenImage21UniCanvasModule, "_encode_qi21", fake_encode)
     working = torch.rand(1, 8, 8, 3)
@@ -123,9 +140,8 @@ def test_prepare_reference_conditioning_wires_slots_and_preserves_user_prompt(mo
     assert torch.equal(captured["images"][1], working)
     assert torch.equal(captured["images"][2], ref)
     assert captured["prompt"] == "Keep the face from <image2>."
-    # The working area is encoded as RGBA for the 64-channel image VAE.
-    assert captured["vae_pixels"].shape == (1, 8, 8, 4)
-    assert isinstance(gen_settings["_qwen21_latent"], dict)
+    assert captured["resolution"] == 1024
+    assert "_qwen21_latent" not in gen_settings
 
 
 def test_prepare_reference_conditioning_txt2img_drops_working_area(monkeypatch):
@@ -149,9 +165,9 @@ def test_prepare_reference_conditioning_txt2img_drops_working_area(monkeypatch):
         "_external": {"references": {"reference_image_1": ref}},
     }
     module.prepare_reference_conditioning(None, None, FakeVae(), torch.zeros(1, 8, 8, 3), gen_settings, "t")
-    assert 1 not in captured["images"]
-    assert torch.equal(captured["images"][2], ref)
-    assert gen_settings["_qwen21_latent"] is None
+    assert list(captured["images"]) == [1]
+    assert torch.equal(captured["images"][1], ref)
+    assert "_qwen21_latent" not in gen_settings
 
 
 def test_encode_prompt_collects_positive_then_negative():
@@ -164,11 +180,54 @@ def test_encode_prompt_collects_positive_then_negative():
     assert gen_settings["_qwen21_clip"] == "CLIP"
 
 
+@pytest.mark.parametrize("mode", ["txt2img", "img2img", "inpaint", "outpaint"])
+@pytest.mark.parametrize("use_layers", [True, False])
+def test_every_mode_samples_empty_latent_at_full_denoise(mode, use_layers):
+    from types import SimpleNamespace
+    from nodes.unicanvas.draw_request import DrawRequest
+
+    request = DrawRequest.from_payload({"mode": mode, "settings": {
+        "generation_mode": "qwen_image21", "denoise": 0.3, "edit_use_layers_as_reference": use_layers,
+    }})
+    assert request.denoise == 1.0
+    ctx = SimpleNamespace(settings=request.settings, width=1024, height=768, mode=mode, denoise=request.denoise, draw_id="empty")
+    latent = request.module.prepare_generation_latent(ctx)
+    assert latent["samples"].shape == (1, 4, 96, 128)
+    assert torch.count_nonzero(latent["samples"]) == 0
+
+
+@pytest.mark.parametrize("pixels", [0.0, 0.5])
+def test_rgba_reference_and_fixed_resolution_are_independent_of_pixel_content(monkeypatch, pixels):
+    from nodes.unicanvas.models import qwen_image21
+
+    image = torch.full((1, 128, 256, 4), pixels)
+    image[..., 3] = 0.25
+    seen = []
+    monkeypatch.setattr(qwen_image21, "_call_comfy_node", lambda name, **kw: seen.append((name, kw)) or ("POS", "NEG"))
+    settings = {"draw_mode": "img2img", "_qwen21_clip": "CLIP", "_qwen21_prompt": "edit"}
+    _get_unicanvas_model_module("qwen_image21").prepare_reference_conditioning(None, None, object(), image, settings)
+    assert seen[0][1]["resolution"] == 1024
+    assert torch.equal(seen[0][1]["images"]["image_1"], image)
+    assert "_qwen21_latent" not in settings
+
+
+def test_model_uses_native_qi2_cache_and_never_easycache(monkeypatch):
+    from types import SimpleNamespace
+    from nodes.unicanvas.models import qwen_image21
+
+    calls = []
+    monkeypatch.setattr(qwen_image21, "_call_comfy_node", lambda name, **kw: calls.append((name, kw)) or ("cached",))
+    module = _get_unicanvas_model_module("qwen_image21")
+    assert module.prepare_model_for_sampling(SimpleNamespace(model="base")) == "cached"
+    assert calls == [("QwenImage21Cache", {"model": "base", "device": "gpu", "dtype": "int8"})]
+    assert module.supports_step_cache({"step_cache": True}) is False
+
+
 def test_decode_samples_keeps_alpha_by_default():
     module = _get_unicanvas_model_module("qwen_image21")
 
     class FakeVae:
-        def decode_tiled(self, samples, tile_x=512, tile_y=512, overlap=64):
+        def decode(self, samples):
             decoded = torch.zeros(1, 8, 8, 4)
             decoded[..., :3] = 0.25
             decoded[..., 3] = 0.5
@@ -184,7 +243,7 @@ def test_decode_samples_preserves_alpha_with_legacy_opaque_setting():
     module = _get_unicanvas_model_module("qwen_image21")
 
     class FakeVae:
-        def decode_tiled(self, samples, tile_x=512, tile_y=512, overlap=64):
+        def decode(self, samples):
             decoded = torch.zeros(1, 8, 8, 4)
             decoded[..., :3] = 0.25
             decoded[..., 3] = 0.5
@@ -194,6 +253,24 @@ def test_decode_samples_preserves_alpha_with_legacy_opaque_setting():
     assert tuple(decoded.shape) == (1, 8, 8, 4)
     assert torch.all(decoded[..., :3] == 0.25)
     assert torch.all(decoded[..., 3] == 0.5)
+
+
+def test_vae_chunking_is_an_explicit_option():
+    from nodes.unicanvas.performance import apply_vae_chunking
+
+    calls = []
+    class Vae:
+        def decode(self, samples):
+            calls.append("full")
+            return samples
+        def decode_tiled(self, samples):
+            calls.append("tiled")
+            return samples
+    module = _get_unicanvas_model_module("qwen_image21")
+    for chunking in (False, True):
+        settings = {"vae_chunking": chunking}
+        module.decode_samples(apply_vae_chunking(Vae(), settings), {"samples": torch.zeros(1, 64, 1, 1)}, settings)
+    assert calls == ["full", "tiled"]
 
 
 def test_remove_background_contract(monkeypatch):
@@ -218,11 +295,8 @@ def test_remove_background_contract(monkeypatch):
 def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
     """The (H,W,3) contract input must reach the QI2.1 flow as real geometry.
 
-    Runs the real remove_background -> _subject_extraction ->
-    prepare_reference_conditioning -> _qwen21_working_latent path (only the
-    asset loader, the ComfyUI node call and the sampler are stubbed) and
-    asserts the working latent shape (1,64,H/16,W/16) plus the resolution
-    value passed to the text encoder.
+    Exercise the reference encoder, separate empty latent, KV cache and
+    standard decoder without loading model weights.
     """
     module = _get_unicanvas_model_module("qwen_image21")
     captured = {}
@@ -233,10 +307,9 @@ def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
 
     class FakeVae:
         def encode(self, pixels):
-            captured["encode_pixels"] = pixels
-            return {"samples": torch.zeros(1, 64, pixels.shape[1] // 16, pixels.shape[2] // 16)}
+            pytest.fail("Must sample an empty latent")
 
-        def decode_tiled(self, samples, tile_x=512, tile_y=512, overlap=64):
+        def decode(self, samples):
             decoded = torch.zeros(1, 48, 80, 4)
             decoded[..., :3] = 0.25
             decoded[..., 3] = 0.5
@@ -251,6 +324,10 @@ def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
         captured.setdefault("calls", []).append((class_name, kwargs))
         if class_name == "TextEncodeQwenImage21":
             return ("POS", "NEG")
+        if class_name == "QwenImage21Cache":
+            return (kwargs["model"],)
+        if class_name == "VAEDecode":
+            return (kwargs["vae"].decode(kwargs["samples"]["samples"]),)
         raise AssertionError(f"unexpected node call: {class_name}")
 
     monkeypatch.setattr("nodes.unicanvas.models.qwen_image21._call_comfy_node", fake_call_comfy_node)
@@ -265,10 +342,10 @@ def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
     rgba = module.remove_background(image)
 
     encode = next(kwargs for name, kwargs in captured["calls"] if name == "TextEncodeQwenImage21")
-    # The node's resolution is a square side (~sqrt(48 * 80) = 62 -> 64), not a pixel count.
-    assert encode["resolution"] == 64
-    assert captured["encode_pixels"].shape == (1, 48, 80, 4)
-    assert captured["sample_latent"]["samples"].shape == (1, 64, 3, 5)
+    assert encode["resolution"] == 1024
+    assert captured["sample_latent"]["samples"].shape == (1, 4, 6, 10)
+    assert captured["sample_latent"]["downscale_ratio_spacial"] == 8
+    assert [name for name, _ in captured["calls"]] == ["QwenImage21Cache", "TextEncodeQwenImage21", "VAEDecode"]
     assert tuple(rgba.shape) == (48, 80, 4)
     assert torch.all(rgba[..., 3] == 0.5)
 
@@ -313,23 +390,29 @@ def test_remove_background_extraction_prompt():
 def test_spectrum_is_removed():
     assert "spectrum" not in QWEN_IMAGE21_DEFAULTS
     module = _get_unicanvas_model_module("qwen_image21")
-    assert module.supports_step_cache({"spectrum": {"enabled": True}}) is True
+    assert module.supports_step_cache({"spectrum": {"enabled": True}}) is False
 
 
 # --- Viggle turbo: student schedule + unmerged adapter ---------------------------------
 
 
-def test_viggle_turbo_sigmas_follow_the_student_nodes():
+@pytest.mark.parametrize("channels,side,scale", [(64, 64, 16), (4, 128, 8)])
+def test_viggle_turbo_sigmas_use_standard_student_nodes(channels, side, scale):
     from nodes.unicanvas.models.qwen_image21_viggle import viggle_turbo_sigmas
 
-    latent = {"samples": torch.zeros(1, 64, 64, 64)}  # 1024x1024 -> 4096 tokens, shift ~0.69
+    latent = {"samples": torch.zeros(1, channels, side, side), "downscale_ratio_spacial": scale}
     sigmas = viggle_turbo_sigmas(latent)
-    assert len(sigmas) == 7 and float(sigmas[0]) == pytest.approx(1.0) and float(sigmas[-1]) == 0.0
-    assert all(float(a) > float(b) for a, b in zip(sigmas, sigmas[1:]))
-    shift = 0.5 + 0.4 * (4096 - 256) / (8192 - 256)
-    assert float(sigmas[4]) == pytest.approx(math.exp(shift) / (math.exp(shift) + 1.0), abs=1e-5)  # raw node 0.5
-    # img2img keeps only the student nodes at or below the denoise.
-    assert torch.allclose(viggle_turbo_sigmas(latent, 0.6), sigmas[4:])
+    # The 1024x1024 schedule, including the final raw node 0.25 and terminal zero.
+    expected = torch.tensor([1, 0.967754458, 0.933358293, 0.857191977, 0.666755818, 0.400096293, 0])
+    torch.testing.assert_close(sigmas, expected, rtol=0, atol=1e-7)
+
+
+def test_turbo_sigmas_use_the_current_generation_area():
+    from nodes.unicanvas.models.qwen_image21_viggle import viggle_turbo_sigmas
+
+    sigmas = viggle_turbo_sigmas({"samples": torch.zeros(1, 64, 64, 128)})
+    expected = torch.tensor([1, 0.973610630, 0.945106888, 0.880651300, 0.710949503, 0.450509508, 0])
+    torch.testing.assert_close(sigmas, expected, rtol=0, atol=1e-7)
 
 
 def test_viggle_lora_weights_fold_alpha_rank_and_strength():
@@ -360,20 +443,15 @@ def test_turbo_lora_runs_unmerged_and_other_loras_merge(monkeypatch):
 
 
 def test_turbo_model_samples_on_the_viggle_schedule(monkeypatch):
-    import comfy.sample as comfy_sample
-    import comfy.samplers as comfy_samplers
+    from nodes.unicanvas.models import qwen_image21
     from nodes.unicanvas.models.qwen_image21_viggle import VIGGLE_TURBO_MARKER, viggle_turbo_sigmas
 
-    captured = {}
+    calls = []
+    def node(name, **kwargs):
+        calls.append((name, kwargs))
+        return ({"samples": kwargs["latent_image"]["samples"] + 1},) if name == "SamplerCustomAdvanced" else (name,)
 
-    def fake_sample_custom(model, noise, cfg, sampler, sigmas, positive, negative, latent_image, **kwargs):
-        captured.update(cfg=cfg, sampler=sampler, sigmas=sigmas)
-        return latent_image + 1
-
-    monkeypatch.setattr(comfy_sample, "fix_empty_latent_channels", lambda model, samples, *a: samples, raising=False)
-    monkeypatch.setattr(comfy_sample, "prepare_noise", lambda samples, seed, inds=None: torch.zeros_like(samples), raising=False)
-    monkeypatch.setattr(comfy_sample, "sample_custom", fake_sample_custom, raising=False)
-    monkeypatch.setattr(comfy_samplers, "sampler_object", lambda name: f"sampler:{name}", raising=False)
+    monkeypatch.setattr(qwen_image21, "_call_comfy_node", node)
     monkeypatch.setattr("nodes.unicanvas.models.base._sample_generation_latent_default", lambda **kw: pytest.fail("KSampler path used for turbo"))
 
     class TurboModel:
@@ -382,9 +460,25 @@ def test_turbo_model_samples_on_the_viggle_schedule(monkeypatch):
     latent = {"samples": torch.zeros(1, 64, 48, 64)}
     module = _get_unicanvas_model_module("qwen_image21")
     out = module.sample_latent(TurboModel(), "POS", "NEG", latent, 7, 6, 1.0, "euler", "simple", 1.0, {}, "t")
-    assert captured["sampler"] == "sampler:euler" and captured["cfg"] == 1.0
-    assert torch.equal(captured["sigmas"], viggle_turbo_sigmas(latent))
+    assert [name for name, _ in calls] == ["RandomNoise", "BasicGuider", "KSamplerSelect", "SamplerCustomAdvanced"]
+    assert calls[0][1] == {"noise_seed": 7}
+    assert calls[1][1]["conditioning"] == "POS" and "negative" not in calls[1][1]
+    assert calls[2][1] == {"sampler_name": "euler"}
+    assert torch.equal(calls[3][1]["sigmas"], viggle_turbo_sigmas(latent))
+    assert calls[3][1]["latent_image"] is latent
     assert torch.equal(out["samples"], torch.ones(1, 64, 48, 64))
+
+
+@pytest.mark.parametrize("steps,cfg,denoise", [(25, 1, 1), (6, 3, 1), (6, 1, 0.5)])
+def test_turbo_rejects_parameters_that_change_the_reference_schedule(monkeypatch, steps, cfg, denoise):
+    from types import SimpleNamespace
+    from nodes.unicanvas.models import qwen_image21
+    from nodes.unicanvas.models.qwen_image21_viggle import VIGGLE_TURBO_MARKER
+
+    model = SimpleNamespace(model_options={"transformer_options": {VIGGLE_TURBO_MARKER: True}})
+    monkeypatch.setattr(qwen_image21, "_call_comfy_node", lambda *a, **k: pytest.fail("must reject before sampling"))
+    with pytest.raises(ValueError, match="6 steps, CFG 1 and denoise 1"):
+        _get_unicanvas_model_module("qwen_image21").sample_latent(model, "POS", "NEG", {}, 7, steps, cfg, "euler", "simple", denoise, {})
 
 
 # --- AusBoss outpaint LoRA -----------------------------------------------------------
@@ -455,9 +549,9 @@ def test_pose_uses_the_same_two_images_and_unmodified_pose_studio_prompt(monkeyp
     assert list(encoded["images"]) == ["image_1", "image_2"]
     assert torch.equal(encoded["images"]["image_1"], pose)
     assert torch.equal(encoded["images"]["image_2"], character)
-    assert settings["_qwen21_latent"] is None
+    assert "_qwen21_latent" not in settings
     latent = module.prepare_generation_latent(ctx)
-    assert latent["samples"].shape == (1, 64, 4, 4)
+    assert latent["samples"].shape == (1, 4, 8, 8)
     assert not torch.any(latent["samples"])
     assert "_qwen21_pose_edit" in module.sampling_scratch_keys
 

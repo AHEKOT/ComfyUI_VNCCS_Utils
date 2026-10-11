@@ -4,9 +4,11 @@ import contextlib
 import sys
 import threading
 import types
+import weakref
 from unittest import mock
 
 import pytest
+import numpy as np
 
 from helpers.unicanvas_package import load_unicanvas_package
 
@@ -15,6 +17,123 @@ torch_stub = types.ModuleType("torch")
 torch_stub.Tensor = object
 unicanvas = load_unicanvas_package("vnccs_draw_ownership_test", torch_module=torch_stub)
 draw = unicanvas.draw
+
+
+@pytest.mark.parametrize("family", ["qwen_image21", "flux_klein"])
+def test_qi2_keeps_weights_cached_but_loads_a_fresh_text_encoder(monkeypatch, family):
+    loaders = unicanvas.loaders
+    model, first_clip, fresh_clip, vae = (object() for _ in range(4))
+    load = mock.Mock(return_value=(model, first_clip, vae))
+    fresh = mock.Mock(return_value=fresh_clip)
+    monkeypatch.setattr(loaders, "_MODEL_CACHE", {})
+    monkeypatch.setattr(loaders.DiffusionModelUniCanvasLoader, "load_assets", load)
+    monkeypatch.setattr(loaders.DiffusionModelUniCanvasLoader, "load_clip", fresh)
+    settings = {"model_loader": "diffusion_model", "generation_mode": family}
+    assert loaders._load_generation_assets(settings) == (model, first_clip, vae)
+    second = loaders._load_generation_assets(settings)
+    assert second == (model, fresh_clip if family == "qwen_image21" else first_clip, vae)
+    load.assert_called_once()
+    assert fresh.call_count == int(family == "qwen_image21")
+    cached = loaders._peek_cached_generation_assets(settings)
+    assert cached == (model, None if family == "qwen_image21" else first_clip, vae)
+
+
+def test_failed_qi2_encoder_reload_never_reuses_previous_encoder(monkeypatch):
+    loaders = unicanvas.loaders
+    model, clip, vae = (object() for _ in range(3))
+    monkeypatch.setattr(loaders, "_MODEL_CACHE", {})
+    monkeypatch.setattr(loaders.DiffusionModelUniCanvasLoader, "load_assets", lambda *a: (model, clip, vae))
+    monkeypatch.setattr(loaders.DiffusionModelUniCanvasLoader, "load_clip", mock.Mock(side_effect=RuntimeError("encoder failed")))
+    settings = {"model_loader": "diffusion_model", "generation_mode": "qwen_image21"}
+    loaders._load_generation_assets(settings)
+    with pytest.raises(RuntimeError, match="encoder failed"):
+        loaders._load_generation_assets(settings)
+    assert loaders._peek_cached_generation_assets(settings) == (model, None, vae)
+
+
+@pytest.mark.parametrize("batch_size", [4, 20])
+@pytest.mark.parametrize("turbo", [False, True])
+@pytest.mark.parametrize("failure_stage", [None, "encode", "sample", "decode"])
+def test_qi2_releases_allocator_between_stages_and_decodes_one_image_at_a_time(monkeypatch, batch_size, turbo, failure_stage):
+    import comfy
+    import comfy.model_management as management
+
+    qwen = unicanvas.models.qwen_image21
+    module = qwen.QwenImage21UniCanvasModule()
+    state = {"prefetch": False, "cast": False, "watermark": False}
+    memory = types.ModuleType("comfy.memory_management")
+    memory.aimdo_enabled = True
+    prefetch = types.ModuleType("comfy.model_prefetch")
+    aimdo = types.ModuleType("comfy_aimdo")
+    aimdo.model_vbar = types.ModuleType("comfy_aimdo.model_vbar")
+    prefetch.cleanup_prefetch_queues = lambda: state.__setitem__("prefetch", False)
+    monkeypatch.setattr(management, "reset_cast_buffers", lambda: state.__setitem__("cast", False), raising=False)
+    aimdo.model_vbar.vbars_reset_watermark_limits = lambda: state.__setitem__("watermark", False)
+    for name, value in (("comfy.memory_management", memory), ("comfy.model_prefetch", prefetch),
+                        ("comfy_aimdo", aimdo), ("comfy_aimdo.model_vbar", aimdo.model_vbar)):
+        monkeypatch.setitem(sys.modules, name, value)
+    monkeypatch.setattr(comfy, "memory_management", memory, raising=False)
+    monkeypatch.setattr(comfy, "model_prefetch", prefetch, raising=False)
+    monkeypatch.setattr(comfy, "model_management", management, raising=False)
+    unload = mock.Mock()
+    monkeypatch.setattr(management, "unload_all_models", unload, raising=False)
+    monkeypatch.setattr(qwen, "has_viggle_turbo", lambda model: turbo)
+    monkeypatch.setattr(qwen, "viggle_turbo_sigmas", lambda latent: [1, .9, .8, .7, .6, .5, 0])
+    monkeypatch.setattr(torch_stub, "cat", lambda images, dim: np.concatenate(images, axis=dim), raising=False)
+    latent = {"samples": np.arange(batch_size).reshape(batch_size, 1, 1, 1)}
+    live_gpu_images, decoded_indices = [], []
+
+    def work(stage):
+        assert not any(state.values()), f"allocator resources leaked into {stage}"
+        state.update(prefetch=True, cast=True, watermark=True)
+        if failure_stage == stage and (stage != "decode" or len(decoded_indices) == 1):
+            raise RuntimeError(f"{stage} failed")
+
+    class GpuImage:
+        def __init__(self, index):
+            self.index = index
+            live_gpu_images.append(weakref.ref(self))
+        def cpu(self):
+            return np.full((1, 2, 2, 4), self.index, dtype=np.float32)
+
+    def node(name, **kwargs):
+        if name == "TextEncodeQwenImage21":
+            work("encode")
+            return ("positive", "negative", {"samples": None})
+        if name == "SamplerCustomAdvanced":
+            work("sample")
+            return (latent,)
+        if name == "VAEDecode":
+            assert all(ref() is None for ref in live_gpu_images), "previous decoded images stayed on the GPU"
+            samples = kwargs["samples"]["samples"]
+            assert samples.shape[0] == 1
+            work("decode")
+            index = int(samples[0, 0, 0, 0])
+            decoded_indices.append(index)
+            return (GpuImage(index),)
+        return (object(),)
+
+    def regular_sample(**kwargs):
+        work("sample")
+        return latent
+
+    monkeypatch.setattr(qwen, "_call_comfy_node", node)
+    monkeypatch.setattr(unicanvas.models.base, "_sample_generation_latent_default", regular_sample)
+    def run():
+        module._encode_qi21(object(), object(), "cat", "", {}, 1024)
+        sampled = module.sample_latent(object(), "positive", "negative", latent, 7, 6, 1, "euler", "simple", 1, {})
+        return module.decode_samples(object(), sampled, {})
+    if failure_stage:
+        with pytest.raises(RuntimeError, match=f"{failure_stage} failed"):
+            run()
+    else:
+        images = run()
+        assert images.shape == (batch_size, 2, 2, 4)
+        assert decoded_indices == list(range(batch_size))
+        assert np.array_equal(images[:, 0, 0, 0], np.arange(batch_size))
+        assert all(ref() is None for ref in live_gpu_images)
+    assert not any(state.values())
+    unload.assert_not_called()
 
 
 @pytest.mark.parametrize("dynamic_vram", [False, True])

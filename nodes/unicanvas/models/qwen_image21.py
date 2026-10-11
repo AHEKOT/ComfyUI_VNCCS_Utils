@@ -10,7 +10,6 @@ VAELoader, driven through ``DiffusionModelUniCanvasLoader``.
 
 from __future__ import annotations
 
-import math
 import os
 import threading
 from dataclasses import dataclass, field
@@ -22,11 +21,13 @@ from PIL import Image
 from ..comfy_bridge import _call_comfy_node
 from ..debug import _conditioning_debug, _latent_debug, _uc_log
 from ..loaders import _load_generation_assets
+from ..imaging import _decode_data_url, _pil_rgba_to_image_tensor
+from ..latents import _unwrap_latent_samples
 from .. import loras
 from ..loras import LoraRequirement, _lora_name_matches
 from ..paths import _get_full_path_agnostic, _resolve_model_filename, _safe_get_folder_paths
-from ..progress import _set_draw_progress
-from ..sampling import _ensure_direct_sampling_prompt_context, _suppress_direct_sampling_comfy_progress
+from ..prompt_enhance import _release_generation_state
+from ..sampling import _ensure_direct_sampling_prompt_context, _report_comfy_sampling_progress, _suppress_direct_sampling_comfy_progress
 from .base import UniCanvasModelModule, _reference_image_slots
 from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
 from .qwen_image21_viggle import apply_viggle_turbo_lora, has_viggle_turbo, viggle_turbo_sigmas
@@ -38,15 +39,8 @@ from .qwen_image21_viggle import apply_viggle_turbo_lora, has_viggle_turbo, vigg
 # QwenImage21UniCanvasModule.remove_background().
 QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT = "Remove the background, and output a PNG image"
 
-def _qwen21_encoder_resolution(width: int, height: int) -> int:
-    """TextEncodeQwenImage21's ``resolution``: the side of a square with the generation's area.
-
-    The node resizes every reference to about ``resolution x resolution`` pixels (aspect kept,
-    multiples of 32). Passing the pixel count instead (width * height) asked it for a
-    million-by-million image and failed with a MemoryError.
-    """
-    side = math.sqrt(max(1, int(width)) * max(1, int(height)))
-    return max(32, int(round(side / 32)) * 32)
+def _qwen21_cache_model(model: Any):
+    return _call_comfy_node("QwenImage21Cache", model=model, device="gpu", dtype="int8")[0]
 
 
 QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
@@ -189,8 +183,9 @@ QWEN_IMAGE21_EDIT_PROMPT_GUIDE = PromptGuide(
         "Refer to preserved things by role or position instead of re-describing them, use "
         "affirmative, decisive wording, and make one logical change per pass - chain a few small "
         "edits for big changes.\n\n"
-        "With references, give each image a role: <image1> is the working area (the canvas to "
-        "modify) and <image2>, <image3>, ... are donors of a person, product, background or style "
+        "With references, give each connected image a role. When Use Layers is enabled and an "
+        "image is present, <image1> is the working area and <image2>, <image3>, ... are donors "
+        "of a person, product, background or style. Otherwise uploads start at <image1>. "
         "(\"Place <image2>'s character in <image1>. Keep hairstyle, clothing and facial features "
         "identical.\"). For inpaint describe only the masked region; for outpaint describe what "
         "extends into the empty area. Text to keep or write goes in quotes, verbatim."
@@ -207,12 +202,10 @@ QWEN_IMAGE21_EDIT_PROMPT_GUIDE = PromptGuide(
 class QwenImage21UniCanvasModule(UniCanvasModelModule):
     """UniCanvas adapter for Qwen-Image-2.1 (RGBA by default).
 
-    Sampling defaults are flow matching (cfg 1.0) with euler/simple and 40
-    steps (size via the inference scale). All draw modes work: txt2img,
-    img2img, inpaint and outpaint, where inpaint is img2img with mask
-    paste-back (no InpaintModelConditioning context). Reference editing wires
-    the working area to <image1> and the Edit model references to <image2..5>
-    in socket order, with the user's prompt passed through unchanged.
+    Every draw starts from an empty latent at full denoise. Inpaint and
+    outpaint apply their masks when pasting the generated result back.
+    Connected references are numbered consecutively, with the working area
+    first when enabled and present. The user's prompt is unchanged.
     The decoded alpha channel is preserved without additional
     transparency instructions or background flattening.
     """
@@ -237,7 +230,8 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
                 "observational paragraph.\n\n"
                 "The model supports RGBA output; UniCanvas preserves its alpha channel without adding "
                 "transparency instructions. Describe any desired background in your prompt. With reference images "
-                "connected, name them <image2>, <image3>, ... (the working area is <image1>); with no "
+                "connected, name them <image1>, <image2>, ... in connected order. The working area "
+                "comes first only when Use Layers is enabled and the bbox contains an image; with no "
                 "references do not use tags. At CFG 1 (the default and the Viggle turbo) the negative "
                 "prompt has no effect."
             ),
@@ -254,7 +248,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
     defaults: dict[str, Any] = field(default_factory=lambda: dict(QWEN_IMAGE21_DEFAULTS))
     is_edit_model: bool = True
     sampling_scratch_keys: ClassVar[tuple[str, ...]] = (
-        "_qwen21_latent",
+        "_qwen21_source_empty",
         "_qwen21_clip",
         "_qwen21_prompts",
         "_qwen21_prompt",
@@ -302,6 +296,40 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         ),
     )
 
+    def normalize_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
+        settings["denoise"] = 1.0
+        return settings
+
+    def decode_uploaded_reference(self, data_url: str) -> Any:
+        return _pil_rgba_to_image_tensor(_decode_data_url(data_url, "RGBA"))
+
+    def supports_step_cache(self, settings: dict[str, Any]) -> bool:
+        return False
+
+    def prepare_model_for_sampling(self, ctx) -> Any:
+        return _qwen21_cache_model(ctx.model)
+
+    def prepare_draw_assets(self, ctx) -> None:
+        _release_generation_state()
+
+    def prepare_masked_inputs(self, ctx) -> None:
+        ctx.settings["_qwen21_source_empty"] = ctx.source_empty
+        if not ctx.pose_images and ctx.mode != "outpaint":
+            ctx.reference_image_tensor = _pil_rgba_to_image_tensor(ctx.source_rgba)
+
+    def decode_samples(self, vae: Any, samples: Any, gen_settings: dict[str, Any]):
+        latent = _unwrap_latent_samples(samples)
+        images = []
+        # Keep only one decoded image on the GPU, regardless of the requested batch.
+        for index in range(latent.shape[0]):
+            try:
+                image = _call_comfy_node("VAEDecode", samples={"samples": latent[index:index + 1]}, vae=vae)[0]
+                images.append(image.cpu())
+                del image
+            finally:
+                _release_generation_state()
+        return images[0] if len(images) == 1 else torch.cat(images, dim=0)
+
     def prepare_pose_edit(self, ctx) -> None:
         super().prepare_pose_edit(ctx)
         ctx.settings["_qwen21_pose_edit"] = True
@@ -326,7 +354,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         return background.convert("RGB")
 
     def uses_edit_masked_latents(self, mode: str) -> bool:
-        # Inpaint and outpaint are img2img runs with mask paste-back (spec 9).
+        # Masks apply only when pasting the generated pixels back into the canvas.
         return False
 
     def uses_differential_diffusion(self, mode: str) -> bool:
@@ -337,30 +365,19 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         return int(width), int(height)
 
     def reference_image_slots(self, image_tensor: Any, gen_settings: dict[str, Any] | None) -> dict[int, Any]:
-        """QI2.1 <image N> wiring (spec 3 and 9).
-
-        Slot 1 is the canvas working area; slots 2..5 are the Edit model
-        reference images in socket order.
-        """
+        """Match the native encoder's consecutive numbering of connected images."""
         pose_images = (gen_settings or {}).get("_pose_edit_images")
         if pose_images:
             return dict(enumerate(pose_images, start=1))
-        return _reference_image_slots(image_tensor, gen_settings)
+        settings = gen_settings or {}
+        slots = _reference_image_slots(image_tensor, settings)
+        if (settings.get("draw_mode") == "txt2img" or settings.get("_qwen21_source_empty")) and settings.get("edit_use_layers_as_reference") is not False:
+            slots.pop(1, None)
+        return dict(enumerate(slots.values(), start=1))
 
     def assemble_instruction(self, prompt: str, slots, outpaint: bool = False, use_layers: bool = True) -> str:
         """Pass the user's QI2.1 prompt through verbatim in every draw mode."""
         return str(prompt or "")
-
-    def create_empty_latent(self, width: int, height: int, gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
-        width, height = self.resolve_generation_size(width, height, gen_settings)
-        batch_size = max(1, int((gen_settings or {}).get("batch_size", 1) or 1))
-        latent = torch.zeros(
-            [batch_size, 64, max(1, int(height) // 16), max(1, int(width) // 16)],
-            dtype=torch.float32,
-        )
-        encoded = {"samples": latent}
-        _uc_log(draw_id, "created empty Qwen-Image-2.1 RGBA latent", _latent_debug(encoded))
-        return encoded
 
     def encode_prompt(self, clip: Any, text: str, gen_settings: dict[str, Any]):
         # The Qwen3-VL encoder needs the <image N> condition images, so the real
@@ -390,9 +407,6 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             raise RuntimeError("[VNCCS UniCanvas] Qwen-Image-2.1 requires a Qwen3-VL text encoder (CLIP).")
         slots = self.reference_image_slots(image_tensor, gen_settings)
         use_layers = gen_settings.get("edit_use_layers_as_reference") is not False
-        if use_layers and str(gen_settings.get("draw_mode") or "") == "txt2img":
-            # Pure text-to-image has no working area; references keep fixed slots.
-            slots.pop(1, None)
         outpaint = str(gen_settings.get("draw_mode") or "") == "outpaint"
         pose_edit = bool(gen_settings.get("_pose_edit_images"))
         instruction = str(gen_settings.get("_qwen21_prompt") or "") if pose_edit else self.assemble_instruction(
@@ -408,10 +422,9 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             prompt=instruction,
             negative_prompt=negative_prompt,
             images=condition_images,
-            resolution=_qwen21_encoder_resolution(target_w, target_h),
+            resolution=1024,
             draw_id=draw_id,
         )
-        gen_settings["_qwen21_latent"] = None if pose_edit else self._qwen21_working_latent(vae, image_tensor, gen_settings, draw_id)
         _uc_log(
             draw_id,
             "Qwen-Image-2.1 conditioning prepared",
@@ -504,14 +517,13 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             ) from exc
         # The family's LoRA rules plus the optional turbo LoRA picked for Remove bg.
         model, clip = self.apply_loras(model, clip, gen_settings)
+        model = _qwen21_cache_model(model)
         gen_settings["_qwen21_clip"] = clip
         gen_settings["_qwen21_prompt"] = str(gen_settings.get("prompt") or "").strip() or QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT
         gen_settings["_qwen21_negative_prompt"] = ""
         positive, negative = self.prepare_reference_conditioning(None, None, vae, pixels, gen_settings, draw_id)
-        latent = gen_settings.get("_qwen21_latent")
-        if not isinstance(latent, dict):
-            pixels_h, pixels_w = _qwen21_image_size(pixels)
-            latent = self.create_empty_latent(int(pixels_w), int(pixels_h), gen_settings, draw_id)
+        pixels_h, pixels_w = _qwen21_image_size(pixels)
+        latent = self.create_empty_latent(int(pixels_w), int(pixels_h), gen_settings, draw_id)
         sampled = self.sample_latent(
             model=model,
             positive=positive,
@@ -537,6 +549,8 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         tensor = image
         if tensor.ndim == 3:
             tensor = tensor.unsqueeze(0)
+        if tensor.ndim != 4:
+            raise ValueError("[VNCCS UniCanvas] Qwen-Image-2.1 condition image must be RGB or RGBA.")
         if not torch.is_floating_point(tensor):
             tensor = tensor.float()
         if tensor.numel() and float(tensor.detach().max()) > 1.5:
@@ -545,32 +559,9 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         channels = int(tensor.shape[-1])
         if channels == 1:
             return tensor.repeat(1, 1, 1, 3)
-        return tensor[..., :3]
-
-    def _qwen21_working_latent(self, vae: Any, image_tensor: torch.Tensor, gen_settings: dict[str, Any], draw_id: str = "unknown"):
-        """VAE-encode the <image1> working area as the img2img start latent."""
-        has_working_area = (
-            torch.is_tensor(image_tensor)
-            and image_tensor.numel() > 0
-            and float(image_tensor.detach().max()) > 0.0
-        )
-        if str(gen_settings.get("draw_mode") or "") == "txt2img" or not has_working_area:
-            return None
-        source_h, source_w = _qwen21_image_size(image_tensor)
-        target_w, target_h = self.resolve_generation_size(source_w, source_h, gen_settings)
-        pixels = self._prepare_qi21_condition_image(image_tensor)
-        if (int(pixels.shape[2]), int(pixels.shape[1])) != (int(target_w), int(target_h)):
-            pixels = torch.nn.functional.interpolate(
-                pixels.movedim(-1, 1),
-                size=(int(target_h), int(target_w)),
-                mode="bilinear",
-                align_corners=False,
-            ).movedim(1, -1)
-        rgba = torch.cat([pixels, torch.ones_like(pixels[..., :1])], dim=-1)
-        encoded = vae.encode(rgba)
-        latent = encoded if isinstance(encoded, dict) else {"samples": encoded}
-        _uc_log(draw_id, "Qwen-Image-2.1 working-area latent encoded", _latent_debug(latent))
-        return latent
+        if channels not in {3, 4}:
+            raise ValueError("[VNCCS UniCanvas] Qwen-Image-2.1 condition image must be RGB or RGBA.")
+        return tensor
 
     def _encode_qi21(
         self,
@@ -591,15 +582,18 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         passed as well: execute() rejects them.
         """
         slot_images = {f"image_{slot}": tensor for slot, tensor in sorted(images.items())}
-        encoded = _call_comfy_node(
-            "TextEncodeQwenImage21",
-            clip=clip,
-            vae=vae,
-            prompt=prompt,
-            negative_prompt=negative_prompt or "",
-            resolution=int(resolution),
-            images=slot_images,
-        )
+        try:
+            encoded = _call_comfy_node(
+                "TextEncodeQwenImage21",
+                clip=clip,
+                vae=vae,
+                prompt=prompt,
+                negative_prompt=negative_prompt or "",
+                resolution=int(resolution),
+                images=slot_images,
+            )
+        finally:
+            _release_generation_state()
         if encoded is None:
             raise RuntimeError("[VNCCS UniCanvas] Qwen-Image-2.1 text encoding returned no conditioning.")
         if isinstance(encoded, (list, tuple)):
@@ -633,54 +627,34 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         config_loras = loras._active_lora_names(external.get("lora_stack") if isinstance(external, dict) else None)
         # A turbo merged by a linked VNCSS Config still needs the student schedule.
         if not (has_viggle_turbo(model) or loras._lora_name_in(QWEN21_TURBO_LORA_NAME, config_loras)):
-            return super().sample_latent(
-                model, positive, negative, latent, seed, steps, cfg, sampler_name, scheduler, denoise, gen_settings, draw_id
-            )
-        # The Viggle 6-step student is only clean on its own shifted timesteps: a
-        # steps/scheduler KSampler run lands between them and renders aberrations.
-        import comfy.sample as comfy_sample
-        import comfy.samplers as comfy_samplers
-
+            try:
+                return super().sample_latent(
+                    model, positive, negative, latent, seed, steps, cfg, sampler_name, scheduler, denoise, gen_settings, draw_id
+                )
+            finally:
+                _release_generation_state()
+        if int(steps) != 6 or abs(float(cfg) - 1.0) > 1e-6 or float(denoise) != 1.0:
+            raise ValueError("[VNCCS UniCanvas] QI2 turbo requires 6 steps, CFG 1 and denoise 1.")
         _ensure_direct_sampling_prompt_context()
-        latent_image = comfy_sample.fix_empty_latent_channels(model, latent["samples"], latent.get("downscale_ratio_spacial"))
-        sigmas = viggle_turbo_sigmas(latent, denoise)
+        sigmas = viggle_turbo_sigmas(latent)
         total = len(sigmas) - 1
         _uc_log(draw_id, "Viggle turbo sampling", {"sigmas": [round(float(s), 4) for s in sigmas], "cfg": cfg, "seed": seed})
-
-        def on_step(step: int, *_args: Any) -> None:
-            current = min(int(step) + 1, total)
-            _set_draw_progress(draw_id, "sampling", 0.35 + 0.5 * current / total, current, total, f"Sampling step {current}/{total}")
-
-        _set_draw_progress(draw_id, "sampling", 0.35, 0, total, f"Sampling 0/{total}")
-        with _suppress_direct_sampling_comfy_progress():
-            samples = comfy_sample.sample_custom(
-                model,
-                comfy_sample.prepare_noise(latent_image, seed, latent.get("batch_index")),
-                float(cfg),
-                comfy_samplers.sampler_object("euler"),
-                sigmas,
-                positive,
-                negative,
-                latent_image,
-                noise_mask=latent.get("noise_mask"),
-                callback=on_step,
-                disable_pbar=True,
-                seed=seed,
-            )
-        out = dict(latent)
-        out.pop("downscale_ratio_spacial", None)
-        out["samples"] = samples
+        try:
+            noise = _call_comfy_node("RandomNoise", noise_seed=seed)[0]
+            guider = _call_comfy_node("BasicGuider", model=model, conditioning=positive)[0]
+            sampler = _call_comfy_node("KSamplerSelect", sampler_name="euler")[0]
+            with _suppress_direct_sampling_comfy_progress(), _report_comfy_sampling_progress(draw_id, total):
+                out = _call_comfy_node("SamplerCustomAdvanced", noise=noise, guider=guider, sampler=sampler,
+                                       sigmas=sigmas, latent_image=latent)[0]
+        finally:
+            _release_generation_state()
         _uc_log(draw_id, "Viggle turbo sampling output", _latent_debug(out))
         return out
 
     # -- draw hooks -----------------------------------------------------------------------
 
     def prepare_generation_latent(self, ctx) -> Any:
-        # Qwen-Image-2.1 owns its 64-channel RGBA latents: the <image1> working-area latent
-        # is prepared during reference conditioning and inpaint/outpaint are img2img runs
-        # with mask paste-back (spec 9), so no InpaintModelConditioning context is built.
-        latent = ctx.settings.get("_qwen21_latent")
-        if not isinstance(latent, dict):
-            latent = self.create_empty_latent(ctx.width, ctx.height, ctx.settings, draw_id=ctx.draw_id)
+        ctx.denoise = ctx.settings["denoise"] = 1.0
+        latent = self.create_empty_latent(ctx.width, ctx.height, ctx.settings, draw_id=ctx.draw_id)
         _uc_log(ctx.draw_id, "Qwen-Image-2.1 latent prepared", {"mode": ctx.mode, "latent": _latent_debug(latent)})
         return latent

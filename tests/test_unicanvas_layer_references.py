@@ -10,13 +10,17 @@ from helpers.unicanvas_package import load_unicanvas_package
 UC = load_unicanvas_package("vnccs_layer_references_test")
 
 
-def test_qwen_preserves_decoded_rgb_and_alpha_and_never_adds_transparency_prompts():
+def test_qwen_preserves_decoded_rgb_and_alpha_and_never_adds_transparency_prompts(monkeypatch):
     module = UC.models.registry._get_unicanvas_model_module("qwen_image21")
+    def decode_node(name, *, samples, vae):
+        assert name == "VAEDecode"
+        return (vae.decode(samples["samples"]),)
+    monkeypatch.setattr(UC.models.qwen_image21, "_call_comfy_node", decode_node)
     for channels in (3, 4):
         pixels = np.full((1, 8, 8, channels), 0.25, dtype=np.float32)
-        vae = SimpleNamespace(decode_tiled=lambda *args, **kwargs: pixels)
+        vae = SimpleNamespace(decode=lambda samples: SimpleNamespace(cpu=lambda: pixels))
         for legacy_opaque in (False, True):
-            decoded = module.decode_samples(vae, {"samples": object()}, {"qwen21_opaque_output": legacy_opaque})
+            decoded = module.decode_samples(vae, {"samples": np.zeros((1, 64, 1, 1))}, {"qwen21_opaque_output": legacy_opaque})
             assert decoded is pixels
             assert np.all(decoded == 0.25)
     assert module.assemble_instruction("A cat in a garden", {}) == "A cat in a garden"

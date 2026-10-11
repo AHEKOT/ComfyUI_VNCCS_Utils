@@ -70,6 +70,25 @@ test("switching model restores denoise and ControlNet ranges and keeps likeness"
   assert.equal(slider.value, "7");
 });
 
+test("QI2 pins both denoise controls to one and unlocks them for another family", () => {
+  const { w, slider, number } = widget();
+  w.settings.generation_mode = "qwen_image21";
+  w.settings.denoise = 0.3;
+  w.syncDenoiseControls();
+  assert.equal(w.settings.denoise, 1);
+  assert.equal(slider.value, "1");
+  assert.equal(number.value, "1");
+  assert.equal(slider.disabled, true);
+  assert.equal(number.disabled, true);
+  assert.match(number.title, /empty latent at full denoise/);
+  w.settings.generation_mode = "sdxl";
+  w.settings.denoise = 0.45;
+  w.syncDenoiseControls();
+  assert.equal(slider.disabled, false);
+  assert.equal(number.disabled, false);
+  assert.equal(number.value, "0.45");
+});
+
 test("preset switches and serialized settings preserve likeness while pinning mandatory LoRA", () => {
   const { w } = widget();
   w.settings.krea2_likeness = 5.7;

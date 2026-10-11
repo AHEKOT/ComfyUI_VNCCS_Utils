@@ -10,6 +10,7 @@ from PIL import Image
 
 from ..constants import OUTPAINT_PROMPT_SUFFIX
 from ..debug import _latent_debug, _uc_log
+from ..imaging import _decode_data_url, _pil_to_image_tensor
 from ..latents import _encode_source_latent, _prepare_masked_generation_latent, _unwrap_latent_samples
 from ..loras import LoraRequirement, _apply_lora_requirements, _apply_lora_stack, _clone_model_clip
 from ..masking import _make_edit_outpaint_reference_rgb, _sample_transparent_outpaint_rgb
@@ -80,6 +81,9 @@ class UniCanvasModelModule:
     def normalize_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
         """Last step of settings normalisation: validate or pin family-specific values."""
         return settings
+
+    def decode_uploaded_reference(self, data_url: str) -> Any:
+        return _pil_to_image_tensor(_decode_data_url(data_url, "RGB"))
 
     def validate_request(self, request: DrawRequest) -> None:
         """Reject a draw this family cannot run, before any pixel work or model loading."""

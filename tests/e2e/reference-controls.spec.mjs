@@ -52,6 +52,7 @@ for (const [width, sidebarWidth, scale] of [[900, 280, 1], [1600, 336, 1], [1600
           }
           _button(text, className, click, title) { const b = document.createElement("button"); b.type="button"; b.textContent=text; b.className=className; b.title=title || text; b.onclick=click; return b; }
           getModelBase() { return this.settings.generation_mode; }
+          getRasterContentInBboxStats() { return { nonzeroAlphaPixels:this.emptyCanvas ? 0 : 1 }; }
           syncSettingsToWidget() { this.savedSettings = JSON.stringify(this.settings); } scheduleStateUpload() {} setStatus() {}
           ${sync}${refs}
         }
@@ -93,6 +94,11 @@ for (const [width, sidebarWidth, scale] of [[900, 280, 1], [1600, 336, 1], [1600
     const dialog = page.getByRole("dialog", { name:"Reference images", exact:true });
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("checkbox")).toHaveCount(0);
+    await expect(dialog.getByRole("img")).toHaveAttribute("alt", "<image2>");
+    await page.evaluate(() => { widget.emptyCanvas = true; widget._vnccsRefsRender(); });
+    await expect(dialog.getByRole("img")).toHaveAttribute("alt", "<image1>");
+    await expect(dialog.locator(".vnccs-uc-refs-count")).toHaveText("1 / 4");
+    await page.evaluate(() => { widget.emptyCanvas = false; widget._vnccsRefsRender(); });
     await expect(dialog.getByRole("img")).toHaveAttribute("alt", "<image2>");
     await toggle.locator("..").click();
     await expect(toggle).not.toBeChecked();

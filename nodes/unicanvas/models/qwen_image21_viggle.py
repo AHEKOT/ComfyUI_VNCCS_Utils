@@ -20,18 +20,13 @@ VIGGLE_TURBO_NODES = (1.0, 0.9375, 0.875, 0.75, 0.5, 0.25)
 VIGGLE_TURBO_MARKER = "vnccs_qwen21_viggle_turbo"
 
 
-def viggle_turbo_sigmas(latent: dict[str, Any], denoise: float = 1.0) -> torch.Tensor:
-    """Shift the raw student nodes by the latent's token count; ends with sigma 0.
-
-    ``denoise`` < 1 (img2img) keeps only the student nodes at or below it.
-    """
+def viggle_turbo_sigmas(latent: dict[str, Any]) -> torch.Tensor:
+    """Viggle's six sigma nodes, shifted by token count, followed by zero."""
     samples = latent["samples"]
     spatial_ratio = latent.get("downscale_ratio_spacial", 16) / 16
     tokens = round(samples.shape[-2] * spatial_ratio) * round(samples.shape[-1] * spatial_ratio)
     shift = 0.5 + 0.4 * (tokens - 256) / (8192 - 256)
-    # ponytail: off-grid denoise snaps down to the next student node; interpolate if that proves too weak.
-    raw = [node for node in VIGGLE_TURBO_NODES if node <= float(denoise) + 1e-6] or [max(float(denoise), 1e-3)]
-    nodes = torch.tensor(raw, dtype=torch.float64)
+    nodes = torch.tensor(VIGGLE_TURBO_NODES, dtype=torch.float64)
     shifted = math.exp(shift) / (math.exp(shift) + (1 / nodes - 1))
     return torch.cat((shifted, shifted.new_zeros(1))).float()
 

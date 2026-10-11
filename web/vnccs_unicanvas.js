@@ -2,22 +2,22 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791710743228";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791710743228";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791710743230";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791710743230";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791710743228";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791710743228";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791710743228";
-import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791710743228";
-import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791710743228";
-import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791710743228";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791710743228";
-import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791710743228";
-import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791710743228";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791710743228";
-import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791710743228";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791710743228";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791710743230";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791710743230";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791710743230";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791710743230";
+import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791710743230";
+import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791710743230";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791710743230";
+import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791710743230";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791710743230";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791710743230";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791710743230";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791710743230";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -49,11 +49,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./unicanvas/transform.mjs?v=1791710743228";
+} from "./unicanvas/transform.mjs?v=1791710743230";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./unicanvas/presets.mjs?v=1791710743228";
+} from "./unicanvas/presets.mjs?v=1791710743230";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -61,10 +61,10 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./unicanvas/modes.mjs?v=1791710743228";
-import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791710743228";
-import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791710743228";
-import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791710743228";
+} from "./unicanvas/modes.mjs?v=1791710743230";
+import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791710743230";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791710743230";
+import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791710743230";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -77,7 +77,7 @@ import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencie
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1791710743228";
+const VNCCS_UNICANVAS_VERSION = "1791710743230";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -127,8 +127,8 @@ const VNCCS_UNICANVAS_VERSION = "1791710743228";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791710743228";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791710743228";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791710743230";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791710743230";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -3186,7 +3186,7 @@ class UniCanvasWidget {
     // generic Steps row is hidden for every family that owns one.
     const editStepsHints = {
       flux_klein: "Guided edit - the working area is re-sampled under the prompt and denoise settings; Edit model references condition the result. Steps control the sampling depth.",
-      qwen_image21: "Reference edit - working area is <image1>, Edit model references are <image2..5>; the prompt is the edit instruction in the <image N> convention.",
+      qwen_image21: "Reference edit at full denoise. Connected images are <image1>, <image2>, ...; the working area comes first when Use Layers is enabled and an image is present.",
       krea2_edit: "Identity edit - the working area is the background (image 1); one Edit model reference is the character to put into it (image 2). Krea2 takes at most these two pictures.",
     };
     const editStepsPanel = this.container.querySelector("[data-edit-steps-panel]");
@@ -3647,6 +3647,7 @@ class UniCanvasWidget {
         ? inferenceScaleMegapixels(scale).toFixed(1) : this.formatSettingNumber(scale, 3);
     });
     this.updateInferenceSizeLabels();
+    this.updateHud();
   }
 
   // The standalone tab displays the scale itself; the node keeps its size preview.
@@ -3678,10 +3679,11 @@ class UniCanvasWidget {
 
   syncDenoiseControls(source = null) {
     const key = this.getDenoiseControlSetting();
+    const fullDenoise = this.getModelBase() === "qwen_image21";
     const likeness = key === "krea2_likeness";
     const fallback = likeness ? 4 : key === "fun_controlnet_strength" || key === "anima_lllite_strength" ? 1 : 0.65;
     const max = this.getDenoiseControlMax();
-    const value = Math.max(0, Math.min(max, Number(this.settings[key] ?? fallback) || 0));
+    const value = fullDenoise ? 1 : Math.max(0, Math.min(max, Number(this.settings[key] ?? fallback) || 0));
     this.settings[key] = value;
     const label = this.denoiseControl?.querySelector("[data-denoise-label]");
     if (label) label.textContent = likeness ? "Likeness" : key === "fun_controlnet_strength" || key === "anima_lllite_strength" ? "ControlNet strength" : "Denoise";
@@ -3689,11 +3691,12 @@ class UniCanvasWidget {
       if (!(el instanceof HTMLInputElement)) return;
       el.max = String(max);
       el.step = likeness ? "0.1" : "0.01";
+      el.disabled = fullDenoise;
       el.setAttribute("aria-label", label?.textContent || "Denoise");
-      el.title = likeness
+      el.title = fullDenoise ? "Qwen Edit 2.1 generates from an empty latent at full denoise. Use Layers controls the canvas reference." : likeness
         ? "Reference likeness: 1 = baseline, 4 = recommended. Higher values preserve appearance more strongly; lower values allow larger edits."
         : label?.textContent || "Denoise";
-      if (el !== source) el.value = this.formatSettingNumber(value, 2);
+      if (el !== source || fullDenoise) el.value = this.formatSettingNumber(value, 2);
     });
   }
 
@@ -7474,7 +7477,7 @@ class UniCanvasWidget {
     const mode = poseRequest ? "img2img" : !hasRaster ? "txt2img" : rasterCoversBbox ? "inpaint" : "outpaint";
     const imageCanvas = this.makeExportCanvas("image", inferenceSize, {
       fillBackground: mode === "img2img",
-      forceOpaqueContentAlpha: mode === "outpaint",
+      forceOpaqueContentAlpha: mode === "outpaint" && modelBase !== "qwen_image21",
     });
     const userMaskCanvas = this.makeExportCanvas("mask", inferenceSize);
     const maskCanvas = mode === "outpaint" ? this.makeOutpaintMaskCanvas(userMaskCanvas, inferenceSize) : userMaskCanvas;
@@ -9189,11 +9192,12 @@ class UniCanvasWidget {
       grid.innerHTML = "";
       const max = this.maxEditReferenceImages();
       const list = this.editReferenceImages();
-      const layersFirst = this.settings.edit_use_layers_as_reference !== false;
+      const layersFirst = this.settings.edit_use_layers_as_reference !== false
+        && (this.getModelBase() !== "qwen_image21" || this.getRasterContentInBboxStats().nonzeroAlphaPixels > 0);
       count.textContent = this.standalone
         ? `${list.length + Number(layersFirst)} / ${max + Number(layersFirst)}`
         : `${list.length} / ${max}`;
-      if (this.standalone) hint.textContent = layersFirst
+      if (this.standalone || this.getModelBase() === "qwen_image21") hint.textContent = layersFirst
         ? "Image 1 uses all visible image layers inside the selection bbox. Uploaded images follow it."
         : "Uploaded images start at image 1. Canvas layers are not used as a reference.";
       list.forEach((data, index) => {

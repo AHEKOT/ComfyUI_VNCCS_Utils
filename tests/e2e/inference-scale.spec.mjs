@@ -6,6 +6,7 @@ const source = await readFile(new URL("../../web/vnccs_unicanvas.js", import.met
 const scaleModule = await readFile(new URL("../../web/unicanvas/scale_edit.mjs", import.meta.url), "utf8");
 const styles = source.match(/const STYLES = `([\s\S]*?)`;/)[1];
 const methods = source.slice(source.indexOf("  getOptimalDimension() {"), source.indexOf("  getDenoiseControlSetting() {"));
+const hudMethod = source.slice(source.indexOf("  updateHud() {"), source.indexOf("  getStageViewportSize() {"));
 const listeners = source.slice(source.indexOf('    this.left.addEventListener("input", (e) => {'), source.indexOf("    this.setTool(this.tool, true);"));
 const control = source.match(/<label class="vnccs-uc-infer-scale">[^\n]+/)[0].replace(/\$\{.*?\}/, "1");
 
@@ -15,7 +16,7 @@ test("fixture: inference scale matches VNCCS steps and updates during dragging a
   await page.setViewportSize({ width:900, height:600 });
   await page.route("http://inference-scale.test/**", route => {
     if (route.request().url().endsWith("scale_edit.mjs")) return route.fulfill({ contentType:"text/javascript", body:scaleModule });
-    return route.fulfill({ contentType:"text/html", body:`<!doctype html>
+    return route.fulfill({ contentType:"text/html; charset=utf-8", body:`<!doctype html>
       <style>
         :root { --base-background:#202020; --interface-panel-surface:#282828; --secondary-background:#353535;
           --interface-stroke:#4e4e4e; --base-foreground:#fff; --muted-foreground:#aaa;
@@ -25,7 +26,7 @@ test("fixture: inference scale matches VNCCS steps and updates during dragging a
       </style>
       <div id="host" class="vnccs-unicanvas vnccs-uc-standalone"><div class="vnccs-uc-left">
         <p>Presets</p>${control}<p>Custom</p>${control}
-      </div></div>
+      </div><div class="vnccs-uc-hud"></div></div>
       <script type="module">
         import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels,
           INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "/scale_edit.mjs";
@@ -34,22 +35,26 @@ test("fixture: inference scale matches VNCCS steps and updates during dragging a
           constructor() {
             this.standalone=true; this.container=document.querySelector("#host"); this.left=this.container.firstElementChild;
             this.settings={inference_scale:1}; this.bbox={width:1024,height:1024}; this.saves=0;
+            this.hud=this.container.querySelector(".vnccs-uc-hud"); this.tool="move"; this.view={scale:1};
             ${listeners}
           }
           parseNumericInput(input) { return Number(input.value); }
           formatSettingNumber(value) { return String(value); }
           syncSettingsToWidget() { this.saves++; }
           clearInputHistoryMarker() {} requestRender() {}
+          updateZoomResetButton() {}
           getGridSize() { return 8; }
           roundToMultiple(value, grid) { return Math.round(value/grid)*grid; }
-          ${methods}
+          ${methods}${hudMethod}
         }
-        window.widget=new Host(); widget.syncInferenceControls(); installInferenceScaleEdit(widget);
+        window.widget=new Host(); widget.syncInferenceControls(); widget.updateHud(); installInferenceScaleEdit(widget);
       </script>` });
   });
   await page.goto("http://inference-scale.test/");
   const sliders = page.locator('[data-setting="inference_scale"]');
   const labels = page.locator("[data-inference-size]");
+  const hud = page.locator(".vnccs-uc-hud");
+  await expect(hud).toContainText("infer 1024×1024");
   for (const slider of await sliders.all()) {
     await expect(slider).toHaveAttribute("min", "1");
     await expect(slider).toHaveAttribute("max", "4");
@@ -68,18 +73,23 @@ test("fixture: inference scale matches VNCCS steps and updates during dragging a
   await expect(labels).toHaveText([`${dragged.toFixed(1)} MP`, `${dragged.toFixed(1)} MP`]);
   await expect(sliders.last()).toHaveValue(String(dragged));
   expect(await page.evaluate(() => widget.settings.inference_scale**2)).toBeCloseTo(dragged, 10);
+  const dragSize = await page.evaluate(() => widget.getInferenceSize());
+  await expect(hud).toContainText(`infer ${dragSize.width}×${dragSize.height}`);
   await page.mouse.up();
   await sliders.first().focus();
   await page.keyboard.press("End");
   await expect(labels).toHaveText(["4.0 MP", "4.0 MP"]);
   expect(await page.evaluate(() => widget.getInferenceSize())).toEqual({ width:2048, height:2048 });
+  await expect(hud).toContainText("infer 2048×2048");
   await labels.first().dblclick();
   const exact = page.getByRole("textbox", { name:"Inference scale", exact:true });
   await exact.fill("1,35");
   await expect(labels.last()).toHaveText("1.4 MP");
   await expect(sliders.last()).toHaveValue("1.4");
+  await expect(hud).toContainText("infer 1208×1208");
   await exact.press("Escape");
   await expect(labels).toHaveText(["4.0 MP", "4.0 MP"]);
+  await expect(hud).toContainText("infer 2048×2048");
   await labels.first().dblclick();
   await exact.fill("1.5");
   await exact.press("Enter");

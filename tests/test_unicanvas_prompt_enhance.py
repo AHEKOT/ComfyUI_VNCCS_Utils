@@ -86,6 +86,17 @@ class AutoEnhanceTests(unittest.TestCase):
             calls = self.run_auto(request, None)
         self.assertEqual(calls[0], ("draw-clip", "a cat", "T2I:", False))
 
+    def test_qi2_uses_uploaded_references_without_a_canvas(self):
+        from PIL import Image
+
+        request = _request()
+        request.settings["generation_mode"] = "qwen_image21"
+        refs = [Image.new("RGB", (8, 8))]
+        with patch.object(ENHANCE, "reference_images", lambda settings: refs):
+            self.assertEqual(ENHANCE.edit_images(None, request.settings), refs)
+            calls = self.run_auto(request, None)
+        self.assertEqual(calls[0], ("draw-clip", "a cat", "EDIT:", True))
+
     def test_automatic_mode_never_loads_an_encoder_of_its_own(self):
         request = _request(settings={"prompt_enhance": {"model": "other.safetensors", "positive_system": "T2I:"}})
 

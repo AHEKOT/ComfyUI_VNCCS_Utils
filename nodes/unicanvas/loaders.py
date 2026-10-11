@@ -67,6 +67,32 @@ class DiffusionModelUniCanvasLoader(UniCanvasModelLoader):
             gen_settings.get("clip_type", ""),
         )
 
+    def load_clip(self, gen_settings: dict[str, Any]):
+        import comfy.sd
+        import folder_paths
+
+        clip_name = _resolve_model_filename(folder_paths, "text_encoders", gen_settings.get("clip_name"))
+        clip_type_name = str(gen_settings.get("clip_type", "stable_diffusion") or "stable_diffusion").lower()
+        if not clip_name:
+            raise ValueError("No CLIP selected for UniCanvas")
+        clip = _call_loader_node(
+            ["CLIPLoader", "Load CLIP"], ["load_clip", "load_model"],
+            clip_name=clip_name, model_name=clip_name, type=clip_type_name, device="default",
+        )
+        if clip is None and hasattr(comfy.sd, "load_clip"):
+            clip_path = _get_full_path_agnostic(folder_paths, "text_encoders", clip_name)
+            if clip_path:
+                clip_type = getattr(comfy.sd.CLIPType, clip_type_name.upper(), None)
+                if clip_type is None:
+                    raise ValueError(f"ComfyUI CLIPType.{clip_type_name.upper()} is not available.")
+                clip = comfy.sd.load_clip(
+                    ckpt_paths=[clip_path], embedding_directory=folder_paths.get_folder_paths("embeddings"),
+                    clip_type=clip_type,
+                )
+        if clip is None:
+            raise ValueError(f"Failed to load CLIP '{clip_name}'")
+        return clip
+
     def load_assets(self, gen_settings: dict[str, Any]):
         import comfy.sd
         import folder_paths
@@ -75,7 +101,6 @@ class DiffusionModelUniCanvasLoader(UniCanvasModelLoader):
         diffusion_model_name = _resolve_model_filename(folder_paths, "diffusion_models", gen_settings.get("diffusion_model_name"))
         clip_name = _resolve_model_filename(folder_paths, "text_encoders", gen_settings.get("clip_name"))
         vae_name = _resolve_model_filename(folder_paths, "vae", gen_settings.get("vae_name"))
-        clip_type_name = str(gen_settings.get("clip_type", "stable_diffusion") or "stable_diffusion").lower()
 
         if gen_settings.get("generation_mode") == "krea2_edit" and not hasattr(comfy.sd.CLIPType, "KREA2"):
             raise ValueError("Krea2 Edit requires native Krea2 and Qwen3-VL support. Update ComfyUI before using this preset.")
@@ -100,28 +125,7 @@ class DiffusionModelUniCanvasLoader(UniCanvasModelLoader):
             if diffusion_model_path:
                 model = comfy.sd.load_diffusion_model(diffusion_model_path)
 
-        clip = _call_loader_node(
-            ["CLIPLoader", "Load CLIP"],
-            ["load_clip", "load_model"],
-            clip_name=clip_name,
-            model_name=clip_name,
-            type=clip_type_name,
-            device="default",
-        )
-        if clip is None and hasattr(comfy.sd, "load_clip"):
-            clip_path = _get_full_path_agnostic(folder_paths, "text_encoders", clip_name)
-            if clip_path:
-                clip_type = getattr(comfy.sd.CLIPType, clip_type_name.upper(), None)
-                if clip_type is None:
-                    raise ValueError(
-                        f"ComfyUI CLIPType.{clip_type_name.upper()} is not available. "
-                        "ANIMA expects CLIPLoader type 'stable_diffusion'."
-                    )
-                clip = comfy.sd.load_clip(
-                    ckpt_paths=[clip_path],
-                    embedding_directory=folder_paths.get_folder_paths("embeddings"),
-                    clip_type=clip_type,
-                )
+        clip = self.load_clip(gen_settings)
 
         vae = _call_loader_node(
             ["VAELoader", "Load VAE"],
@@ -283,8 +287,11 @@ def _peek_cached_generation_assets(gen_settings: dict[str, Any]):
     loader = _get_unicanvas_model_loader(str(gen_settings.get("model_loader") or "checkpoint").lower())
     if loader.key == "external":
         return None
+    asset_key = loader.cache_key(gen_settings)
+    if gen_settings.get("generation_mode") == "qwen_image21" and isinstance(loader, DiffusionModelUniCanvasLoader):
+        asset_key += ("qwen_image21",)
     with _MODEL_CACHE_LOCK:
-        return _MODEL_CACHE.get(loader.cache_key(gen_settings))
+        return _MODEL_CACHE.get(asset_key)
 
 
 def _load_generation_assets(gen_settings: dict[str, Any]):
@@ -301,14 +308,20 @@ def _load_generation_assets_cached(gen_settings: dict[str, Any]):
         # a later external draw reuse the first draw's model/clip/vae. Bypass _MODEL_CACHE entirely.
         return loader.load_assets(gen_settings)
     asset_key = loader.cache_key(gen_settings)
+    fresh_clip = gen_settings.get("generation_mode") == "qwen_image21" and isinstance(loader, DiffusionModelUniCanvasLoader)
+    if fresh_clip:
+        asset_key += ("qwen_image21",)
     with _COMFY_MODEL_OP_LOCK:
         with _MODEL_CACHE_LOCK:
             cached = _MODEL_CACHE.get(asset_key)
-            if cached is not None:
-                return cached
-            if len(_MODEL_CACHE) >= _MODEL_CACHE_MAX_ENTRIES:
+            if cached is None and len(_MODEL_CACHE) >= _MODEL_CACHE_MAX_ENTRIES:
                 _MODEL_CACHE.clear()
+        if cached is not None:
+            if fresh_clip:
+                return cached[0], loader.load_clip(gen_settings), cached[2]
+            return cached
         assets = loader.load_assets(gen_settings)
         with _MODEL_CACHE_LOCK:
-            _MODEL_CACHE[asset_key] = assets
+            # Qwen3-VL generation mutates the encoder shared by CLIP.clone().
+            _MODEL_CACHE[asset_key] = (assets[0], None, assets[2]) if fresh_clip else assets
         return assets

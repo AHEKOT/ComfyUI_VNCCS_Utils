@@ -14,14 +14,20 @@ import { INFERENCE_SCALE_MAX, INFERENCE_SCALE_MIN, editInferenceScale, parseInfe
 
 const custom = { model_loader: "diffusion", generation_mode: "anima", diffusion_model_name: "anima.safetensors", clip_name: "qwen.safetensors", vae_name: "vae.safetensors", clip_type: "stable_diffusion", lora_stack: [{ name: "style.safetensors", strength: 0.7 }, { name: "", strength: 1 }] };
 
-test("inference scale labels update both tab panels immediately and preserve the node size preview", () => {
+test("inference scale updates both panels and the HUD immediately without rendering the canvas", () => {
     const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
-    const methods = source.slice(source.indexOf("  syncInferenceControls(source = null) {"), source.indexOf("  getDenoiseControlSetting() {"));
-    const widget = runInNewContext(`(class { ${methods} }).prototype`, { inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP });
+    const methods = source.slice(source.indexOf("  getOptimalDimension() {"), source.indexOf("  getDenoiseControlSetting() {"));
+    const hudMethod = source.slice(source.indexOf("  updateHud() {"), source.indexOf("  getStageViewportSize() {"));
+    const captureMethod = source.slice(source.indexOf("  captureGenerationSettings() {"), source.indexOf("  async draw() {"));
+    const widget = runInNewContext(`(class { ${methods}${hudMethod}${captureMethod} }).prototype`, { inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP });
     const slider = { value: "1" }, customSlider = { value: "1" };
     const labels = [{ textContent: "" }, { textContent: "" }];
-    Object.assign(widget, { standalone:true, settings:{ inference_scale:1 },
-        getInferenceSize:() => ({ width:1280, height:1280 }),
+    Object.assign(widget, { standalone:true, settings:{ inference_scale:1, seed_mode:"fixed" },
+        bbox:{ width:1024, height:1024 }, hud:{ innerHTML:"" }, tool:"move", view:{ scale:1 },
+        getGridSize:() => 8, roundToMultiple:(value, grid) => Math.round(value/grid)*grid,
+        updateZoomResetButton() {}, requestRender() { assert.fail("scale updates need only the HUD"); },
+        _isConfigLinked:() => false, normalizeGenerationSettings:() => ({ loader:{ key:"diffusion_model" } }),
+        flushSettingsToWidget() {}, makeSettingsPayload() { return { ...this.settings }; }, getModelBase:() => "qwen_image21",
         formatSettingNumber:value => String(value),
         container:{ querySelectorAll:selector => selector === "[data-inference-size]" ? labels : [slider, customSlider] } });
     for (const scale of [1, 1.3, 1.5, 4]) {
@@ -33,7 +39,15 @@ test("inference scale labels update both tab panels immediately and preserve the
         assert.equal(slider.min, 1);
         assert.equal(slider.max, 4);
         assert.deepEqual(labels.map(label => label.textContent), [`${scale.toFixed(1)} MP`, `${scale.toFixed(1)} MP`]);
+        const size = widget.getInferenceSize();
+        assert.match(widget.hud.innerHTML, new RegExp(`infer ${size.width}×${size.height}`));
     }
+    assert.equal(widget.getInferenceSize().width, 2048);
+    assert.equal(widget.getInferenceSize().height, 2048);
+    const request = widget.captureGenerationSettings();
+    assert.equal(request.inferenceSize.width, 2048);
+    assert.equal(request.inferenceSize.height, 2048);
+    assert.equal(request.settings.inference_scale, 2);
     widget.standalone = false;
     widget.settings.inference_scale = 1.25;
     widget.syncInferenceControls();
@@ -42,6 +56,7 @@ test("inference scale labels update both tab panels immediately and preserve the
     assert.equal(slider.max, 3);
     assert.equal(slider.value, "1.25");
     assert.deepEqual(labels.map(label => label.textContent), ["1280×1280", "1280×1280"]);
+    assert.match(widget.hud.innerHTML, /infer 1280×1280/);
 });
 
 // A fake server: GET returns the stored document, POST stores one entry.

@@ -136,11 +136,10 @@ def reference_images(settings: dict[str, Any]) -> list[Image.Image]:
 def edit_images(canvas: Image.Image | None, settings: dict[str, Any]) -> list[Image.Image] | None:
     """The pictures an edit-style prompt is written for: the canvas first, then the references.
 
-    UniCanvas numbers the canvas as picture 1 and the references from 2 on, so the references only
-    make sense next to a canvas. An empty canvas (which an edit model would draw as a black picture)
-    is ignored: the request is a text-to-image one, with no pictures at all.
+    QI2 packs connected references from picture 1 even without a canvas. Other families
+    keep the canvas in picture 1 unless Use Layers is disabled.
     """
-    if settings.get("edit_use_layers_as_reference") is False:
+    if settings.get("edit_use_layers_as_reference") is False or (canvas is None and settings.get("generation_mode") == "qwen_image21"):
         return reference_images(settings) or None
     if canvas is None:
         return None
