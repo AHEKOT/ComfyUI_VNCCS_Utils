@@ -1,4 +1,4 @@
-// Preset and Custom selections share the server-owned family dependency catalog.
+// Preset and Custom selections share the server-owned model file catalog.
 export const MODEL_DEPENDENCIES_CSS = `
 .vnccs-uc-dependencies .vnccs-uc-modal { width:min(620px, calc(100% - 32px)); max-height:calc(100% - 32px); box-sizing:border-box; font-size:13px; gap:12px; }
 .vnccs-uc-dependency-list { overflow:auto; min-height:0; display:flex; flex-direction:column; gap:10px; }
@@ -30,10 +30,10 @@ export function openModelDependencies(widget, catalog, selection) {
   const title = document.createElement("div");
   title.className = "vnccs-uc-modal-title";
   title.id = `vnccs-uc-dependencies-${++nextDialogId}`;
-  title.textContent = `${catalog.label} — related files`;
+  title.textContent = `${catalog.label} — missing model files`;
   modal.setAttribute("aria-labelledby", title.id);
   const message = document.createElement("div");
-  message.textContent = "Some related files are missing. Choose which files to download. Optional files do not block the base model.";
+  message.textContent = "Model files are missing. Choose which files to download. All missing required and optional parts are listed below.";
   const list = document.createElement("div");
   list.className = "vnccs-uc-dependency-list";
   const rows = catalog.assets.filter(asset => !asset.installed).map(asset => {
@@ -42,7 +42,7 @@ export function openModelDependencies(widget, catalog, selection) {
     const label = document.createElement("label");
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
-    checkbox.checked = !asset.installed;
+    checkbox.checked = asset.downloadable !== false;
     const name = document.createElement("span");
     name.textContent = asset.name || asset.relative_name;
     label.append(checkbox, name);
@@ -88,7 +88,7 @@ export function openModelDependencies(widget, catalog, selection) {
       const busy = ["queued", "downloading"].includes(state.status);
       row.hidden = installed;
       if (installed) checkbox.checked = false;
-      checkbox.disabled = installed || busy || submitting;
+      checkbox.disabled = asset.downloadable === false || installed || busy || submitting;
       active += Number(busy);
       missing += Number(!installed);
       progress.hidden = !busy;
@@ -97,7 +97,8 @@ export function openModelDependencies(widget, catalog, selection) {
       status.dataset.error = String(state.status === "error");
       status.textContent = installed ? "Installed" : state.status === "queued" ? "Queued"
         : state.status === "downloading" ? `${state.message || "Downloading"}${state.total_bytes ? ` — ${Math.floor(state.progress || 0)}% (${(state.downloaded_bytes / 1048576).toFixed(1)} / ${(state.total_bytes / 1048576).toFixed(1)} MB)` : ""}`
-        : state.status === "error" ? `Download failed: ${state.message || "Please retry"}` : "Missing";
+        : state.status === "error" ? `Download failed: ${state.message || "Please retry"}`
+        : asset.downloadable === false ? "Missing — manual installation required" : "Missing";
     }
     if (!missing) { close(); return; }
     summary.textContent = active ? `${active} file(s) downloading or queued. Downloads continue if you close this dialog.`
@@ -166,12 +167,16 @@ export async function checkModelDependencies(widget, preset = null) {
     && documentRevision === widget._documentRevision;
   const selection = { generation_mode:widget.getModelBase(), preset_id:preset?.id || "" };
   if (!preset) {
+    const loader = widget.settings?.model_loader;
+    if (loader) selection.model_loader = loader;
+    const modelKey = { checkpoint:"ckpt_name", diffusion_model:"diffusion_model_name", gguf:"gguf_model_name" }[loader];
+    if (widget.settings?.[modelKey]) selection.model_name = widget.settings[modelKey];
     for (const key of ["clip_name", "vae_name"]) {
       if (widget.settings?.[key]) selection[key] = widget.settings[key];
     }
   }
   try {
-    const response = await fetch(`/vnccs/unicanvas/dependencies?${new URLSearchParams(selection)}`, { signal:abort.signal });
+    const response = await fetch(`/vnccs/unicanvas/dependencies?${new URLSearchParams(selection)}`, { signal:abort.signal, cache:"no-store" });
     const catalog = await response.json();
     if (!current()) return;
     if (!response.ok) throw new Error(catalog.error || "Dependency check failed");

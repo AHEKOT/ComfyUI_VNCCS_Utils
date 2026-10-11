@@ -11,13 +11,14 @@ const selectPreset = widgetSource.slice(widgetSource.indexOf("  selectPreset(pre
 const outpaintKey = "qwen_image21:dependency:0";
 const turboKey = "qwen_image21:turbo";
 const assets = [
+  { download_key:"qwen_image21:asset:0", name:"Diffusion model", role:"diffusion_model", required:true, installed:true },
   { download_key:"qwen_image21:asset:1", name:"Text encoder", required:true, installed:true },
   { download_key:"qwen_image21:asset:2", name:"VAE", required:true, installed:true },
   { download_key:outpaintKey, name:"Outpaint LoRA", description:"Used for outpaint.", role:"lora", installed:false },
   { download_key:turboKey, name:"Turbo LoRA", description:"Used for six-step generation.", role:"lora", installed:false },
 ];
 
-async function fixture(page, { installed = false } = {}) {
+async function fixture(page, { installed = false, missingCore = false } = {}) {
   const server = { states:{}, posts:[], gets:[], failDownload:false };
   if (installed) for (const asset of assets) server.states[asset.download_key] = { status:"success" };
   await page.route("http://unicanvas.test/**", async route => {
@@ -26,7 +27,7 @@ async function fixture(page, { installed = false } = {}) {
     if (url.pathname === "/vnccs/unicanvas/dependencies") {
       server.gets.push(Object.fromEntries(url.searchParams));
       return route.fulfill({ json:{ label:"Qwen Edit 2.1", assets:assets.map(asset => ({ ...asset,
-        installed:asset.installed || server.states[asset.download_key]?.status === "success",
+        installed:(!missingCore && asset.installed) || server.states[asset.download_key]?.status === "success",
         ...(server.states[asset.download_key] || {}),
       })) } });
     }
@@ -51,7 +52,7 @@ async function fixture(page, { installed = false } = {}) {
       class Host {
         constructor() {
           this.container = document.querySelector("#host"); this.presetDownloads = {}; this.assetRefreshes = 0;
-          this.settings = { generation_mode:"qwen_image21", diffusion_model_name:"custom/Qwen-Image-2.1.safetensors", clip_name:"custom/encoder.safetensors", vae_name:"custom/vae.safetensors" };
+          this.settings = { generation_mode:"qwen_image21", model_loader:"diffusion_model", diffusion_model_name:"custom/Qwen-Image-2.1.safetensors", clip_name:"custom/encoder.safetensors", vae_name:"custom/vae.safetensors" };
           this.presets = [{ id:"qwen_image21" }];
         }
         getModelBase() { return this.settings.generation_mode; }
@@ -83,7 +84,8 @@ for (const entry of ["preset", "custom"]) {
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     expect(server.gets[0]).toEqual({ generation_mode:"qwen_image21", preset_id:entry === "preset" ? "qwen_image21" : "",
-      ...(entry === "custom" ? { clip_name:"custom/encoder.safetensors", vae_name:"custom/vae.safetensors" } : {}) });
+      ...(entry === "custom" ? { model_loader:"diffusion_model", model_name:"custom/Qwen-Image-2.1.safetensors",
+        clip_name:"custom/encoder.safetensors", vae_name:"custom/vae.safetensors" } : {}) });
     expect(server.posts).toHaveLength(0);
     await expect(page.getByRole("checkbox", { name:"Text encoder", exact:true })).toHaveCount(0);
     await expect(page.getByRole("checkbox", { name:"VAE", exact:true })).toHaveCount(0);
@@ -133,6 +135,21 @@ for (const entry of ["preset", "custom"]) {
     expect(await page.locator("#controls").evaluate(element => element.inert)).toBe(false);
   });
 }
+
+test("fixture: a clean installation lists the diffusion model, encoder and VAE together", async ({ page }, testInfo) => {
+  const server = await fixture(page, { missingCore:true });
+  await page.locator("#preset").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  for (const name of ["Diffusion model", "Text encoder", "VAE"]) {
+    await expect(dialog.getByRole("checkbox", { name, exact:true })).toBeVisible();
+  }
+  await expect(dialog.locator('.vnccs-uc-dependency')).toHaveCount(5);
+  await page.screenshot({ path:testInfo.outputPath("after.png") });
+  await dialog.getByRole("button", { name:"Download selected" }).click();
+  expect(server.posts.at(-1).download_keys).toEqual(assets.map(asset => asset.download_key));
+  await expect(dialog).toContainText("5 file(s) downloading or queued.");
+});
 
 test("fixture: installed dependencies stay silent and a closed dialog leaves downloads running", async ({ page }) => {
   const server = await fixture(page, { installed:true });

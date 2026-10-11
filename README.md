@@ -96,6 +96,9 @@ assets through the bundled SparkJS viewport.
 
 ### Canvas tools
 
+*   **Brush**: paints color on the active raster layer or white mask pixels on the active mask layer. The cursor previews the selected layer's paint; it continues moving while generation blocks painting.
+*   **Shape**: choose **Square**, **Circle**, or **Triangle** in Shape Settings, then drag on the active raster or mask layer. Square and Circle keep equal sides; Shift keeps the triangle's ratio, Alt draws from the center, and Ctrl/Cmd subtracts.
+*   **SAM object mask**: defaults to **SAM 3**. Use **Add** for green keep points and **Subtract** for red remove points. Guidance and errors appear in the bottom SAM panel. The preview keeps its pink fill and outlines the exact mask boundary in black and white. Undo/Redo covers the preview and points; after Apply, Undo immediately restores the layer's pixels.
 *   **Radial HUD**: Hold the **right mouse button** (every tool except SAM) to open a four-sector radial HUD at the cursor. Drag toward **size**, **opacity**, **hardness**, or the **foreground color**, then keep dragging to adjust that value live; release to commit. The SAM tool keeps its right-click subtract-point meaning.
 *   **Brush hardness** (0-1): strokes render with soft radial-gradient edges below 1, effective immediately while painting.
 *   **Settings (gear icon)**: configure the background-removal backend, automatic layer naming, inpaint behavior, performance, and diagnostic logging.

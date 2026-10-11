@@ -338,7 +338,7 @@ export function installUniCanvasInputTools(uc) {
     }
     const radius = uc.brushSize / 2;
     const point = uc.hoverPoint;
-    const rgb = uc.tool === "eraser" ? { r: 255, g: 71, b: 87 } : (uc.tool === "mask" ? { r: 255, g: 255, b: 255 } : hexToRgb(uc.fg));
+    const rgb = uc.tool === "eraser" ? { r: 255, g: 71, b: 87 } : (uc.tool === "mask" || uc.activeLayer?.type === "mask" ? { r: 255, g: 143, b: 163 } : hexToRgb(uc.fg));
     ctx.save();
     ctx.globalAlpha = uc.isPointerDown ? 0 : 0.22;
     stampSoftCircle(ctx, point.x, point.y, radius, clamp01(uc.brushHardness), rgb);
@@ -347,6 +347,10 @@ export function installUniCanvasInputTools(uc) {
     ctx.strokeStyle = "rgba(0,0,0,1)";
     ctx.beginPath();
     ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(255,255,255,.82)";
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, radius + 1 / uc.view.scale, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
   };

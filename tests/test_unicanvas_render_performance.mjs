@@ -225,7 +225,9 @@ test("per-render panel updates rebuild their HTML only when it changes", () => {
   const sam = widget({
     samPanel: new Element(), samPointsLabel: label, samModelSelect: {}, samStatus: {},
     samUndoBtn: button(), samRedoBtn: button(), samInvertBtn: button(), samSegmentBtn: button(), samApplyBtn: button(), samClearBtn: button(),
+    updateHistoryButtons() {},
     sam: { points: [{ label: 1 }], redoPoints: [], model: "sam", busy: false, invert: false, maskCanvas: null, status: "" },
+    undoStack: [], redoStack: [],
   });
   for (let i = 0; i < 5; i += 1) sam.renderSamPanel();
   assert.equal(label.htmlWrites, 1);

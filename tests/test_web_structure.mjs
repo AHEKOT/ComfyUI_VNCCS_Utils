@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -44,30 +42,4 @@ test("nested frontend imports, workers, and asset URLs resolve inside the extens
         }
     }
     assert.ok(checked > 100, "the full frontend dependency graph must stay covered");
-});
-
-test("version bump picks up nested modules and refreshes their import queries", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "vnccs-web-version-"));
-    try {
-        await mkdir(path.join(root, "scripts"));
-        await mkdir(path.join(root, "web", "unicanvas"), { recursive: true });
-        await mkdir(path.join(root, "web", "pose_studio", "imports"), { recursive: true });
-        const script = path.join(root, "scripts", "bump_unicanvas_version.mjs");
-        await copyFile(new URL("../scripts/bump_unicanvas_version.mjs", import.meta.url), script);
-        const entry = path.join(root, "web", "vnccs_unicanvas.js");
-        await writeFile(entry, 'const VNCCS_UNICANVAS_VERSION = "1";\nimport { modes } from "./unicanvas/modes.mjs?v=1";\n');
-        await writeFile(path.join(root, "web", "unicanvas", "modes.mjs"), "export const modes = {};\n");
-        const nested = path.join(root, "web", "pose_studio", "imports", "video.mjs");
-        await writeFile(nested, "export const video = {};\n");
-        const newest = new Date(Date.now() + 60_000);
-        await utimes(nested, newest, newest);
-        const version = String(Math.floor((await stat(nested)).mtimeMs));
-        const result = spawnSync(process.execPath, [script], { encoding: "utf8" });
-        assert.equal(result.status, 0, result.stderr);
-        const source = await readFile(entry, "utf8");
-        assert.ok(source.includes(`VNCCS_UNICANVAS_VERSION = "${version}"`));
-        assert.ok(source.includes(`./unicanvas/modes.mjs?v=${version}`));
-    } finally {
-        await rm(root, { recursive: true, force: true });
-    }
 });

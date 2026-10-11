@@ -47,7 +47,7 @@ test("fullscreen installs window capture-phase keyboard isolation", () => {
 });
 
 test("UniCanvas shortcut map covers tools, history, brush size, panels and Esc", () => {
-    for (const [key, tool] of [["b", "brush"], ["v", "move"], ["e", "eraser"], ["m", "mask"], ["l", "lasso"], ["s", "rect"]]) {
+    for (const [key, tool] of [["b", "brush"], ["v", "move"], ["e", "eraser"], ["m", "brush"], ["l", "lasso"], ["s", "rect"]]) {
         const pattern = new RegExp(`${key}:\\s*"${tool}"`);
         assert.ok(pattern.test(modesSource), `shortcut ${key} must select the ${tool} tool`);
     }

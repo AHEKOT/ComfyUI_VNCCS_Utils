@@ -26,14 +26,16 @@ body.vnccs-unicanvas-standalone-mode .vnccs-custom-select-menu {
 }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-left { width:336px; }
 .vnccs-unicanvas.vnccs-uc-standalone :is([data-h3-panel], [data-edit-steps-panel]) { display:none !important; }
-.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-refs-wide:not([hidden]) { display:block; width:100%; }
+.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-refs-row:not([hidden]) { display:flex; align-items:stretch; gap:8px; }
+.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-refs-wide { flex:1; min-width:0; }
+.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-ref-layers { display:flex; align-items:center; gap:6px; height:28px; flex:none; white-space:nowrap; cursor:pointer; color:var(--uc-text); }
+.vnccs-unicanvas.vnccs-uc-standalone [data-use-layers-reference] { width:14px; height:14px; margin:0; accent-color:var(--uc-accent); cursor:pointer; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-generation-grid > [data-generic-steps] { order:2; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-generation-grid > :has([data-setting="sampler_name"]) { order:1; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-generation-grid > :has([data-setting="scheduler"]) { order:3; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-generation-grid > :has([data-setting="cfg"]) { order:4; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-generation-grid > .wide { order:5; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-generation-grid .vnccs-uc-field { min-width:0; }
-.vnccs-unicanvas.vnccs-uc-standalone [data-use-layers-reference] { height:auto; min-height:28px; white-space:normal; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-refs-popover { animation:vnccs-uc-refs-rise .15s ease-out; }
 @keyframes vnccs-uc-refs-rise { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
 @media (prefers-reduced-motion:reduce) { .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-refs-popover { animation:none; } }
@@ -116,11 +118,6 @@ body.vnccs-unicanvas-standalone-mode .vnccs-custom-select-menu {
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-toggle { background:var(--uc-surface); border-color:var(--uc-border); }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-toggle.active { background:var(--uc-accent); }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-toggle.active::after { background:var(--primary-fg); }
-.vnccs-unicanvas.vnccs-uc-standalone [data-use-layers-reference] { height:auto; min-height:40px; display:flex; align-items:center; gap:8px; padding:8px 10px; text-align:left; }
-.vnccs-unicanvas.vnccs-uc-standalone [data-use-layers-reference] > span:first-child { flex:1; }
-.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-reference-state { font-weight:600; }
-.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-btn[data-use-layers-reference][aria-pressed="true"] { background:var(--primary-background, var(--primary-bg)); border-color:var(--uc-accent); color:var(--primary-fg); }
-.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-btn[data-use-layers-reference][aria-pressed="true"]:hover { background:var(--primary-background-hover, var(--primary-background, var(--primary-bg))); }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-donate-link { padding:6px; background:var(--uc-panel); color:var(--uc-muted); text-align:center; box-shadow:none; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-enhance-spark { display:none; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-enhance-btn { filter:none; animation:none; }

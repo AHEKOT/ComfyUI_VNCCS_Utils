@@ -20,12 +20,13 @@ def model_root(tmp_path, monkeypatch):
     monkeypatch.setattr(presets, "_PRESET_DOWNLOAD_STATUS", {})
 
 
-def test_card_and_custom_offer_the_same_qwen_dependencies_without_the_base_model():
+def test_card_and_custom_offer_the_same_complete_qwen_model():
     card = presets._get_unicanvas_dependencies("qwen_image21", "qwen_image21")
     custom = presets._get_unicanvas_dependencies("qi21")
     assert card == custom
-    assert [asset["required"] for asset in card["assets"]] == [True, True, False, False, False]
-    assert all(asset["role"] not in {"diffusion_model", "checkpoint", "gguf"} for asset in card["assets"])
+    assert [asset["required"] for asset in card["assets"]] == [True, True, True, False, False, False]
+    assert card["assets"][0]["role"] == "diffusion_model"
+    assert all(not asset["installed"] for asset in card["assets"])
     outpaint = next(asset for asset in card["assets"] if "Outpaint" in asset["name"])
     assert outpaint["hf_revision"] == UC.models.qwen_image21.QWEN21_OUTPAINT_LORA_REVISION
     assert outpaint["local_path"] == "models/loras/" + UC.models.qwen_image21.QWEN21_OUTPAINT_LORA_NAME
@@ -46,9 +47,10 @@ def test_custom_uses_installed_manually_selected_encoder_and_vae(tmp_path):
         target.write_bytes(b"installed")
     catalog = presets._get_unicanvas_dependencies(
         "qwen_image21", clip_name="custom/alternative.safetensors", vae_name="custom/alternative.safetensors")
-    assert len(catalog["assets"]) == 3
-    assert all(not asset["required"] for asset in catalog["assets"])
-    assert len(presets._get_unicanvas_dependencies("qwen_image21", "qwen_image21")["assets"]) == 5
+    assert len(catalog["assets"]) == 4
+    assert [asset["required"] for asset in catalog["assets"]] == [True, False, False, False]
+    assert all(asset["role"] not in {"clip", "vae"} for asset in catalog["assets"])
+    assert len(presets._get_unicanvas_dependencies("qwen_image21", "qwen_image21")["assets"]) == 6
     with pytest.raises(ValueError):
         presets._get_unicanvas_dependencies("qwen_image21", clip_name="../alternative.safetensors")
 
@@ -63,7 +65,7 @@ def test_custom_missing_subfolder_does_not_accept_another_encoder_or_vae(tmp_pat
     folders.get_filename_list = lambda key: ["other/alternative.safetensors"]
     catalog = presets._get_unicanvas_dependencies(
         "qwen_image21", clip_name="missing/alternative.safetensors", vae_name="missing/alternative.safetensors")
-    assert len(catalog["assets"]) == 5
+    assert len(catalog["assets"]) == 6
     assert any(asset["required"] and asset["role"] == "clip" for asset in catalog["assets"])
     assert any(asset["required"] and asset["role"] == "vae" for asset in catalog["assets"])
 
@@ -98,10 +100,111 @@ def test_popup_and_runtime_reuse_the_same_installed_controlnet(family, category,
         ensure(f"missing/{filename}")
 
 
-def test_custom_krea_dependencies_are_deduplicated_across_raw_and_turbo():
-    assets = presets._get_unicanvas_dependencies("krea2_edit")["assets"]
-    assert len(assets) == 3
+@pytest.mark.parametrize("preset_id", ["krea2_edit", "krea2_edit_raw"])
+def test_krea_offers_every_missing_part_of_the_selected_model(preset_id):
+    preset = next(entry for entry in presets._unicanvas_load_preset_registry()["presets"] if entry["id"] == preset_id)
+    card = presets._get_unicanvas_dependencies("krea2_edit", preset_id)
+    custom = presets._get_unicanvas_dependencies(
+        "krea2_edit", model_loader="diffusion_model", model_name=preset["settings"]["diffusion_model_name"])
+    assert card == custom
+    assets = card["assets"]
+    assert [asset["role"] for asset in assets] == ["diffusion_model", "clip", "vae", "lora"]
     assert all(asset["required"] for asset in assets)
+    assert all(not asset["installed"] for asset in assets)
+    assert assets[0]["relative_name"] == preset["settings"]["diffusion_model_name"]
+
+
+@pytest.mark.parametrize("preset", presets._unicanvas_load_preset_registry()["presets"], ids=lambda preset: preset["id"])
+def test_every_preset_keeps_all_missing_core_assets_in_its_catalog(preset):
+    catalog = presets._get_unicanvas_dependencies(preset["settings"]["generation_mode"], preset["id"])
+    core = [asset for asset in catalog["assets"] if asset["required"]]
+    assert [asset["local_path"] for asset in core] == [asset["local_path"] for asset in preset["assets"]]
+    assert all(not asset["installed"] for asset in core)
+
+
+def test_custom_uses_installed_model_instead_of_offering_a_missing_default(tmp_path):
+    target = tmp_path / "diffusion_models" / "custom" / "alternative.safetensors"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"installed")
+    catalog = presets._get_unicanvas_dependencies(
+        "krea2_edit", model_loader="diffusion_model", model_name="custom/alternative.safetensors")
+    assert [asset["role"] for asset in catalog["assets"]] == ["clip", "vae", "lora"]
+
+
+def test_custom_missing_selected_files_stay_visible_even_when_other_copies_exist(tmp_path):
+    for category, name in (("diffusion_models", "krea2_turbo_fp8_scaled.safetensors"),
+                           ("text_encoders", "qwen3vl_4b_fp8_scaled.safetensors"),
+                           ("vae", "qwen_image_vae.safetensors")):
+        target = tmp_path / category / name
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"installed")
+    catalog = presets._get_unicanvas_dependencies(
+        "krea2_edit", model_loader="diffusion_model", model_name="missing/krea2_turbo_fp8_scaled.safetensors",
+        clip_name="missing/qwen3vl_4b_fp8_scaled.safetensors", vae_name="missing/qwen_image_vae.safetensors")
+    missing = {asset["role"]: asset for asset in catalog["assets"] if not asset["installed"]}
+    assert set(missing) == {"diffusion_model", "clip", "vae", "lora"}
+    for role in ("diffusion_model", "clip", "vae"):
+        assert missing[role]["relative_name"].startswith("missing/")
+        assert missing[role]["downloadable"] is False
+
+
+@pytest.mark.parametrize("role", ["diffusion_model", "clip", "vae", "lora"])
+def test_krea_reports_a_removed_file_despite_old_success_status(tmp_path, role):
+    catalog = presets._get_unicanvas_dependencies("krea2_edit", "krea2_edit")
+    for asset in catalog["assets"]:
+        target = tmp_path / asset["local_path"].removeprefix("models/")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"installed")
+        presets._PRESET_DOWNLOAD_STATUS[asset["download_key"]] = {"status": "success"}
+        if asset["role"] == role:
+            removed = target
+    removed.unlink()
+    assets = presets._get_unicanvas_dependencies("krea2_edit", "krea2_edit")["assets"]
+    missing = [asset for asset in assets if not asset["installed"]]
+    assert [asset["role"] for asset in missing] == [role]
+    assert missing[0]["status"] == "missing"
+
+
+def test_selective_download_can_queue_all_core_krea_files(monkeypatch):
+    enqueue = mock.Mock()
+    monkeypatch.setattr(presets, "_enqueue_preset_download", enqueue)
+    catalog = presets._get_unicanvas_dependencies("krea2_edit", "krea2_edit")
+    keys = [asset["download_key"] for asset in catalog["assets"]]
+    queued = presets._download_unicanvas_dependencies({"generation_mode": "krea2_edit", "preset_id": "krea2_edit",
+                                                      "download_keys": keys})
+    assert queued == keys
+    assert [call.args[1]["role"] for call in enqueue.call_args_list] == ["diffusion_model", "clip", "vae", "lora"]
+
+
+def test_unknown_custom_files_are_visible_but_never_queued(monkeypatch):
+    enqueue = mock.Mock()
+    monkeypatch.setattr(presets, "_enqueue_preset_download", enqueue)
+    selection = {"generation_mode": "krea2_edit", "model_loader": "gguf", "model_name": "custom/missing.gguf"}
+    catalog = presets._get_unicanvas_dependencies(**selection)
+    missing = next(asset for asset in catalog["assets"] if asset["role"] == "gguf")
+    assert not missing["installed"] and missing["required"] and not missing["downloadable"]
+    assert all(asset["role"] != "diffusion_model" for asset in catalog["assets"])
+    with pytest.raises(ValueError, match="catalog"):
+        presets._download_unicanvas_dependencies({**selection, "download_keys": [missing["download_key"]]})
+    enqueue.assert_not_called()
+
+
+@pytest.mark.parametrize("selection", [
+    {"model_name": "../model.safetensors"}, {"model_name": "C:\\models\\model.safetensors"},
+    {"model_loader": "unknown"},
+])
+def test_custom_model_selection_is_validated(selection):
+    with pytest.raises(ValueError):
+        presets._get_unicanvas_dependencies("krea2_edit", **selection)
+
+
+def test_custom_checkpoint_does_not_require_stale_separate_encoder_or_vae_names():
+    catalog = presets._get_unicanvas_dependencies(
+        "sdxl", model_loader="checkpoint", model_name="missing.safetensors",
+        clip_name="old-encoder.safetensors", vae_name="old-vae.safetensors")
+    required = [asset for asset in catalog["assets"] if asset["required"]]
+    assert [asset["role"] for asset in required] == ["checkpoint"]
+    assert required[0]["relative_name"] == "missing.safetensors" and not required[0]["installed"]
 
 
 def test_installed_copy_in_configured_subfolder_is_excluded_from_missing(tmp_path, monkeypatch):

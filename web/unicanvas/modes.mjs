@@ -7,7 +7,7 @@
  */
 
 import { app } from "../../../scripts/app.js";
-import { STANDALONE_STYLES } from "./standalone_theme.mjs";
+import { STANDALONE_STYLES } from "./standalone_theme.mjs?v=1791710743228";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 
@@ -27,7 +27,7 @@ export const TOOL_SHORTCUTS = Object.freeze({
   b: "brush",
   v: "move",
   e: "eraser",
-  m: "mask",
+  m: "brush",
   l: "lasso",
   s: "rect",
 });
@@ -228,7 +228,7 @@ export function handleUniCanvasShortcut(widget, event, options = null) {
   // (spec 5), fullscreen or not.
   if (!isUniCanvasCanvasFocused(widget, event)) return false;
   if (modifier || event.altKey) return false;
-  // Tools: B brush, V move, E eraser, M mask, L lasso, S rect.
+  // Tools: B/M brush, V move, E eraser, L lasso, S shape.
   if (key.length === 1 && Object.prototype.hasOwnProperty.call(TOOL_SHORTCUTS, lower)) {
     consumeUniCanvasShortcut(event);
     widget.setTool(TOOL_SHORTCUTS[lower]);

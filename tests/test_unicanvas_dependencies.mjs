@@ -2,9 +2,72 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { checkModelDependencies, disposeModelDependencies } from "../web/unicanvas/model_dependencies.mjs";
+import { checkModelDependencies, disposeModelDependencies, openModelDependencies } from "../web/unicanvas/model_dependencies.mjs";
 
 const source = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+
+for (const [loader, key, name] of [
+  ["checkpoint", "ckpt_name", "custom/checkpoint.safetensors"],
+  ["diffusion_model", "diffusion_model_name", "krea2_raw_fp8_scaled.safetensors"],
+  ["gguf", "gguf_model_name", "custom/model.gguf"],
+]) {
+  test(`Custom dependency checks include the selected ${loader} file`, async context => {
+    const originalFetch = globalThis.fetch;
+    context.after(() => { globalThis.fetch = originalFetch; });
+    globalThis.fetch = async (url, options) => {
+      assert.deepEqual(Object.fromEntries(new URL(url, "http://unicanvas.test").searchParams), {
+        generation_mode:"krea2_edit", preset_id:"", model_loader:loader, model_name:name,
+        clip_name:"custom/encoder.safetensors", vae_name:"custom/vae.safetensors",
+      });
+      assert.equal(options.cache, "no-store");
+      return { ok:true, json:async () => ({ assets:[] }) };
+    };
+    await checkModelDependencies({ getModelBase:() => "krea2_edit", settings:{ model_loader:loader, [key]:name,
+      clip_name:"custom/encoder.safetensors", vae_name:"custom/vae.safetensors" }, setStatus:message => assert.fail(message) });
+  });
+}
+
+test("the dialog lists and downloads all missing core parts while retaining manual files", async context => {
+  const previousDocument = globalThis.document, previousFetch = globalThis.fetch;
+  context.after(() => { globalThis.document = previousDocument; globalThis.fetch = previousFetch; });
+  class Element {
+    constructor(tag) { this.tag = tag; this.children = []; this.dataset = {}; this.events = {}; }
+    append(...children) { for (const child of children) { child.parent = this; this.children.push(child); } }
+    remove() { this.parent.children = this.parent.children.filter(child => child !== this); }
+    setAttribute() {} removeAttribute() {}
+    addEventListener(type, callback) { this.events[type] = callback; }
+    contains(target) { return this === target || this.children.some(child => child.contains(target)); }
+    focus() { globalThis.document.activeElement = this; }
+  }
+  globalThis.document = { createElement:tag => new Element(tag), activeElement:null };
+  const roles = ["diffusion_model", "clip", "vae", "lora"];
+  const assets = roles.map(role => ({ role, name:role, download_key:role, required:true, installed:false }));
+  assets.push({ name:"Installed VAE", installed:true },
+    { name:"custom/missing.safetensors", download_key:"manual", installed:false, required:true, downloadable:false });
+  let posted, polling = 0;
+  globalThis.fetch = async (_url, options) => {
+    posted = JSON.parse(options.body);
+    return { ok:true, json:async () => ({ queued:posted.download_keys }) };
+  };
+  const host = { container:new Element("div"), presetDownloads:{}, startPresetDownloadPolling:() => { polling++; } };
+  const dialog = openModelDependencies(host, { label:"Krea2 Edit", assets }, { generation_mode:"krea2_edit", preset_id:"krea2_edit" });
+  const overlay = host.container.children[0], modal = overlay.children[0];
+  const [, , list, summary, actions] = modal.children;
+  assert.equal(list.children.length, 5);
+  assert.deepEqual(list.children.map(row => row.children[0].children[1].textContent), [...roles, "custom/missing.safetensors"]);
+  assert.equal(summary.textContent, "5 file(s) missing.");
+  const manualCheckbox = list.children[4].children[0].children[0];
+  assert.equal(manualCheckbox.disabled, true);
+  assert.equal(manualCheckbox.checked, false);
+  await actions.children[1].events.click();
+  assert.deepEqual(posted.download_keys, roles);
+  assert.equal(polling, 1);
+  dialog.update(Object.fromEntries(roles.map(role => [role, { status:"success" }])));
+  assert.equal(summary.textContent, "1 file(s) missing.");
+  assert.equal(host._dependencyDialog, dialog, "an undownloadable missing file must keep the dialog open");
+  dialog.close();
+  assert.equal(host.container.children.length, 0);
+});
 
 test("preset selection checks its dependencies after applying the selected preset", () => {
   const method = source.slice(source.indexOf("  selectPreset(presetId) {"), source.indexOf("  isPresetTurboEnabled(preset) {"));

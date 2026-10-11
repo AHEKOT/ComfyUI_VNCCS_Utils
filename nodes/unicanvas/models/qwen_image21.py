@@ -82,17 +82,12 @@ QWEN21_TURBO_STEPS = 6
 QWEN_IMAGE21_DEFAULTS["qwen_lora_name"] = QWEN21_TURBO_LORA_NAME
 
 # AusBoss QI2.1 outpaint LoRA v2 (https://huggingface.co/ausboss/Qwen-Image-2.1-Outpaint-LoRA):
-# trained on canvases padded with flat gray #808080 and one fixed instruction, optionally
-# followed by "Scene: <description>". Applied automatically in outpaint mode.
+# trained on canvases padded with flat gray #808080. Applied automatically in outpaint mode.
 QWEN21_OUTPAINT_LORA_REPO_ID = "ausboss/Qwen-Image-2.1-Outpaint-LoRA"
 QWEN21_OUTPAINT_LORA_REVISION = "449336db42ff074aee970ba0facc0ac0feb77863"
 QWEN21_OUTPAINT_LORA_FILENAME = "qwen-image-2.1-outpaint-v2.safetensors"
 QWEN21_OUTPAINT_LORA_NAME = f"ausboss/{QWEN21_OUTPAINT_LORA_FILENAME}"
 QWEN21_OUTPAINT_FILL = (128, 128, 128)
-QWEN21_OUTPAINT_INSTRUCTION = (
-    "Outpaint the image: replace the solid gray areas with a seamless continuation of the scene, "
-    "keeping the existing picture unchanged."
-)
 QWEN_IMAGE21_DEFAULTS["qwen21_outpaint_lora_name"] = QWEN21_OUTPAINT_LORA_NAME
 
 QWEN21_POSE_LORA_REPO_ID = "MIUProject/VNCCS_PoseStudio_QI2.1"
@@ -217,8 +212,8 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
     img2img, inpaint and outpaint, where inpaint is img2img with mask
     paste-back (no InpaintModelConditioning context). Reference editing wires
     the working area to <image1> and the Edit model references to <image2..5>
-    in socket order, with the module assembling the QI2.1 <image N>
-    instruction. The decoded alpha channel is preserved without additional
+    in socket order, with the user's prompt passed through unchanged.
+    The decoded alpha channel is preserved without additional
     transparency instructions or background flattening.
     """
 
@@ -321,7 +316,6 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         self.bind_draw_assets(ctx)
 
     def outpaint_prompt_suffix(self) -> str:
-        # Outpaint builds its own instruction (QWEN21_OUTPAINT_INSTRUCTION) in assemble_instruction.
         return ""
 
     def prepare_outpaint_reference_image(self, source_rgba: Image.Image, mask_image: Image.Image, draw_id: str) -> Image.Image:
@@ -354,31 +348,8 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         return _reference_image_slots(image_tensor, gen_settings)
 
     def assemble_instruction(self, prompt: str, slots, outpaint: bool = False, use_layers: bool = True) -> str:
-        """Assemble the QI2.1 instruction: <image N> slot framing, the user
-        prompt, without adding transparency instructions.
-
-        Outpaint uses the outpaint LoRA's trained instruction verbatim, with the
-        user prompt as its optional "Scene:" description and no RGBA wrapping.
-        """
-        body = str(prompt or "").strip()
-        if outpaint:
-            parts = [QWEN21_OUTPAINT_INSTRUCTION]
-            references = [f"<image{slot}>" for slot in sorted(slots) if slot != 1]
-            if references:
-                parts.append(f"Reference images: {', '.join(references)}.")
-            if body:
-                parts.append(f"Scene: {body}")
-            return " ".join(parts)
-        parts = []
-        if 1 in slots and use_layers:
-            parts.append("Working area: <image1>.")
-        references = [f"<image{slot}>" for slot in sorted(slots) if slot != 1 or not use_layers]
-        if references:
-            parts.append(f"Reference images: {', '.join(references)}.")
-        if body:
-            parts.append(body)
-        instruction = " ".join(parts)
-        return instruction
+        """Pass the user's QI2.1 prompt through verbatim in every draw mode."""
+        return str(prompt or "")
 
     def create_empty_latent(self, width: int, height: int, gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
         width, height = self.resolve_generation_size(width, height, gen_settings)

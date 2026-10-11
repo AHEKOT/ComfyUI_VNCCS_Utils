@@ -7,6 +7,7 @@ import path from "node:path";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
 const entrySource = await readFile(path.join(root, "web/vnccs_unicanvas.js"), "utf8");
+const modesSource = await readFile(path.join(root, "web/unicanvas/modes.mjs"), "utf8");
 const initSource = await readFile(path.join(root, "__init__.py"), "utf8");
 const buildSource = await readFile(path.join(root, "nodes/unicanvas/build_info.py"), "utf8");
 const cacheSource = await readFile(path.join(root, "api/pose_unicanvas_caches.py"), "utf8");
@@ -65,6 +66,11 @@ test("local module imports carry the cache-busting version query", () => {
     assert.ok(query, `import of ${path} must carry ?v=`);
     assert.equal(v, version, `import of ${path} must match the current version constant`);
   }
+});
+
+test("standalone theme uses the entry version so cached CSS cannot hide new controls", () => {
+  const version = entrySource.match(/const VNCCS_UNICANVAS_VERSION = "(\d+)"/)[1];
+  assert.ok(modesSource.includes(`from "./standalone_theme.mjs?v=${version}"`));
 });
 
 test("deleting any layer records history so undo restores it", () => {

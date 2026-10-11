@@ -53,23 +53,16 @@ def test_create_empty_latent_uses_64_channel_16x_compression():
     assert tuple(latent["samples"].shape) == (1, 64, 48, 64)
 
 
-def test_reference_prompt_has_no_automatic_transparency_instructions():
+def test_reference_prompt_is_only_the_user_text():
     module = _get_unicanvas_model_module("qwen_image21")
     text = module.assemble_instruction("Keep the face from <image2>.", {1: object(), 2: object()})
-    assert "RGBA" not in text
-    assert "transparent" not in text
-    assert "alpha channel" not in text
-    assert "Working area: <image1>." in text
-    assert "Reference images: <image2>." in text
-    assert "Keep the face from <image2>." in text
+    assert text == "Keep the face from <image2>."
 
 
-def test_plain_prompt_has_no_automatic_transparency_instructions():
+def test_plain_prompt_is_preserved_verbatim():
     module = _get_unicanvas_model_module("qwen_image21")
-    text = module.assemble_instruction("a cat", {1: object()})
-    assert "RGBA" not in text
-    assert "transparent" not in text
-    assert text == "Working area: <image1>. a cat"
+    text = module.assemble_instruction("  1girl \n", {1: object()})
+    assert text == "  1girl \n"
 
 
 def test_reference_wiring_slots_and_prompt():
@@ -88,11 +81,11 @@ def test_reference_wiring_slots_and_prompt():
     assert slots[4] is refs["reference_image_3"]
     assert slots[5] is refs["reference_image_4"]
     text = module.assemble_instruction("edit", slots)
-    assert "Working area: <image1>." in text
-    assert "Reference images: <image2>, <image4>, <image5>." in text
+    assert text == "edit"
 
 
-def test_prepare_reference_conditioning_wires_slots(monkeypatch):
+@pytest.mark.parametrize("mode", ["img2img", "inpaint", "outpaint"])
+def test_prepare_reference_conditioning_wires_slots_and_preserves_user_prompt(monkeypatch, mode):
     module = _get_unicanvas_model_module("qwen_image21")
     captured = {}
 
@@ -117,7 +110,7 @@ def test_prepare_reference_conditioning_wires_slots(monkeypatch):
     working = torch.rand(1, 8, 8, 3)
     ref = torch.rand(1, 8, 8, 3)
     gen_settings = {
-        "draw_mode": "img2img",
+        "draw_mode": mode,
         "_qwen21_clip": "CLIP",
         "_qwen21_prompt": "Keep the face from <image2>.",
         "_qwen21_negative_prompt": "blurry",
@@ -129,8 +122,7 @@ def test_prepare_reference_conditioning_wires_slots(monkeypatch):
     assert captured["negative_prompt"] == "blurry"
     assert torch.equal(captured["images"][1], working)
     assert torch.equal(captured["images"][2], ref)
-    assert "Working area: <image1>." in captured["prompt"]
-    assert "Keep the face from <image2>." in captured["prompt"]
+    assert captured["prompt"] == "Keep the face from <image2>."
     # The working area is encoded as RGBA for the 64-channel image VAE.
     assert captured["vae_pixels"].shape == (1, 8, 8, 4)
     assert isinstance(gen_settings["_qwen21_latent"], dict)
@@ -424,10 +416,8 @@ def test_outpaint_lora_applies_only_in_outpaint(monkeypatch, tmp_path):
     assert calls == ["ausboss/qwen-image-2.1-outpaint-v2.safetensors"]
 
 
-def test_outpaint_uses_gray_canvas_and_trained_instruction():
+def test_outpaint_uses_gray_canvas_and_only_the_user_prompt():
     from PIL import Image
-
-    from nodes.unicanvas.models.qwen_image21 import QWEN21_OUTPAINT_INSTRUCTION
 
     module = _get_unicanvas_model_module("qwen_image21")
     assert module.outpaint_prompt_suffix() == ""
@@ -436,8 +426,8 @@ def test_outpaint_uses_gray_canvas_and_trained_instruction():
     padded = module.prepare_outpaint_reference_image(source, None, "t")
     assert padded.mode == "RGB" and padded.getpixel((3, 3)) == (128, 128, 128) and padded.getpixel((0, 0)) == (255, 0, 0)
     text = module.assemble_instruction("a forest at dusk", {1: object()}, outpaint=True)
-    assert text == f"{QWEN21_OUTPAINT_INSTRUCTION} Scene: a forest at dusk"
-    assert module.assemble_instruction("", {1: object()}, outpaint=True) == QWEN21_OUTPAINT_INSTRUCTION
+    assert text == "a forest at dusk"
+    assert module.assemble_instruction("", {1: object()}, outpaint=True) == ""
 
 
 def test_pose_uses_the_same_two_images_and_unmodified_pose_studio_prompt(monkeypatch):

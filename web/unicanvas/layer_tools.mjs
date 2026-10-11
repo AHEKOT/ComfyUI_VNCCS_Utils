@@ -265,11 +265,12 @@ export { resolveRemoveBgSelection };
 function startSamRemoveBackground(uc, layer) {
   if (uc.activeLayerId !== layer.id) uc.setActiveLayer(layer.id);
   uc.sam.model = "sam3";
+  uc.sam.mode = "add";
   uc.clearSamPrompt?.();
   uc.setTool("sam");
-  uc.sam.status = "Click what to keep, then Segment and Apply";
+  uc.sam.status = "Add green keep points or Subtract red remove points, then Segment and Apply.";
   uc.renderSamPanel?.();
-  uc.setStatus("[VNCCS UniCanvas] Remove bg – SAM 3: click what to keep (Alt/right click: remove), then Segment and Apply.");
+  uc.setStatus("[VNCCS UniCanvas] Remove bg – SAM 3: use Add / Subtract, then Segment and Apply.");
 }
 
 /**

@@ -140,7 +140,8 @@ def register_unicanvas_routes() -> None:
         try:
             return web.json_response(_get_unicanvas_dependencies(
                 request.query.get("generation_mode", ""), request.query.get("preset_id", ""),
-                request.query.get("clip_name", ""), request.query.get("vae_name", "")))
+                request.query.get("clip_name", ""), request.query.get("vae_name", ""),
+                request.query.get("model_loader", ""), request.query.get("model_name", "")))
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
         except Exception as exc:

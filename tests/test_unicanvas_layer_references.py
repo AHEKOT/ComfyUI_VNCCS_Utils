@@ -32,8 +32,7 @@ def test_default_canvas_reference_and_disabled_canvas_slot_order():
     assert slots("canvas", settings) == {1: "upload1", 2: "upload2"}
     module = UC.models.qwen_image21.QwenImage21UniCanvasModule()
     instruction = module.assemble_instruction("Edit the photo", slots("canvas", settings), use_layers=False)
-    assert "Working area" not in instruction
-    assert "Reference images: <image1>, <image2>." in instruction
+    assert instruction == "Edit the photo"
     assert UC.models.minimax_h3.MiniMaxH3UniCanvasModule()._h3_reference_images(
         {**settings, "_h3_reference_image": "canvas"}) == {"ref_image_1": "upload1", "ref_image_2": "upload2"}
 

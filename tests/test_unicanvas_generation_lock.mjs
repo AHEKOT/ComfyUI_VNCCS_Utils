@@ -391,7 +391,7 @@ test("generation allows future pixel-tool selection but prevents entering a pose
   });
   const before = JSON.stringify(w.layers);
   for (const tool of ["brush", "eraser", "mask", "rect", "lasso", "resize", "bbox", "pan", "move"]) {
-    w.setTool(tool); assert.equal(w.tool, tool);
+    w.setTool(tool); assert.equal(w.tool, tool === "mask" ? "brush" : tool);
     assert.equal(JSON.stringify(w.layers), before);
   }
   w.setTool("pose"); assert.equal(w.tool, "move");

@@ -2,22 +2,22 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791705240409";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791705240409";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791710743228";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791710743228";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791705240409";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791705240409";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791705240409";
-import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791705240409";
-import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791705240409";
-import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791705240409";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791705240409";
-import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791705240409";
-import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791705240409";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791705240409";
-import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791705240409";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791705240409";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791710743228";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791710743228";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791710743228";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791710743228";
+import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791710743228";
+import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791710743228";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791710743228";
+import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791710743228";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791710743228";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791710743228";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791710743228";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791710743228";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -49,11 +49,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./unicanvas/transform.mjs?v=1791705240409";
+} from "./unicanvas/transform.mjs?v=1791710743228";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./unicanvas/presets.mjs?v=1791705240409";
+} from "./unicanvas/presets.mjs?v=1791710743228";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -61,10 +61,10 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./unicanvas/modes.mjs?v=1791705240409";
-import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791705240409";
-import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791705240409";
-import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791705240409";
+} from "./unicanvas/modes.mjs?v=1791710743228";
+import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791710743228";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791710743228";
+import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791710743228";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -72,12 +72,12 @@ import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencie
 
 // ComfyUI tabs live for hours and neither hash navigation nor heuristic HTTP
 // caching picks up changed extension files, so a tab can run code that no
-// longer matches web/ on disk. The constant below is regenerated by
-// scripts/bump_unicanvas_version.mjs whenever any UniCanvas web file changes.
+// longer matches web/ on disk. Keep the version below and local import queries
+// (including the standalone theme in modes.mjs) in sync when updating frontend files.
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1791705240409";
+const VNCCS_UNICANVAS_VERSION = "1791710743228";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -127,8 +127,8 @@ const VNCCS_UNICANVAS_VERSION = "1791705240409";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791705240409";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791705240409";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791710743228";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791710743228";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -212,6 +212,7 @@ const STYLES = `
 .vnccs-uc-layer.drop-after { box-shadow:0 2px 0 var(--uc-accent); }
 .vnccs-uc-thumb { width:34px; height:34px; border:1px solid var(--uc-border); border-radius:8px; background:rgba(255,255,255,.04); object-fit:cover; display:block; }
 .vnccs-uc-layer-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vnccs-uc-layer.hidden-layer .vnccs-uc-layer-name::before { content:""; display:inline-block; width:7px; height:7px; margin-right:5px; border-radius:50%; background:var(--uc-danger); vertical-align:middle; }
 .vnccs-uc-layer-type { color:var(--uc-muted); font-size:10px; }
 .vnccs-uc-bottom { grid-column:2; grid-row:1; position:relative; zoom:var(--vnccs-uc-ui-scale); display:flex; gap:8px; align-items:center; padding:8px; border-bottom:1px solid var(--uc-border); background:rgba(6,5,12,.75); box-sizing:border-box; min-width:0; }
 /* Keep the manager centered, with creation immediately to its right. */
@@ -236,12 +237,15 @@ const STYLES = `
 .vnccs-uc-settings { display:flex; align-items:center; gap:6px; min-width:0; }
 .vnccs-uc-settings { overflow:auto; flex:1 1 auto; }
 .vnccs-uc-settings-spacer { flex:1 1 auto; min-width:16px; }
-.vnccs-uc-sam-panel { display:none; flex:0 0 auto; align-items:center; gap:7px; min-width:0; }
+.vnccs-uc-sam-panel { display:none; flex:0 0 auto; flex-direction:column; align-items:stretch; gap:8px; min-width:0; width:max-content; max-width:calc(100% - 24px); }
 .vnccs-uc-sam-panel.visible { display:flex; }
+.vnccs-uc-sam-actions { display:flex; flex-wrap:wrap; align-items:center; gap:7px; }
+.vnccs-uc-sam-actions > button, .vnccs-uc-sam-actions > select { height:28px; }
 .vnccs-uc-sam-points { min-width:78px; color:var(--uc-muted); font-variant-numeric:tabular-nums; white-space:nowrap; }
 .vnccs-uc-sam-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; vertical-align:-1px; background:var(--uc-good); }
 .vnccs-uc-sam-dot.bg { background:var(--uc-danger); }
-.vnccs-uc-sam-status { max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--uc-muted); }
+.vnccs-uc-sam-status { white-space:normal; overflow-wrap:anywhere; color:var(--uc-text); line-height:1.4; }
+.vnccs-uc-sam-status.error { color:var(--uc-danger); font-weight:600; }
 .vnccs-uc-sam-mode { min-width:42px; }
 .vnccs-uc-btn, .vnccs-uc-icon { border:1px solid var(--uc-border); background:var(--uc-surface); color:var(--uc-text); border-radius:8px; height:28px; padding:0 9px; cursor:pointer; font:inherit; white-space:nowrap; }
 .vnccs-uc-icon { width:30px; padding:0; display:grid; place-items:center; }
@@ -342,7 +346,7 @@ const STYLES = `
 .vnccs-uc-edit-steps-row { display:flex; align-items:flex-end; gap:6px; }
 .vnccs-uc-edit-steps-row .vnccs-uc-field { flex:1 1 auto; }
 .vnccs-uc-refs-btn { position:relative; flex:0 0 auto; }
-.vnccs-uc-refs-wide { display:none; }
+.vnccs-uc-refs-row { display:none; }
 .vnccs-uc-refs-badge { position:absolute; top:-4px; right:-4px; min-width:14px; height:14px; padding:0 3px; border-radius:999px; background:var(--uc-accent); color:#14101e; font-size:9px; font-weight:900; line-height:14px; text-align:center; }
 /* Edit model reference images popover (same surface as the settings popover). */
 .vnccs-uc-refs-popover {
@@ -928,8 +932,6 @@ const TOOL_ICONS = {
   move: `<svg viewBox="0 0 256 256" aria-hidden="true"><path class="fill" d="M224.15,179.17l-46.83-46.82,37.93-13.51.76-.3a20,20,0,0,0-1.76-37.27L54.16,29A20,20,0,0,0,29,54.16L81.27,214.24A20,20,0,0,0,118.54,216c.11-.25.21-.5.3-.76l13.51-37.92,46.83,46.82a20,20,0,0,0,28.28,0l16.69-16.68A20,20,0,0,0,224.15,179.17Zm-30.83,25.17-48.48-48.48A20,20,0,0,0,130.7,150a20.66,20.66,0,0,0-3.74.35A20,20,0,0,0,112.35,162c-.11.25-.21.5-.3.76L100.4,195.5,54.29,54.29l141.21,46.1-32.71,11.66c-.26.09-.51.19-.76.3a20,20,0,0,0-6.17,32.48h0l48.49,48.48Z"/></svg>`,
   brush: `<svg viewBox="0 0 256 256" aria-hidden="true"><path class="fill" d="M236,32a12,12,0,0,0-12-12c-44.78,0-90,48.54-115.9,82a64,64,0,0,0-80,62c0,12-3.1,22.71-9.23,31.76A43,43,0,0,1,9.4,206.05a11.88,11.88,0,0,0-4.91,13.38A12.07,12.07,0,0,0,16.11,228h76A64,64,0,0,0,154,148C187.49,122.05,236,76.8,236,32ZM209.62,46.39c-4,12.92-13.15,27.49-26.92,42.91-3,3.39-6.16,6.7-9.35,9.89a104.31,104.31,0,0,0-16.5-16.51c3.19-3.19,6.49-6.32,9.88-9.35C182.15,59.55,196.71,50.43,209.62,46.39ZM92.07,204H42a80.17,80.17,0,0,0,10.14-40,40,40,0,1,1,40,40Zm38.18-91.32c3.12-3.93,6.55-8.09,10.23-12.35a80.52,80.52,0,0,1,15.23,15.24c-4.26,3.68-8.42,7.11-12.35,10.23A64.43,64.43,0,0,0,130.25,112.68Z"/></svg>`,
   eraser: `<svg viewBox="0 0 256 256" aria-hidden="true"><path class="fill" d="M216,204H141l86.84-86.84a28,28,0,0,0,0-39.6L186.43,36.19a28,28,0,0,0-39.6,0L28.19,154.82a28,28,0,0,0,0,39.6l30.06,30.07A12,12,0,0,0,66.74,228H216a12,12,0,0,0,0-24ZM163.8,53.16a4,4,0,0,1,5.66,0l41.38,41.38a4,4,0,0,1,0,5.65L160,151l-47-47ZM71.71,204,45.16,177.45a4,4,0,0,1,0-5.65L96,121l47,47-36,36Z"/></svg>`,
-  // Mask brush: a brush painting into a layer mask (the same rectangle + disc as "Add mask").
-  mask: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.2" y="8.8" width="12.6" height="12.6" rx="2.6"/><circle class="fill" cx="8.5" cy="15.1" r="3.3"/><path stroke-width="2.6" d="M21.4 2.6 15.8 8.2"/><path class="fill" d="M14.6 7.4l2 2c-.3 2.6-2.4 4.2-5.4 4.2 0-3 1.4-5.2 3.4-6.2z"/></svg>`,
   sam: `<svg viewBox="0 0 256 256" aria-hidden="true"><path class="fill" d="M252,152a12,12,0,0,1-12,12H228v12a12,12,0,0,1-24,0V164H192a12,12,0,0,1,0-24h12V128a12,12,0,0,1,24,0v12h12A12,12,0,0,1,252,152ZM56,76H68V88a12,12,0,0,0,24,0V76h12a12,12,0,1,0,0-24H92V40a12,12,0,0,0-24,0V52H56a12,12,0,0,0,0,24ZM184,188h-4v-4a12,12,0,0,0-24,0v4h-4a12,12,0,0,0,0,24h4v4a12,12,0,0,0,24,0v-4h4a12,12,0,0,0,0-24ZM222.14,82.83,82.82,222.14a20,20,0,0,1-28.28,0L33.85,201.46a20,20,0,0,1,0-28.29L173.17,33.86a20,20,0,0,1,28.28,0l20.69,20.68A20,20,0,0,1,222.14,82.83ZM159,112,144,97,53.65,187.31l15,15Zm43.31-43.31-15-15L161,80l15,15Z"/></svg>`,
   rect: `<svg viewBox="0 0 256 256" aria-hidden="true"><path class="fill" d="M71.49,60.55a12,12,0,0,0-23,0l-36,120A12,12,0,0,0,24,196H96a12,12,0,0,0,11.49-15.45ZM40.13,172,60,105.76,79.87,172ZM212,74a54,54,0,1,0-54,54A54.06,54.06,0,0,0,212,74Zm-84,0a30,30,0,1,1,30,30A30,30,0,0,1,128,74Zm96,70H136a12,12,0,0,0-12,12v52a12,12,0,0,0,12,12h88a12,12,0,0,0,12-12V156A12,12,0,0,0,224,144Zm-12,52H148V168h64Z"/></svg>`,
   lasso: `<svg viewBox="0 0 256 256" aria-hidden="true"><path class="fill" d="M207.83,56.53C186.32,43.29,158,36,128,36S69.68,43.29,48.17,56.53C24.85,70.89,12,90.6,12,112s12.85,41.14,36.17,55.5c18.48,11.37,42,18.34,67.29,20.08-2,11.07-9.09,17.75-15.22,21.54-13.48,8.31-32.75,9.18-46.86,2.1A12,12,0,1,0,42.62,232.7a71.76,71.76,0,0,0,32,7.3,73.2,73.2,0,0,0,38.18-10.43c15.45-9.54,25-24.58,26.83-41.9,25.6-1.64,49.47-8.65,68.16-20.15C231.15,153.16,244,133.45,244,112S231.15,70.89,207.83,56.53Zm-134.44,97a21,21,0,0,1,20.16-9.35c10.36,1.39,16.54,9.43,19.72,19.13A135.3,135.3,0,0,1,73.39,153.56Zm64.87,10.14a61.84,61.84,0,0,0-10.76-24.82,46.08,46.08,0,0,0-30.75-18.46c-18-2.41-34.52,5.89-44.1,21C42.2,133,36,122.84,36,112c0-28.19,42.13-52,92-52s92,23.82,92,52C220,138.26,183.51,160.71,138.26,163.7Z"/></svg>`,
@@ -1011,6 +1013,7 @@ class UniCanvasWidget {
     this.shapeDraft = null;
     this.transformDraft = null;
     this.shapeComposite = "source-over";
+    this.shapeType = "square";
     this.lassoPoints = [];
     this.hoverPoint = null;
     this.hoverPointerType = "mouse";
@@ -1082,7 +1085,7 @@ class UniCanvasWidget {
       this.settings.preset_runtime_settings = {};
     }
     this.sam = {
-      model: "sam2_large",
+      model: "sam3",
       mode: "add",
       invert: false,
       points: [],
@@ -1178,12 +1181,12 @@ class UniCanvasWidget {
     this.samModelSelect.value = this.sam.model;
     this.samModelSelect.addEventListener("change", () => {
       this.sam.model = this.samModelSelect.value;
-      this.clearSamMask(false);
-      this.renderSamPanel();
+      this.clearSamMask();
     });
-    // Left click keeps (green), right click removes (red): no mode buttons, just point undo/redo.
-    this.samUndoBtn = this._button(UI_ICONS.undo, "vnccs-uc-icon", () => this.undoSamPoint(), "Undo last point (Ctrl+Z)");
-    this.samRedoBtn = this._button(UI_ICONS.redo, "vnccs-uc-icon", () => this.redoSamPoint(), "Redo point (Ctrl+Y)");
+    this.samAddBtn = this._button("+ Add", "vnccs-uc-btn vnccs-uc-sam-mode", () => this.setSamPointMode("add"), "Green point: keep this area");
+    this.samSubtractBtn = this._button("− Subtract", "vnccs-uc-btn vnccs-uc-sam-mode", () => this.setSamPointMode("subtract"), "Red point: remove this area");
+    this.samUndoBtn = this._button(UI_ICONS.undo, "vnccs-uc-icon", () => this.undo(), "Undo segmentation or point (Ctrl+Z)");
+    this.samRedoBtn = this._button(UI_ICONS.redo, "vnccs-uc-icon", () => this.redo(), "Redo segmentation or point (Ctrl+Y)");
     this.samInvertBtn = this._button("Invert", "vnccs-uc-btn", () => this.toggleSamInvert(), "Invert mask");
     this.samPointsLabel = document.createElement("span");
     this.samPointsLabel.className = "vnccs-uc-sam-points";
@@ -1192,7 +1195,12 @@ class UniCanvasWidget {
     this.samClearBtn = this._button(STAGING_ICONS.discard, "vnccs-uc-icon danger", () => this.clearSamPrompt(), "Clear SAM points and mask");
     this.samStatus = document.createElement("span");
     this.samStatus.className = "vnccs-uc-sam-status";
-    this.samPanel.append(this.samClearBtn, this.samModelSelect, this.samUndoBtn, this.samRedoBtn, this.samInvertBtn, this.samPointsLabel, this.samSegmentBtn, this.samApplyBtn, this.samStatus);
+    this.samStatus.setAttribute("role", "status");
+    this.samStatus.setAttribute("aria-live", "polite");
+    const samActions = document.createElement("div");
+    samActions.className = "vnccs-uc-sam-actions";
+    samActions.append(this.samClearBtn, this.samModelSelect, this.samAddBtn, this.samSubtractBtn, this.samUndoBtn, this.samRedoBtn, this.samInvertBtn, this.samPointsLabel, this.samSegmentBtn, this.samApplyBtn);
+    this.samPanel.append(samActions, this.samStatus);
     this.stageWrap.appendChild(this.samPanel);
     this.buildPromptGuideOverlay();
 
@@ -1341,7 +1349,10 @@ class UniCanvasWidget {
       <div class="vnccs-uc-h3-panel" data-edit-steps-panel style="display:none">
         <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field"><span class="vnccs-uc-field-head"><span>Steps</span><span class="vnccs-uc-help" data-edit-steps-help data-tip hidden>?</span></span><input class="vnccs-uc-input" data-setting="steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (Krea2 Edit: 1, others: up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
       </div>
-      <button class="vnccs-uc-btn vnccs-uc-refs-wide" type="button" data-action="edit-refs" data-standalone-refs data-config-override hidden>Reference Images</button>
+      <div class="vnccs-uc-refs-row" data-standalone-refs-row data-config-override hidden>
+        <button class="vnccs-uc-btn vnccs-uc-refs-wide" type="button" data-action="edit-refs" data-standalone-refs>Reference Images</button>
+        <label class="vnccs-uc-ref-layers" title="Use all visible image layers inside the selection box as the first reference image"><input type="checkbox" data-setting="edit_use_layers_as_reference" data-use-layers-reference checked>Use Layers</label>
+      </div>
       <div class="vnccs-uc-generation-grid">
         <label class="vnccs-uc-field" data-generic-steps>Steps<input class="vnccs-uc-input" data-setting="steps" type="number"></label>
         <label class="vnccs-uc-field">Sampler<select class="vnccs-uc-select" data-setting="sampler_name"></select></label>
@@ -1396,9 +1407,8 @@ class UniCanvasWidget {
       ["move", "Move layer"],
       ["brush", "Brush"],
       ["eraser", "Eraser"],
-      ["mask", "Mask brush"],
       ["sam", "SAM object mask"],
-      ["rect", "Rectangle"],
+      ["rect", "Shape"],
       ["lasso", "Lasso"],
       ["resize", "Resize layer"],
       ["bbox", "Generation bbox"],
@@ -1690,6 +1700,7 @@ class UniCanvasWidget {
     if (this.stopBtn?.contains(event.target)) return false;
     if (event.target === this.canvas) {
       if (event.type === "pointerdown") return !(event.button === 1 || (event.button === 0 && (this.tool === "pan" || (this.tool === "move" && event.altKey))));
+      if (event.type === "pointermove" && !this.isPointerDown) return false;
       if (["pointermove", "pointerup"].includes(event.type)) return !["pan", "zoom-drag"].includes(this.pointerMode);
       return !["wheel", "keydown"].includes(event.type);
     }
@@ -2087,6 +2098,7 @@ class UniCanvasWidget {
   }
 
   setTool(tool, force = false) {
+    if (tool === "mask") tool = "brush";
     if (!force && this.editingBlocked && (this._canvasOperation || tool === "pose")) return;
     if (this.tool === tool && !force) return;
     const previousTool = this.tool;
@@ -2314,9 +2326,10 @@ class UniCanvasWidget {
   }
 
   getToolSettingControls(tool = this.tool) {
-    if (tool === "brush") return ["brushSize", "fg", "opacity"];
+    if (tool === "brush") return this.activeLayer?.type === "mask" ? ["brushSize", "opacity"] : ["brushSize", "fg", "opacity"];
     if (tool === "eraser" || tool === "mask") return ["brushSize", "opacity"];
-    if (tool === "rect" || tool === "lasso") return ["fg", "opacity"];
+    if (tool === "rect") return this.activeLayer?.type === "mask" ? ["shapeType", "opacity"] : ["shapeType", "fg", "opacity"];
+    if (tool === "lasso") return ["fg", "opacity"];
     if (tool === "resize") return ["resizeMode", "keepAspect", "transformNumeric", "transformActions"];
     return [];
   }
@@ -2336,10 +2349,15 @@ class UniCanvasWidget {
       if (this.toolSettingsSection) this.toolSettingsSection.hidden = true;
       return;
     }
-    const titleMap = { brush: "Brush", eraser: "Eraser", mask: "Mask Brush", rect: "Rectangle", lasso: "Lasso", resize: "Transform" };
+    const titleMap = { brush: "Brush", eraser: "Eraser", rect: "Shape", lasso: "Lasso", resize: "Transform" };
     const title = titleMap[this.tool] || this.tool;
     if (this.toolSettingsTitle) this.toolSettingsTitle.textContent = `${title} Settings`;
     const html = [];
+    if (controls.includes("shapeType")) {
+      const options = [["square", "Square"], ["circle", "Circle"], ["triangle", "Triangle"]]
+        .map(([value, label]) => `<option value="${value}" ${this.shapeType === value ? "selected" : ""}>${label}</option>`).join("");
+      html.push(`<label class="vnccs-uc-tool-setting"><span class="vnccs-uc-tool-setting-label">Shape</span><select class="vnccs-uc-select" data-control="shapeType">${options}</select></label>`);
+    }
     if (controls.includes("brushSize")) {
       html.push(`<label class="vnccs-uc-tool-setting"><span class="vnccs-uc-tool-setting-label">Size</span><input class="vnccs-uc-range" type="range" min="1" max="220" value="${this.brushSize}" data-control="brushSize"></label>`);
     }
@@ -2383,42 +2401,81 @@ class UniCanvasWidget {
 
   renderSamPanel() {
     if (!this.samPanel) return;
+    const layer = this.activeLayer;
+    const issue = !layer || layer.type !== "raster" ? "Select a raster layer in Layers to place SAM points."
+      : layer.locked ? "Unlock the selected raster layer to place SAM points." : "";
     const fgCount = this.sam.points.filter((point) => point.label > 0).length;
     const bgCount = this.sam.points.length - fgCount;
     // Runs on every stage render while SAM is active: rebuild the counts only when they change.
     const pointsHTML = `<span class="vnccs-uc-sam-dot"></span>${fgCount} <span class="vnccs-uc-sam-dot bg"></span>${bgCount}`;
     if (this.samPointsLabel.innerHTML !== pointsHTML) this.samPointsLabel.innerHTML = pointsHTML;
     this.samModelSelect.value = this.sam.model;
-    this.samUndoBtn.disabled = this.sam.busy || !this.sam.points.length;
-    this.samRedoBtn.disabled = this.sam.busy || !this.sam.redoPoints.length;
+    this.samUndoBtn.disabled = this.sam.busy || (!this.sam.points.length && !this.sam.maskCanvas && !this.undoStack.length);
+    this.samRedoBtn.disabled = this.sam.busy || (!this.sam.redoPoints.length && !this.sam.redoMask && !this.redoStack.length);
+    for (const [button, mode] of [[this.samAddBtn, "add"], [this.samSubtractBtn, "subtract"]]) {
+      if (!button) continue;
+      button.disabled = this.sam.busy || Boolean(issue);
+      const selected = (this.sam.mode || "add") === mode;
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    }
     this.samInvertBtn.classList.toggle("active", this.sam.invert);
-    this.samSegmentBtn.disabled = this.sam.busy || !this.sam.points.length;
+    this.samSegmentBtn.disabled = this.sam.busy || Boolean(issue) || !this.sam.points.length;
     this.samApplyBtn.disabled = this.sam.busy || !this.sam.maskCanvas;
-    this.samClearBtn.disabled = this.sam.busy || (!this.sam.points.length && !this.sam.maskCanvas);
-    this.samStatus.textContent = this.sam.busy ? (this.sam.status || "Segmenting...") : (this.sam.status || "");
+    this.samClearBtn.disabled = this.sam.busy || (!this.sam.points.length && !this.sam.maskCanvas && !this.sam.redoPoints.length && !this.sam.redoMask);
+    this.samStatus.textContent = issue || this.sam.status || "Add: green keep points. Subtract: red remove points. Click the selected image, then Segment.";
+    this.samStatus.classList?.toggle("error", Boolean(issue || this.sam.error));
+    this.updateHistoryButtons();
+  }
+
+  setSamPointMode(mode) {
+    if (this.editingBlocked || this.sam.busy) return;
+    this.sam.mode = mode;
+    this.setSamStatus(mode === "subtract" ? "Click the image to add red remove points." : "Click the image to add green keep points.");
   }
 
   undoSamPoint() {
-    if (this.sam.busy || !this.sam.points.length) return false;
+    if (this.editingBlocked || this.sam.busy) return false;
+    if (this.sam.maskCanvas) {
+      const mask = { maskCanvas: this.sam.maskCanvas, crop: this.sam.crop, layerId: this.sam.layerId, layerState: this.sam.layerState, invert: this.sam.invert };
+      this.clearSamMask(false);
+      this.sam.redoMask = mask;
+      this.setSamStatus("Mask preview undone; points kept.");
+      this.updateToolPreviewOverlay();
+      return true;
+    }
+    if (!this.sam.points.length) return false;
     this.sam.redoPoints.push(this.sam.points.pop());
     this.clearSamMask(false);
-    this.sam.status = `${this.sam.points.length} point${this.sam.points.length === 1 ? "" : "s"}`;
-    this.renderSamPanel();
+    this.setSamStatus(`${this.sam.points.length} point${this.sam.points.length === 1 ? "" : "s"}`);
     this.requestRender();
     return true;
   }
 
   redoSamPoint() {
-    if (this.sam.busy || !this.sam.redoPoints.length) return false;
+    if (this.editingBlocked || this.sam.busy) return false;
+    if (this.sam.redoMask) {
+      const mask = this.sam.redoMask;
+      this.sam.redoMask = null;
+      if (!this.isLayerEditStateCurrent(mask.layerState)) {
+        this.setSamStatus("SAM input changed; segment again", true);
+        return true;
+      }
+      Object.assign(this.sam, mask);
+      this.setSamStatus("Mask preview restored. Highlighted area is kept; Apply removes the rest.");
+      this.updateToolPreviewOverlay();
+      return true;
+    }
+    if (!this.sam.redoPoints.length) return false;
     this.sam.points.push(this.sam.redoPoints.pop());
     this.clearSamMask(false);
-    this.sam.status = `${this.sam.points.length} point${this.sam.points.length === 1 ? "" : "s"}`;
-    this.renderSamPanel();
+    this.setSamStatus(`${this.sam.points.length} point${this.sam.points.length === 1 ? "" : "s"}`);
     this.requestRender();
     return true;
   }
 
   toggleSamInvert() {
+    if (this.editingBlocked || this.sam.busy) return;
     this.sam.invert = !this.sam.invert;
     this.renderSamPanel();
     this.updateToolPreviewOverlay();
@@ -2591,6 +2648,11 @@ class UniCanvasWidget {
 
     this.toolSettings.addEventListener("input", (e) => {
       const target = e.target;
+      if (target instanceof HTMLSelectElement && target.dataset.control === "shapeType") {
+        this.shapeType = target.value;
+        this.requestRender();
+        return;
+      }
       if (!(target instanceof HTMLInputElement)) return;
       if (target.dataset.control === "brushSize") this.brushSize = Number(target.value);
       if (target.dataset.control === "fg") this.fg = target.value;
@@ -2666,7 +2728,7 @@ class UniCanvasWidget {
       }
       const key = target?.dataset?.setting;
       if (!key) return;
-      this.settings[key] = NUMERIC_SETTINGS.has(key) ? this.parseNumericInput(target, this.settings[key]) : target.value;
+      this.settings[key] = target.type === "checkbox" ? target.checked : NUMERIC_SETTINGS.has(key) ? this.parseNumericInput(target, this.settings[key]) : target.value;
       if (key === "batch_size") this.settings[key] = Math.max(1, Math.min(99, Math.round(Number(this.settings[key]) || 1)));
       if (target instanceof HTMLTextAreaElement) this.resizeTextareaToContent(target);
       if (key === "generation_mode") this.applyGenerationModeDefaults(target.value);
@@ -2678,6 +2740,7 @@ class UniCanvasWidget {
       if (key === "inference_scale") this.syncInferenceControls(target);
       if (key in MODEL_MEMORY_ASSET_FIELDS || key === "clip_type" || key === "gguf_arch") this.rememberModelChoice();
       this.syncSettingsToWidget();
+      if (key === "edit_use_layers_as_reference") this._vnccsRefsRender?.();
       if (["generation_mode", "model_loader", "ckpt_name", "diffusion_model_name", "gguf_model_name"].includes(key)) {
         void checkModelDependencies(this);
       }
@@ -3157,8 +3220,10 @@ class UniCanvasWidget {
       input.dataset.setting = module.key === "minimax_h3" ? "minimax_h3_steps" : "steps";
       input.value = String(this.settings[input.dataset.setting] ?? 24);
     }
-    const refs = this.container.querySelector("[data-standalone-refs]");
+    const refs = this.container.querySelector("[data-standalone-refs-row]");
     if (refs) refs.hidden = !module.isEditModel;
+    const useLayers = this.container.querySelector("[data-use-layers-reference]");
+    if (useLayers) useLayers.checked = this.settings.edit_use_layers_as_reference !== false;
     if (this._editRefsFamily !== module.key) this.closeEditReferenceImages();
     this._editRefsFamily = module.key;
   }
@@ -3719,11 +3784,16 @@ class UniCanvasWidget {
     if (this.sam.maskCanvas && this.sam.crop) {
       const maskCanvas = this.getSamMaskCanvasForCurrentMode();
       ctx.save();
-      ctx.globalAlpha = 0.72;
-      ctx.drawImage(maskCanvas, this.origin.x + this.sam.crop.x, this.origin.y + this.sam.crop.y, this.sam.crop.width, this.sam.crop.height);
-      ctx.globalCompositeOperation = "source-in";
-      ctx.fillStyle = MASK_OVERLAY_COLOR;
-      ctx.fillRect(this.origin.x + this.sam.crop.x, this.origin.y + this.sam.crop.y, this.sam.crop.width, this.sam.crop.height);
+      ctx.translate(this.origin.x + this.sam.crop.x, this.origin.y + this.sam.crop.y);
+      const preview = this.getSamMaskPreview(maskCanvas);
+      ctx.drawImage(preview.canvas, 0, 0);
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "#000";
+      ctx.lineWidth = 4 / this.view.scale;
+      ctx.stroke(preview.outline);
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 2 / this.view.scale;
+      ctx.stroke(preview.outline);
       ctx.restore();
     }
     const radius = Math.max(4, 7 / Math.max(this.view.scale, 0.001));
@@ -3738,6 +3808,31 @@ class UniCanvasWidget {
       ctx.stroke();
       ctx.restore();
     }
+  }
+
+  getSamMaskPreview(maskCanvas) {
+    if (this._samMaskPreview?.source === this.sam.maskCanvas && this._samMaskPreview.invert === this.sam.invert) return this._samMaskPreview;
+    const canvas = document.createElement("canvas");
+    canvas.width = maskCanvas.width;
+    canvas.height = maskCanvas.height;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(maskCanvas, 0, 0);
+    const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const outline = new Path2D();
+    const inside = (x, y) => x >= 0 && y >= 0 && x < canvas.width && y < canvas.height && data[(y * canvas.width + x) * 4 + 3] >= 128;
+    // Cache the exact alpha boundary once; both strokes keep their screen width at any zoom.
+    for (let y = 0; y < canvas.height; y++) for (let x = 0; x < canvas.width; x++) {
+      if (!inside(x, y)) continue;
+      if (!inside(x, y - 1)) { outline.moveTo(x, y); outline.lineTo(x + 1, y); }
+      if (!inside(x + 1, y)) { outline.moveTo(x + 1, y); outline.lineTo(x + 1, y + 1); }
+      if (!inside(x, y + 1)) { outline.moveTo(x + 1, y + 1); outline.lineTo(x, y + 1); }
+      if (!inside(x - 1, y)) { outline.moveTo(x, y + 1); outline.lineTo(x, y); }
+    }
+    ctx.globalCompositeOperation = "source-in";
+    ctx.fillStyle = MASK_OVERLAY_COLOR;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    this._samMaskPreview = { source: this.sam.maskCanvas, invert: this.sam.invert, canvas, outline };
+    return this._samMaskPreview;
   }
 
   getSamMaskCanvasForCurrentMode() {
@@ -3833,7 +3928,7 @@ class UniCanvasWidget {
   }
 
   onPointerHover(e) {
-    if (this.editingBlocked) return;
+    if (this._disposed || this._isRestoring || this._canvasOperation || (this.isPointerDown && this.editingBlocked && !["pan", "zoom-drag"].includes(this.pointerMode))) return;
     this.hoverPointerType = e.pointerType || "mouse";
     this.hoverPoint = this.worldFromEvent(e);
     this.updateContextCursor(this.hoverPoint);
@@ -3841,7 +3936,7 @@ class UniCanvasWidget {
   }
 
   onPointerLeave(e) {
-    if (this.editingBlocked) return;
+    if (this._disposed || this._isRestoring || this._canvasOperation) return;
     if (this.isPointerDown) return;
     this.hoverPointerType = e.pointerType || "mouse";
     this.hoverPoint = null;
@@ -3866,7 +3961,7 @@ class UniCanvasWidget {
       }
       if (this.tool === "bbox") return;
     }
-    if (this.activeLayer?.type === "pose" && e.button === 0 && !["pose", "bbox", "pan", "move"].includes(this.tool)) {
+    if (this.activeLayer?.type === "pose" && e.button === 0 && !["pose", "bbox", "pan", "move", "sam"].includes(this.tool)) {
       this.setStatus("Use Pose Studio to edit this live layer, or select a raster layer for pixel tools.", true);
       return;
     }
@@ -3975,7 +4070,7 @@ class UniCanvasWidget {
   onPointerMove(e) {
     if (this._disposed || this._isRestoring) return;
     if (this.isPointerDown && e.pointerId !== this.dragStart?.pointerId) return;
-    if (this._canvasOperation || (this.editingBlocked && !["pan", "zoom-drag"].includes(this.pointerMode))) return;
+    if (this._canvasOperation || (this.isPointerDown && this.editingBlocked && !["pan", "zoom-drag"].includes(this.pointerMode))) return;
     if (this.panorama && this.isPointerDown && this.pointerMode === "panorama") {
       e.preventDefault(); e.stopPropagation();
       const point = this.canvasPointFromEvent(e), start = this.dragStart;
@@ -3993,6 +4088,10 @@ class UniCanvasWidget {
     this.hoverPointerType = e.pointerType || "mouse";
     this.hoverPoint = point;
     this.updateContextCursor(point);
+    if (this.editingBlocked && !["pan", "zoom-drag"].includes(this.pointerMode)) {
+      this.updateToolPreviewOverlay();
+      return;
+    }
     if (!this.isPointerDown || !this.lastPoint) {
       this.updateToolPreviewOverlay();
       return;
@@ -4125,10 +4224,11 @@ class UniCanvasWidget {
   }
 
   getRectToolRect(start, current, event) {
+    const keepAspect = event.shiftKey || ["square", "circle"].includes(this.shapeType);
     if (event.altKey) {
       const dx = Math.abs(current.x - start.x);
       const dy = Math.abs(current.y - start.y);
-      const size = event.shiftKey ? Math.max(dx, dy) : null;
+      const size = keepAspect ? Math.max(dx, dy) : null;
       const width = Math.max(1, (size ?? dx) * 2);
       const height = Math.max(1, (size ?? dy) * 2);
       return {
@@ -4138,7 +4238,7 @@ class UniCanvasWidget {
         height: Math.round(height),
       };
     }
-    if (!event.shiftKey) return this.rectFromPoints(start, current, 1);
+    if (!keepAspect) return this.rectFromPoints(start, current, 1);
     const dx = current.x - start.x;
     const dy = current.y - start.y;
     const size = Math.max(1, Math.max(Math.abs(dx), Math.abs(dy)));
@@ -4148,6 +4248,20 @@ class UniCanvasWidget {
       width: Math.round(size),
       height: Math.round(size),
     };
+  }
+
+  shapePath(ctx, rect) {
+    ctx.beginPath();
+    if (this.shapeType === "circle") {
+      ctx.ellipse(rect.x + rect.width / 2, rect.y + rect.height / 2, rect.width / 2, rect.height / 2, 0, 0, Math.PI * 2);
+    } else if (this.shapeType === "triangle") {
+      ctx.moveTo(rect.x + rect.width / 2, rect.y);
+      ctx.lineTo(rect.x + rect.width, rect.y + rect.height);
+      ctx.lineTo(rect.x, rect.y + rect.height);
+      ctx.closePath();
+    } else {
+      ctx.rect(rect.x, rect.y, rect.width, rect.height);
+    }
   }
 
   commitRectShape() {
@@ -4162,7 +4276,9 @@ class UniCanvasWidget {
     ctx.globalAlpha = this.opacity;
     ctx.globalCompositeOperation = this.shapeComposite;
     ctx.fillStyle = layer.type === "mask" ? "#fff" : this.fg;
-    ctx.fillRect(rect.x - this.origin.x, rect.y - this.origin.y, rect.width, rect.height);
+    ctx.translate(-this.origin.x, -this.origin.y);
+    this.shapePath(ctx, rect);
+    ctx.fill();
     ctx.restore();
     this.invalidateLayerCaches(layer);
   }
@@ -4231,9 +4347,10 @@ class UniCanvasWidget {
   }
 
   addSamPoint(point, event) {
+    if (this.editingBlocked || this.sam.busy) return;
     const layer = this.activeLayer;
     if (!layer || layer.type !== "raster") {
-      this.setSamStatus("Select a raster layer", true);
+      this.setSamStatus("Select a raster layer in Layers to place SAM points.", true);
       return;
     }
     if (layer.locked) {
@@ -4245,23 +4362,25 @@ class UniCanvasWidget {
       this.setSamStatus("Click inside selected layer", true);
       return;
     }
-    const label = event.button === 2 || event.altKey || event.ctrlKey || event.metaKey ? 0 : 1;
+    const label = this.sam.mode === "subtract" || event.button === 2 || event.altKey || event.ctrlKey || event.metaKey ? 0 : 1;
     this.sam.points.push({ x: point.x, y: point.y, label });
     this.sam.redoPoints = [];
     this.clearSamMask(false);
-    this.sam.status = label > 0 ? "Foreground point" : "Background point";
+    this.setSamStatus(label > 0 ? "Green keep point added. Segment to preview the mask." : "Red remove point added. Segment to preview the mask.");
     this.requestRender();
   }
 
   setSamStatus(text, isError = false) {
     this.sam.status = text;
+    this.sam.error = isError;
     this.renderSamPanel();
-    if (isError) this.updateGenerationProgress({ message: text, progress: 1, stage: "error" }, true);
   }
 
   clearSamMask(update = true) {
     this.sam.requestRevision = (this.sam.requestRevision || 0) + 1;
     this.sam.layerState = null;
+    this.sam.redoMask = null;
+    this._samMaskPreview = null;
     this.sam.maskCanvas = null;
     this.sam.crop = null;
     this.sam.layerId = null;
@@ -4276,13 +4395,14 @@ class UniCanvasWidget {
     this.sam.redoPoints = [];
     this.clearSamMask(false);
     this.sam.status = "SAM cleared";
+    this.sam.error = false;
     this.renderSamPanel();
     this.requestRender();
     this.setStatus("SAM cleared");
   }
 
   async segmentSamMask() {
-    if (this.sam.busy) return;
+    if (this.editingBlocked || this.sam.busy) return;
     const layer = this.activeLayer;
     if (!layer || layer.type !== "raster") {
       this.setSamStatus("Select a raster layer", true);
@@ -4318,6 +4438,7 @@ class UniCanvasWidget {
     const layerState = this.captureLayerEditState(layer);
     const source = this.cloneCanvasCrop(layer.canvas, crop);
     this.sam.busy = true;
+    this.sam.error = false;
     this.sam.status = "Segmenting...";
     this.renderSamPanel();
     this.setStatus("SAM segmenting...");
@@ -4356,7 +4477,7 @@ class UniCanvasWidget {
       this.sam.crop = { ...crop };
       this.sam.layerId = layer.id;
       this.sam.layerState = layerState;
-      this.sam.status = data.note ? "Mask ready (SAM2 fallback)" : "Mask ready";
+      this.sam.status = `${data.note ? "Mask ready (SAM2 fallback)." : "Mask ready."} Highlighted area is kept; Apply removes the rest.`;
       this.setStatus(data.note ? `SAM mask ready - ${data.note}` : "SAM mask ready", Boolean(data.note));
     } catch (err) {
       this.sam.status = `SAM failed: ${err.message || err}`;
@@ -4370,6 +4491,7 @@ class UniCanvasWidget {
   }
 
   applySamMask() {
+    if (this.editingBlocked || this.sam.busy) return;
     if (!this.isLayerEditStateCurrent(this.sam.layerState)) {
       this.clearSamMask(false);
       this.setSamStatus("SAM input changed; segment again", true);
@@ -4405,7 +4527,11 @@ class UniCanvasWidget {
       after: this.createLayerPixelSnapshot(layer),
     });
     this.clearSamMask(false);
+    // Applied pixels now own Undo; transient prompts must not intercept the cut's history.
+    this.sam.points = [];
+    this.sam.redoPoints = [];
     this.sam.status = "Mask applied";
+    this.sam.error = false;
     this.renderSamPanel();
     this.refreshLayerRow(layer.id);
     this.requestRender();
@@ -4552,6 +4678,7 @@ class UniCanvasWidget {
       size: { ...this.size },
       bbox: { ...this.bbox },
       tool: this.tool,
+      shapeType: this.shapeType,
       brushSize: this.brushSize,
       opacity: this.opacity,
       fg: this.fg,
@@ -4578,6 +4705,7 @@ class UniCanvasWidget {
     this.size = { ...snapshot.size };
     this.bbox = { ...snapshot.bbox };
     this.tool = snapshot.tool || this.tool;
+    this.shapeType = snapshot.shapeType || this.shapeType;
     this.brushSize = Number.isFinite(snapshot.brushSize) ? snapshot.brushSize : this.brushSize;
     this.opacity = Number.isFinite(snapshot.opacity) ? snapshot.opacity : this.opacity;
     this.fg = snapshot.fg || this.fg;
@@ -4627,8 +4755,9 @@ class UniCanvasWidget {
 
   undo() {
     if (this.editingBlocked) return;
+    if (this.tool === "sam" && this.sam.busy) return;
     if (this.tool === "sam" && this.undoSamPoint()) {
-      this.setStatus("SAM point undo");
+      this.setStatus("SAM undo");
       return;
     }
     if (this.tool === "pose" && this.poseEditSession) {
@@ -4661,8 +4790,9 @@ class UniCanvasWidget {
 
   redo() {
     if (this.editingBlocked) return;
+    if (this.tool === "sam" && this.sam.busy) return;
     if (this.tool === "sam" && this.redoSamPoint()) {
-      this.setStatus("SAM point redo");
+      this.setStatus("SAM redo");
       return;
     }
     if (this.tool === "pose" && this.poseEditSession) {
@@ -4749,6 +4879,11 @@ class UniCanvasWidget {
 
   updateHistoryButtons() {
     trimPanoramaHistory(this.undoStack, this.redoStack);
+    if (this.tool === "sam" && this.sam) {
+      if (this.undoBtn) this.undoBtn.disabled = this.sam.busy || (!this.sam.maskCanvas && !this.sam.points.length && !this.undoStack.length);
+      if (this.redoBtn) this.redoBtn.disabled = this.sam.busy || (!this.sam.redoMask && !this.sam.redoPoints.length && !this.redoStack.length);
+      return;
+    }
     if (this.tool === "pose" && this.poseEditSession && this.poseEditor) {
       // The buttons drive Pose Studio's history during a pose edit; they stay enabled because
       // mannequin edits are recorded inside Pose Studio without notifying the canvas.
@@ -6187,9 +6322,9 @@ class UniCanvasWidget {
     if (!this.shapeDraft) return;
     ctx.save();
     ctx.globalAlpha = this.opacity;
-    ctx.fillStyle = this.shapeComposite === "destination-out" ? "rgba(255,255,255,.75)" : this.fg;
-    ctx.globalCompositeOperation = this.shapeComposite === "destination-out" ? "source-over" : "source-over";
-    ctx.fillRect(this.shapeDraft.x, this.shapeDraft.y, this.shapeDraft.width, this.shapeDraft.height);
+    ctx.fillStyle = this.activeLayer?.type === "mask" ? MASK_OVERLAY_COLOR : this.shapeComposite === "destination-out" ? "rgba(255,255,255,.75)" : this.fg;
+    this.shapePath(ctx, this.shapeDraft);
+    ctx.fill();
     ctx.restore();
   }
 
@@ -6218,7 +6353,7 @@ class UniCanvasWidget {
     const point = this.hoverPoint;
     ctx.save();
     ctx.globalAlpha = this.isPointerDown ? 0 : 0.22;
-    ctx.fillStyle = this.tool === "eraser" ? "rgba(255,71,87,.65)" : this.tool === "mask" ? "rgba(255,255,255,.65)" : this.fg;
+    ctx.fillStyle = this.tool === "eraser" ? "rgba(255,71,87,.65)" : this.tool === "mask" || this.activeLayer?.type === "mask" ? "#ff8fa3" : this.fg;
     ctx.beginPath();
     ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
     ctx.fill();
@@ -6324,7 +6459,7 @@ class UniCanvasWidget {
 
   createLayerRow(layer) {
     const row = document.createElement("div");
-    row.className = `vnccs-uc-layer ${layer.id === this.activeLayerId ? "active" : ""} ${layer.locked ? "locked" : ""}`;
+    row.className = `vnccs-uc-layer ${layer.id === this.activeLayerId ? "active" : ""} ${layer.locked ? "locked" : ""} ${layer.visible ? "" : "hidden-layer"}`;
     row.draggable = true;
     row.dataset.layerId = layer.id;
     row.dataset.layerType = layer.type;
@@ -6422,6 +6557,7 @@ class UniCanvasWidget {
     if (!row || !layer) return;
     row.classList.toggle("active", layer.id === this.activeLayerId);
     row.classList.toggle("locked", !!layer.locked);
+    row.classList.toggle("hidden-layer", !layer.visible);
     const thumb = row.querySelector(".vnccs-uc-thumb");
     if (thumb instanceof HTMLCanvasElement) {
       thumb.title = layer.visible ? "Hide layer" : "Show layer";
@@ -6451,11 +6587,14 @@ class UniCanvasWidget {
     const ctx = canvas.getContext("2d");
     const size = canvas.width;
     ctx.clearRect(0, 0, size, size);
+    ctx.save();
+    ctx.filter = layer.visible ? "none" : "grayscale(1)";
     this.drawCheckerboard(ctx, size, 5);
     ctx.fillStyle = layer.type === "mask" ? "rgba(255,143,163,.28)" : "rgba(255,255,255,.12)";
     ctx.beginPath();
     ctx.arc(size / 2, size / 2, size * 0.16, 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
     if (!layer.visible) this.drawHiddenSlash(ctx, size);
   }
 
@@ -6494,6 +6633,10 @@ class UniCanvasWidget {
     }
     this.poseEditor?.commit();
     this.activeLayerId = layerId;
+    if (this.tool === "sam" && this.sam.error) {
+      this.sam.status = "";
+      this.sam.error = false;
+    }
     this.syncPoseToolToActiveLayer();
     this.updateLayerListActiveState();
     this.syncActiveLayerControls();
@@ -6553,7 +6696,10 @@ class UniCanvasWidget {
     const size = canvas.width;
     ctx.clearRect(0, 0, size, size);
     const base = this.getLayerThumbnailCanvas(layer, size);
+    ctx.save();
+    ctx.filter = layer.visible ? "none" : "grayscale(1)";
     ctx.drawImage(base, 0, 0);
+    ctx.restore();
     if (!layer.visible) this.drawHiddenSlash(ctx, size);
   }
 
@@ -6600,12 +6746,15 @@ class UniCanvasWidget {
   }
 
   drawHiddenSlash(ctx, size) {
-    ctx.strokeStyle = "rgba(255,255,255,.68)";
-    ctx.lineWidth = 4;
+    ctx.save();
+    ctx.strokeStyle = "#ff4757";
+    ctx.lineWidth = 6;
+    ctx.lineCap = "round";
     ctx.beginPath();
-    ctx.moveTo(size * 0.22, size * 0.78);
-    ctx.lineTo(size * 0.78, size * 0.22);
+    ctx.moveTo(size * 0.16, size * 0.84);
+    ctx.lineTo(size * 0.84, size * 0.16);
     ctx.stroke();
+    ctx.restore();
   }
 
   drawCheckerboard(ctx, size, cell = 5) {
@@ -7874,7 +8023,9 @@ class UniCanvasWidget {
     this.container.querySelectorAll("[data-setting]").forEach((el) => {
       const key = el.dataset.setting;
       if (!(key in this.settings)) return;
-      if (el instanceof HTMLInputElement && NUMERIC_SETTINGS.has(key)) {
+      if (el instanceof HTMLInputElement && el.type === "checkbox") {
+        el.checked = this.settings[key] !== false;
+      } else if (el instanceof HTMLInputElement && NUMERIC_SETTINGS.has(key)) {
         el.value = this.formatSettingNumber(this.settings[key], key === "inference_scale" ? 3 : 2);
       } else if (el instanceof HTMLSelectElement) {
         if (key !== "scheduler") this.ensureSelectOption(el, this.settings[key]);
@@ -8993,6 +9144,7 @@ class UniCanvasWidget {
   closeEditReferenceImages() {
     this._vnccsRefsPopover?.remove();
     this._vnccsRefsPopover = null;
+    this._vnccsRefsRender = null;
     if (this._vnccsRefsOutside) document.removeEventListener("pointerdown", this._vnccsRefsOutside, true);
     this._vnccsRefsOutside = null;
   }
@@ -9033,29 +9185,11 @@ class UniCanvasWidget {
     fileInput.multiple = true;
     fileInput.className = "vnccs-uc-file";
     panel.append(head, hint, grid, fileInput);
-    const useLayers = this.standalone ? this._button("Use Layers as 1st reference image", "vnccs-uc-btn", () => {
-      this.settings.edit_use_layers_as_reference = this.settings.edit_use_layers_as_reference === false;
-      this.syncSettingsToWidget();
-      render();
-    }) : null;
-    if (useLayers) {
-      useLayers.dataset.useLayersReference = "1";
-      useLayers.setAttribute("aria-label", "Use Layers as 1st reference image");
-      useLayers.innerHTML = '<span>Use Layers as 1st reference image</span><span class="vnccs-uc-reference-state" aria-hidden="true"></span><span class="vnccs-uc-toggle" aria-hidden="true"></span>';
-      useLayers.title = "Use all visible image layers inside the selection bbox as the first reference image";
-      panel.insertBefore(useLayers, grid);
-    }
     const render = () => {
       grid.innerHTML = "";
       const max = this.maxEditReferenceImages();
       const list = this.editReferenceImages();
       const layersFirst = this.settings.edit_use_layers_as_reference !== false;
-      useLayers?.setAttribute("aria-pressed", String(layersFirst));
-      useLayers?.classList.toggle("active", layersFirst);
-      if (useLayers) {
-        useLayers.querySelector(".vnccs-uc-toggle").classList.toggle("active", layersFirst);
-        useLayers.querySelector(".vnccs-uc-reference-state").textContent = layersFirst ? "On" : "Off";
-      }
       count.textContent = this.standalone
         ? `${list.length + Number(layersFirst)} / ${max + Number(layersFirst)}`
         : `${list.length} / ${max}`;
@@ -9093,6 +9227,7 @@ class UniCanvasWidget {
       }
       this.updateEditRefsBadge();
     };
+    this._vnccsRefsRender = render;
     render();
     fileInput.addEventListener("change", () => {
       const documentRevision = this._documentRevision;
@@ -9127,8 +9262,9 @@ class UniCanvasWidget {
       panel.style.top = "48px";
     }
     this._vnccsRefsPopover = panel;
+    const controls = anchor?.closest("[data-standalone-refs-row]") || anchor;
     this._vnccsRefsOutside = (event) => {
-      if (panel.contains(event.target) || anchor?.contains(event.target)) return;
+      if (panel.contains(event.target) || controls?.contains(event.target)) return;
       this.closeEditReferenceImages();
     };
     document.addEventListener("pointerdown", this._vnccsRefsOutside, true);

@@ -40,6 +40,7 @@ _PRESET_FOLDER_ALIASES = {
     "diffusion_models": ("diffusion_models", "unet"),
     "unet": ("unet", "diffusion_models"),
     "text_encoders": ("text_encoders", "clip"),
+    "unet_gguf": ("unet_gguf", "unet", "diffusion_models"),
 }
 
 
@@ -209,7 +210,8 @@ def _unicanvas_find_preset_asset(preset_id: str, asset_kind: str, asset_index: i
     raise ValueError(f"Preset '{preset_id}' not found")
 
 
-def _get_unicanvas_dependencies(generation_mode: str, preset_id: str = "", clip_name: str = "", vae_name: str = "") -> dict[str, Any]:
+def _get_unicanvas_dependencies(generation_mode: str, preset_id: str = "", clip_name: str = "", vae_name: str = "",
+                               model_loader: str = "", model_name: str = "") -> dict[str, Any]:
     from .models.registry import _get_unicanvas_model_module
 
     module = _get_unicanvas_model_module(generation_mode)
@@ -218,9 +220,31 @@ def _get_unicanvas_dependencies(generation_mode: str, preset_id: str = "", clip_
                   and (not preset_id or preset.get("id") == preset_id)]
     if preset_id and not candidates:
         raise ValueError("Preset does not belong to the selected model family")
+    model_roles = {"checkpoint", "diffusion_model", "gguf"}
     custom_installed = set()
+    custom_missing = {}
+    custom_replaced = set()
     if not preset_id:
-        for role, category, name in (("clip", "text_encoders", clip_name), ("vae", "vae", vae_name)):
+        model_name = _validate_model_name(model_name)
+        if candidates:
+            matching = [preset for preset in candidates if any(
+                asset.get("role") in model_roles
+                and os.path.basename(str(asset.get("local_path") or "")) == model_name.replace("\\", "/").rsplit("/", 1)[-1]
+                for asset in preset.get("assets") or [])]
+            candidates = matching or candidates[:1]
+        loader = model_loader or (candidates[0]["settings"].get("model_loader") if candidates else None) or "checkpoint"
+        categories_by_loader = {"checkpoint": ("checkpoint", "checkpoints"),
+                                "diffusion_model": ("diffusion_model", "diffusion_models"), "gguf": ("gguf", "unet_gguf")}
+        if loader not in categories_by_loader:
+            raise ValueError("Unsupported model loader for dependency check")
+        model_role, model_category = categories_by_loader[loader]
+        known = [asset for preset in candidates for asset in preset.get("assets") or []]
+        selected = [(model_role, model_category, model_name)]
+        if loader == "checkpoint":
+            custom_replaced.update({"clip", "vae"})
+        else:
+            selected.extend((("clip", "text_encoders", clip_name), ("vae", "vae", vae_name)))
+        for role, category, name in selected:
             if name:
                 name = _validate_model_name(name)
                 import folder_paths
@@ -234,33 +258,43 @@ def _get_unicanvas_dependencies(generation_mode: str, preset_id: str = "", clip_
                         path = found
                         break
                 if path and os.path.isfile(path):
-                    custom_installed.add(role)
+                    custom_installed.update(model_roles if role in model_roles else {role})
+                elif "/" in name.replace("\\", "/") or not any(
+                             asset.get("role") == role and _unicanvas_asset_rel_name(asset["local_path"]).rsplit("/", 1)[-1] == name
+                             for asset in known):
+                    custom_replaced.update(model_roles if role in model_roles else {role})
+                    custom_missing[role] = {
+                        "role": role, "name": name, "relative_name": name,
+                        "local_path": f"models/{category}/{name}", "download_key": f"custom:{role}:{name}",
+                        "installed": False, "required": True, "downloadable": False, "status": "missing",
+                        "description": f"Install this selected file manually in models/{category}.",
+                    }
     assets = {}
     for preset in candidates:
         entries = [(f"{preset['id']}:asset:{index}", asset, True)
-                   for index, asset in enumerate(preset.get("assets") or [])
-                   if asset.get("role") not in {"checkpoint", "diffusion_model", "gguf"}]
+                   for index, asset in enumerate(preset.get("assets") or [])]
         entries.extend((f"{preset['id']}:dependency:{index}", asset, bool(asset.get("required")))
                        for index, asset in enumerate(preset.get("dependencies") or []))
         turbo = preset.get("turbo", {}).get("asset")
         if turbo:
             entries.append((f"{preset['id']}:turbo", turbo, False))
         for key, asset, required in entries:
-            if asset.get("role") in custom_installed:
+            if asset.get("role") in custom_installed | custom_replaced:
                 continue
             identity = str(asset.get("local_path") or "").replace("\\", "/").lower()
             if identity not in assets:
                 enriched = _unicanvas_enrich_asset(asset, key)
                 enriched["required"] = required
                 assets[identity] = enriched
-    return {"generation_mode": module.key, "label": module.label, "assets": list(assets.values())}
+    return {"generation_mode": module.key, "label": module.label, "assets": list(assets.values()) + list(custom_missing.values())}
 
 
 def _download_unicanvas_dependencies(payload: dict[str, Any]) -> list[str]:
     catalog = _get_unicanvas_dependencies(
         str(payload.get("generation_mode") or ""), str(payload.get("preset_id") or ""),
-        str(payload.get("clip_name") or ""), str(payload.get("vae_name") or ""))
-    allowed = {asset["download_key"]: asset for asset in catalog["assets"]}
+        str(payload.get("clip_name") or ""), str(payload.get("vae_name") or ""),
+        str(payload.get("model_loader") or ""), str(payload.get("model_name") or ""))
+    allowed = {asset["download_key"]: asset for asset in catalog["assets"] if asset.get("downloadable") is not False}
     keys = payload.get("download_keys")
     if not isinstance(keys, list) or not keys or any(not isinstance(key, str) or key not in allowed for key in keys):
         raise ValueError("Select dependencies from the selected model family's catalog")
