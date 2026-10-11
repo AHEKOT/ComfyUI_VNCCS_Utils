@@ -1,6 +1,6 @@
 # ComfyUI VNCCS Utils
 
-A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI_VNCCS) project for everyday ComfyUI workflows, including **VNCCS 3D Factory**, **VNCCS UniCanvas**, **VNCCS Pose Studio**, and supporting generation utilities.
+A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI_VNCCS) project for everyday ComfyUI workflows, including **VNCCS 3D Factory**, **VNCCS UniCanvas**, **VNCCS Pose Studio**, **VNCCS Prompt Designer**, and supporting generation utilities.
 
 <table>
 <tr>
@@ -143,6 +143,28 @@ The **Unicanvas** sidebar tab runs UniCanvas as a standalone image app — no no
 *   **Flexible Export Modes**: Output poses as a list or as a grid, with configurable background color.
 
 👉 **[Detailed Usage Guide](docs/VNCCS_POSE_STUDIO_USAGE.md)**
+
+## VNCCS Prompt Designer
+
+<p align="center">
+  <img src="images/prompt-designer-logo.png" alt="VNCCS Prompt Designer logo" width="360">
+</p>
+
+**VNCCS Prompt Designer** is a visual prompt-composition workspace inside a ComfyUI node. Combine freeform text, reusable block cards, dynamic variants, and conditional fragments to build prompts, preview the resolved text, and send it directly to text encoders or other nodes that accept `STRING` inputs.
+
+### Key Features
+
+*   **Tabbed Prompt Workspace**: Keep multiple prompt drafts in one node, mixing multiline text with draggable block cards. The active tab supplies the prompt when the workflow runs.
+*   **Reusable Block Cards**: Organize prompt fragments into searchable, color-coded categories and edit their variants once for reuse across compositions.
+*   **Dynamic Prompt Syntax**: Use choices, weighted and nested variants, and variables through `dynamicprompts`, while preserving your separators and line breaks.
+*   **Random and Cyclic Variants**: Sample card variants randomly or cycle through them in order. Keep a fixed seed for reproducible results or randomize it for each queued generation.
+*   **Conditional Fragments**: Build inline If/Else sections with equals, not equals, contains, and not contains checks, combined with AND/OR. Conditions can use the resolved value of a block card.
+*   **Multiple Prompt Outputs**: Create multi-prompt fragments that produce up to 16 separate `STRING` outputs from one composition, with sockets exposed as needed.
+*   **Resolved Prompt Preview**: Inspect the sampled prompt and block variants with the same seeded sampling used during execution, before queueing a workflow.
+*   **Persistent Prompt Library**: Save reusable blocks and complete prompt templates on the ComfyUI host, with automatic draft saving, revision history, and recovery. Bundled starter cards cover backgrounds, colors, clothing, hairstyles, and Anima styles.
+*   **Undo/Redo and Workflow Persistence**: Undo composition edits and keep tabs, blocks, conditions, seeds, and settings with the saved workflow.
+
+Add **VNCCS Prompt Designer** from the `VNCCS/prompt` category and connect its `prompt` output to a text encoder. Multi-prompt compositions also expose `prompt2`, `prompt3`, and further outputs for separate workflow branches.
 
 ## Additional Nodes
 
