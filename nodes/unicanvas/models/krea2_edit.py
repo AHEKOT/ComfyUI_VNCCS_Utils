@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from ..comfy_bridge import _call_node_method
-from ..latents import _unwrap_latent_samples
 from ..loras import LoraRequirement
 from .base import UniCanvasModelModule, _reference_image_slots
 from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
@@ -34,6 +33,8 @@ KREA2_EDIT_DEFAULTS = {
 @dataclass(frozen=True)
 class Krea2EditUniCanvasModule(UniCanvasModelModule):
     """Identity Edit v1.2: mandatory LoRA, grounded Qwen3-VL and clean source tokens."""
+
+    decode_tiled: ClassVar[bool] = False
 
     sampling_scratch_keys: ClassVar[tuple[str, ...]] = ("_krea2_edit_clip", "_krea2_edit_image", "_krea2_edit_image_b", "_krea2_edit_vae")
 
@@ -119,9 +120,6 @@ class Krea2EditUniCanvasModule(UniCanvasModelModule):
                                 image_b=gen_settings.pop("_krea2_edit_image_b", None))
         return super().sample_latent(model, positive, negative, latent, seed, steps, cfg,
                                      sampler_name, scheduler, 1.0, gen_settings, draw_id, width, height)
-
-    def decode_samples(self, vae, samples, gen_settings):
-        return vae.decode(_unwrap_latent_samples(samples))
 
     # -- settings and draw hooks ------------------------------------------------------------
 

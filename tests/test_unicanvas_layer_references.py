@@ -15,7 +15,7 @@ def test_qwen_preserves_decoded_rgb_and_alpha_and_never_adds_transparency_prompt
     def decode_node(name, *, samples, vae):
         assert name == "VAEDecode"
         return (vae.decode(samples["samples"]),)
-    monkeypatch.setattr(UC.models.qwen_image21, "_call_comfy_node", decode_node)
+    monkeypatch.setattr(UC.models.base, "_call_comfy_node", decode_node)
     for channels in (3, 4):
         pixels = np.full((1, 8, 8, channels), 0.25, dtype=np.float32)
         vae = SimpleNamespace(decode=lambda samples: SimpleNamespace(cpu=lambda: pixels))

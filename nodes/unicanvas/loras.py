@@ -12,6 +12,8 @@ from .paths import _get_full_path_agnostic, _resolve_model_filename
 
 
 def _clone_model_clip(model: Any, clip: Any) -> tuple[Any, Any]:
+    if getattr(model, "is_dynamic", lambda: False)():
+        model = model.get_non_dynamic_delegate()
     return (model.clone() if hasattr(model, "clone") else model, clip.clone() if hasattr(clip, "clone") else clip)
 
 

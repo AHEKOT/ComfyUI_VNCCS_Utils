@@ -12,7 +12,7 @@ from .imaging import _decode_data_url
 from .loaders import _peek_cached_generation_assets
 from .locks import _COMFY_MODEL_OP_LOCK
 from .paths import _EXTENSION_ROOT
-from .prompt_enhance import edit_images, enhance_text, is_enhance_encoder, load_enhance_clip, release_enhance_clip, resolve_enhance_clip_name
+from .prompt_enhance import edit_images, enhance_text, is_enhance_encoder, load_enhance_clip, resolve_enhance_clip_name
 
 DEFAULTS_DIR = os.path.join(_EXTENSION_ROOT, "config", "prompt_enhance")
 MAX_TEXT_CHARS = 8000
@@ -62,15 +62,9 @@ def _run_unicanvas_enhance_prompt(payload: dict[str, Any]) -> dict[str, Any]:
         images = edit_images(_decode_data_url(str(payload["image"]), "RGB") if payload.get("image") else None, settings)
     with _COMFY_MODEL_OP_LOCK, torch.inference_mode():
         clip = _loaded_family_clip(settings, name)
-        dedicated = clip is None
-        if dedicated:
+        if clip is None:
             clip = load_enhance_clip(name)
-        try:
-            enhanced = enhance_text(clip, text, system, images)
-        finally:
-            if dedicated:  # not the draw's own encoder: give its VRAM back right away
-                release_enhance_clip(clip)
-                del clip
+        enhanced = enhance_text(clip, text, system, images)
     if not enhanced:
         raise RuntimeError("The text encoder returned no usable prompt. Check the system prompt for this family.")
     return {"prompt": enhanced}

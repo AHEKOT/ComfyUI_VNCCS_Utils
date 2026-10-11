@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .comfy_bridge import _call_loader_node
+from .comfy_bridge import _call_comfy_node, _call_loader_node
 from .gguf_compat import gguf_architecture_hint, normalize_gguf_arch
 from .locks import _COMFY_MODEL_OP_LOCK, _MODEL_CACHE_LOCK
 from .paths import _get_full_path_agnostic, _resolve_model_filename
@@ -35,7 +35,6 @@ class CheckpointUniCanvasLoader(UniCanvasModelLoader):
         return (self.key, str(gen_settings.get("ckpt_name") or ""))
 
     def load_assets(self, gen_settings: dict[str, Any]):
-        import comfy.sd
         import folder_paths
 
         ckpt_name = _resolve_model_filename(folder_paths, "checkpoints", gen_settings.get("ckpt_name"))
@@ -44,12 +43,7 @@ class CheckpointUniCanvasLoader(UniCanvasModelLoader):
         ckpt_path = _get_full_path_agnostic(folder_paths, "checkpoints", ckpt_name, require_exists=True)
         if not ckpt_path:
             raise ValueError(f"Checkpoint path not found for '{ckpt_name}'")
-        out = comfy.sd.load_checkpoint_guess_config(
-            ckpt_path,
-            output_vae=True,
-            output_clip=True,
-            embedding_directory=folder_paths.get_folder_paths("embeddings"),
-        )
+        out = _call_comfy_node("CheckpointLoaderSimple", ckpt_name=ckpt_name)
         assets = out[:3]
         if any(item is None for item in assets):
             raise ValueError(f"Failed to load checkpoint assets from '{ckpt_name}'")

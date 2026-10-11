@@ -10,8 +10,8 @@ and confetti burst out and the new prompt replaces the old one (Ctrl+Z restores 
 - **The wand** (manual) runs on a dedicated Qwen3-VL encoder picked in the UniCanvas settings; the
   default is the one Qwen-Image-2.1 uses (`qwen3vl_8b_int8_convrot.safetensors`, Comfy-Org/Qwen-Image-2.1),
   downloaded from Hugging Face into `models/text_encoders` on first use. When that is the very file
-  the family already has loaded, it is used as is. Otherwise the encoder is loaded for the rewrite and
-  **unloaded again right after it** (`release_enhance_clip`), so it does not keep VRAM.
+  the family already has loaded, it is used as is. Otherwise the native `CLIPLoader` loads it for the
+  rewrite; ComfyUI manages its residency and evicts it under memory pressure.
 - **Always enhance when I press Generate** runs in the background right before the prompts are encoded
   and always uses **the CLIP of the family that draws** - no encoder of its own, no extra VRAM. A CLIP
   that cannot generate text (SDXL's) simply keeps your prompt.

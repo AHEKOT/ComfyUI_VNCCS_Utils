@@ -250,6 +250,8 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
     aliases: tuple[str, ...] = ("qwen-image-2.1", "qwen_image_21", "qwenimage21", "qi21", "qwen21")
     defaults: dict[str, Any] = field(default_factory=lambda: dict(QWEN_IMAGE21_DEFAULTS))
     is_edit_model: bool = True
+    decode_tiled: ClassVar[bool] = False
+
     sampling_scratch_keys: ClassVar[tuple[str, ...]] = (
         "_qwen21_source_empty",
         "_qwen21_clip",
@@ -316,12 +318,6 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         ctx.settings["_attention_backend"] = "attention_pytorch"
         return model
 
-    def clone_assets(self, model: Any, clip: Any) -> tuple[Any, Any]:
-        # Use ComfyUI's managed static patcher after mixed-mode DynamicVRAM sampling failures.
-        if getattr(model, "is_dynamic", lambda: False)():
-            model = model.get_non_dynamic_delegate()
-        return super().clone_assets(model, clip)
-
     def prepare_masked_inputs(self, ctx) -> None:
         ctx.settings["_qwen21_source_empty"] = ctx.source_empty
         if not ctx.pose_images and ctx.mode not in {"inpaint", "outpaint"}:
@@ -330,16 +326,6 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
     def on_mask_prepared(self, ctx) -> None:
         if ctx.mode == "inpaint" and ctx.mask_image is not None:
             ctx.source = ctx.reference_source = self.prepare_outpaint_reference_image(ctx.source_rgba, ctx.mask_image, ctx.draw_id)
-
-    def decode_samples(self, vae: Any, samples: Any, gen_settings: dict[str, Any]):
-        latent = _unwrap_latent_samples(samples)
-        images = []
-        # Keep only one decoded image on the GPU, regardless of the requested batch.
-        for index in range(latent.shape[0]):
-            image = _call_comfy_node("VAEDecode", samples={"samples": latent[index:index + 1]}, vae=vae)[0]
-            images.append(image.cpu())
-            del image
-        return images[0] if len(images) == 1 else torch.cat(images, dim=0)
 
     def prepare_pose_edit(self, ctx) -> None:
         super().prepare_pose_edit(ctx)
@@ -653,13 +639,10 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         config_loras = loras._active_lora_names(external.get("lora_stack") if isinstance(external, dict) else None)
         # A turbo merged by a linked VNCSS Config still needs the student schedule.
         if not (has_viggle_turbo(model) or loras._lora_name_in(QWEN21_TURBO_LORA_NAME, config_loras)):
-            _ensure_direct_sampling_prompt_context()
-            with _suppress_direct_sampling_comfy_progress(), _report_comfy_sampling_progress(draw_id, steps):
-                return _call_comfy_node(
-                    "KSampler", model=model, positive=positive, negative=negative,
-                    latent_image=latent, seed=seed, steps=steps, cfg=cfg,
-                    sampler_name=sampler_name, scheduler=scheduler, denoise=denoise,
-                )[0]
+            return super().sample_latent(
+                model, positive, negative, latent, seed, steps, cfg, sampler_name, scheduler,
+                denoise, gen_settings, draw_id,
+            )
         if int(steps) != 6 or abs(float(cfg) - 1.0) > 1e-6 or float(denoise) != 1.0:
             raise ValueError("[VNCCS UniCanvas] QI2 turbo requires 6 steps, CFG 1 and denoise 1.")
         _ensure_direct_sampling_prompt_context()

@@ -19,6 +19,69 @@ torch_stub.Tensor = object
 unicanvas = load_unicanvas_package("vnccs_draw_ownership_test", torch_module=torch_stub)
 draw = unicanvas.draw
 
+FAMILIES = ("sdxl", "anima", "flux_klein", "z_image", "krea2_edit", "minimax_h3", "qwen_image21")
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_every_family_clones_the_native_static_patcher(family, dynamic):
+    cloned_model, cloned_clip = object(), object()
+    native = types.SimpleNamespace(clone=mock.Mock(return_value=cloned_model))
+    model = types.SimpleNamespace(is_dynamic=lambda: dynamic, get_non_dynamic_delegate=mock.Mock(return_value=native),
+                                  clone=mock.Mock(return_value=cloned_model))
+    clip = types.SimpleNamespace(clone=mock.Mock(return_value=cloned_clip))
+    module = unicanvas.models.registry._get_unicanvas_model_module(family)
+    assert module.clone_assets(model, clip) == (cloned_model, cloned_clip)
+    assert model.get_non_dynamic_delegate.call_count == int(dynamic)
+    assert native.clone.call_count == int(dynamic)
+    assert model.clone.call_count == int(not dynamic)
+    clip.clone.assert_called_once_with()
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.parametrize("batch_size", [4, 20])
+@pytest.mark.parametrize("fail", [False, True])
+def test_all_families_decode_one_batch_item_and_release_gpu_images(monkeypatch, family, batch_size, fail):
+    module = unicanvas.models.registry._get_unicanvas_model_module(family)
+    assert type(module).decode_samples is unicanvas.models.base.UniCanvasModelModule.decode_samples
+    samples = np.arange(batch_size).reshape(batch_size, 1, 1, 1)
+    latent = {"samples": samples, "metadata": "preserved"}
+    indices, live = [], []
+
+    class GpuImage:
+        def __init__(self, index):
+            self.index = index
+            live.append(weakref.ref(self))
+        def cpu(self):
+            return np.full((1, 2, 2, 3), self.index, dtype=np.float32)
+
+    def decode(name, **kwargs):
+        assert all(ref() is None for ref in live), "previous decode still owns a GPU image"
+        assert name == ("VAEDecodeTiled" if module.decode_tiled else "VAEDecode")
+        assert kwargs["samples"]["metadata"] == "preserved"
+        assert kwargs["samples"]["samples"].shape[0] == 1
+        if module.decode_tiled:
+            assert (kwargs["tile_size"], kwargs["overlap"], kwargs["temporal_size"], kwargs["temporal_overlap"]) == (256 if family == "z_image" else 512, 64, 64, 8)
+        if fail and len(indices) == 2:
+            raise RuntimeError("decode failed")
+        index = int(kwargs["samples"]["samples"][0, 0, 0, 0])
+        indices.append(index)
+        return (GpuImage(index),)
+
+    monkeypatch.setattr(unicanvas.models.base, "_call_comfy_node", decode)
+    monkeypatch.setattr(torch_stub, "cat", lambda images, dim: np.concatenate(images, axis=dim), raising=False)
+    if fail:
+        with pytest.raises(RuntimeError, match="decode failed"):
+            module.decode_samples(object(), latent, {})
+        assert indices == [0, 1]
+    else:
+        images = module.decode_samples(object(), latent, {})
+        assert images.shape == (batch_size, 2, 2, 3)
+        assert indices == list(range(batch_size))
+        assert np.array_equal(images[:, 0, 0, 0], np.arange(batch_size))
+    assert latent["samples"] is samples
+    assert all(ref() is None for ref in live)
+
 
 @pytest.mark.parametrize("family", ["qwen_image21", "flux_klein"])
 def test_generation_reuses_native_loader_outputs_without_reloading_encoder(monkeypatch, family):
@@ -237,7 +300,7 @@ def test_draw_sessions_release_runtime_state_and_reuse_cached_weights(monkeypatc
     assert unicanvas.loaders._MODEL_CACHE == {("test",): assets}
     load_assets.assert_called_once()
     unload.assert_not_called()
-    assert model_cleanup_states == ([True] if outcome == "cancel" else [])
+    assert model_cleanup_states == []
     release_count = len(seen_assets) + (outcome == "cancel")
     assert releases == (["prefetch", "cast", "watermark"] * release_count if dynamic_vram else [])
 

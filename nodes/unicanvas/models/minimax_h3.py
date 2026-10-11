@@ -189,20 +189,8 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
         })
         return sampled
 
-    def decode_samples(self, vae: Any, samples: Any, gen_settings: dict[str, Any]):
-        # The tiling widgets are passed explicitly because _call_comfy_node cannot fill in
-        # missing required parameters; the values are the ComfyUI core widget defaults, so
-        # the result matches a graph run. Cores that do not declare a keyword drop it in
-        # _call_comfy_node's signature filter instead of failing.
-        decoded = _call_comfy_node(
-            "VAEDecodeTiled",
-            samples=samples,
-            vae=vae,
-            tile_size=512,
-            overlap=64,
-            temporal_size=64,
-            temporal_overlap=8,
-        )[0]
+    def decode_sample(self, vae: Any, samples: Any, gen_settings: dict[str, Any]):
+        decoded = super().decode_sample(vae, samples, gen_settings)
         if hasattr(decoded, "shape") and len(decoded.shape) == 4 and decoded.shape[0] > 1:
             return decoded[:1]  # H3 returns a frame packet; the still is the first frame
         return decoded

@@ -15,26 +15,44 @@ from nodes.unicanvas.sampling import _report_comfy_sampling_progress
 def test_sampler_runtime_errors_never_start_a_second_sampler(monkeypatch, error):
     from nodes.unicanvas import sampling
 
-    def fail(**kwargs):
+    calls = []
+    def fail(name, **kwargs):
+        calls.append(name)
         raise error
 
-    monkeypatch.setattr(sys.modules["nodes"], "common_ksampler", fail, raising=False)
-    monkeypatch.setattr(sampling, "_call_node_method", lambda *a, **k: pytest.fail("sampling was retried"))
+    monkeypatch.setattr(sampling, "_call_comfy_node", fail)
     with pytest.raises(type(error), match=str(error)):
         sampling._sample_generation_latent_default(
             "model", "positive", "negative", {}, 1, 4, 1.0, "euler", "normal", 1.0, {}, "cancel-test"
         )
+    assert calls == ["KSampler"]
 
 
-def test_sampler_fallback_is_used_when_common_sampler_is_missing(monkeypatch):
+def test_sampler_always_uses_the_native_node_and_progress_hook(monkeypatch):
     from nodes.unicanvas import sampling
 
-    monkeypatch.delattr(sys.modules["nodes"], "common_ksampler", raising=False)
-    monkeypatch.setattr(sampling, "_call_node_method", lambda *a, **k: ({"samples": "fallback"},))
+    monkeypatch.setattr(sys.modules["nodes"], "common_ksampler", lambda **kwargs: pytest.fail("bypassed the node lifecycle"), raising=False)
+    calls = []
+    monkeypatch.setattr(sampling, "_call_comfy_node", lambda name, **kwargs: calls.append((name, kwargs)) or ({"samples": "native"},))
     result = sampling._sample_generation_latent_default(
         "model", "positive", "negative", {}, 1, 4, 1.0, "euler", "normal", 1.0, {}, "fallback-test"
     )
-    assert result == {"samples": "fallback"}
+    assert result == {"samples": "native"}
+    assert calls == [("KSampler", dict(model="model", seed=1, steps=4, cfg=1.0,
+                                      sampler_name="euler", scheduler="normal", positive="positive",
+                                      negative="negative", latent_image={}, denoise=1.0))]
+
+
+def test_inpaint_node_failure_propagates_without_manual_encode_retry(monkeypatch):
+    from nodes.unicanvas import latents
+    calls = []
+    def fail(name, **kwargs):
+        calls.append(name)
+        raise MemoryError("encoding OOM")
+    monkeypatch.setattr(latents, "_call_comfy_node", fail)
+    with pytest.raises(MemoryError, match="encoding OOM"):
+        latents._prepare_inpaint_model_conditioning("positive", "negative", "vae", "image", "mask", 4)
+    assert calls == ["InpaintModelConditioning"]
 
 
 def test_comfy_progress_bar_updates_reach_the_draw_progress(monkeypatch):

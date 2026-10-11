@@ -148,14 +148,6 @@ class FluxKleinUniCanvasModule(UniCanvasModelModule):
     )
     pipeline: UniCanvasPipeline = FLUX_KLEIN_PIPELINE
 
-    def encode_prompt(self, clip: Any, text: str, _gen_settings: dict[str, Any]):
-        encoded = _call_node_method(["CLIPTextEncode"], ["encode"], clip=clip, text=text or "")
-        if isinstance(encoded, tuple) and encoded:
-            return encoded[0]
-        if encoded is not None:
-            return encoded
-        return super().encode_prompt(clip, text, _gen_settings)
-
     def create_empty_latent(self, width: int, height: int, _gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
         batch_size = max(1, int((_gen_settings or {}).get("batch_size", 1) or 1))
         encoded = _call_node_method(
@@ -256,6 +248,3 @@ class FluxKleinUniCanvasModule(UniCanvasModelModule):
         _set_draw_progress(draw_id, "sampling", 0.85, steps, steps, f"Sampling {steps}/{steps}")
         _uc_log(draw_id, "SamplerCustomAdvanced output", _latent_debug(context.get("latent")))
         return context["latent"]
-
-    def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
-        return super().decode_samples(vae, samples, _gen_settings)

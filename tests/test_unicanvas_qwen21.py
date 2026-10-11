@@ -14,6 +14,7 @@ def native_latent_and_decode_nodes(monkeypatch):
     import nodes
 
     class EmptyLatentImage:
+        FUNCTION = "generate"
         def generate(self, width, height, batch_size):
             return ({"samples": torch.zeros(batch_size, 4, height // 8, width // 8), "downscale_ratio_spacial": 8},)
 
@@ -24,7 +25,7 @@ def native_latent_and_decode_nodes(monkeypatch):
             return (vae.decode(samples["samples"]),)
 
     monkeypatch.setattr(nodes, "EmptyLatentImage", EmptyLatentImage, raising=False)
-    monkeypatch.setattr(nodes, "NODE_CLASS_MAPPINGS", {"VAEDecode": VAEDecode}, raising=False)
+    monkeypatch.setattr(nodes, "NODE_CLASS_MAPPINGS", {"VAEDecode": VAEDecode, "EmptyLatentImage": EmptyLatentImage}, raising=False)
 
 
 def test_module_registered_with_aliases():
@@ -400,12 +401,8 @@ def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
         raise AssertionError(f"unexpected node call: {class_name}")
 
     monkeypatch.setattr("nodes.unicanvas.models.qwen_image21._call_comfy_node", fake_call_comfy_node)
-
-    def fake_sample(**kwargs):
-        captured["sample_latent"] = kwargs["latent"]
-        return kwargs["latent"]
-
-    monkeypatch.setattr("nodes.unicanvas.models.base._sample_generation_latent_default", fake_sample)
+    monkeypatch.setattr("nodes.unicanvas.models.base._call_comfy_node", fake_call_comfy_node)
+    monkeypatch.setattr("nodes.unicanvas.sampling._call_comfy_node", fake_call_comfy_node)
 
     image = torch.rand(48, 80, 3)  # (H,W,3) contract input
     rgba = module.remove_background(image)

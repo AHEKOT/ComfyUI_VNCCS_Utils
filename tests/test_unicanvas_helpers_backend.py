@@ -16,6 +16,47 @@ from nodes.unicanvas import gguf_compat, segment
 from nodes.unicanvas.describe_layers import clean_layer_name, layer_thumbnail
 
 
+@pytest.mark.parametrize("channels", [3, 4])
+def test_anima_uses_native_managed_lllite_without_moving_its_weights(monkeypatch, channels, tmp_path):
+    from nodes.unicanvas.models import anima
+    from nodes.unicanvas.models.registry import _get_unicanvas_model_module
+
+    weights = tmp_path / "existing controlnet" / anima.ANIMA_LLLITE_INPAINT_FILENAME
+    weights.parent.mkdir()
+    weights.write_bytes(b"existing")
+    model_patch = types.SimpleNamespace(model=types.SimpleNamespace(cond_in_channels=channels))
+    model, image, mask, patched = object(), object(), object(), object()
+    calls, folders = [], []
+
+    class Loader:
+        FUNCTION = "load_model_patch"
+        def load_model_patch(self, name):
+            calls.append(("load", name))
+            return (model_patch,)
+
+    class Apply:
+        FUNCTION = "apply_patch"
+        def apply_patch(self, **kwargs):
+            calls.append(("apply", kwargs))
+            return (patched,)
+
+    monkeypatch.setattr(sys.modules["nodes"], "NODE_CLASS_MAPPINGS", {"ModelPatchLoader": Loader, "AnimaLLLiteApply": Apply}, raising=False)
+    monkeypatch.setattr(sys.modules["folder_paths"], "add_model_folder_path", lambda *args, **kwargs: folders.append((args, kwargs)), raising=False)
+    monkeypatch.setattr(anima, "_ensure_anima_lllite_model", lambda *args: str(weights))
+    module = _get_unicanvas_model_module("anima")
+    if channels != 4:
+        with pytest.raises(ValueError, match="4-channel"):
+            module._apply_inpaint_lllite(model, image, mask, {}, "test")
+        assert calls == [("load", weights.name)]
+    else:
+        assert module._apply_inpaint_lllite(model, image, mask, {"anima_lllite_strength": .7}, "test") is patched
+        assert calls == [("load", weights.name), ("apply", dict(model=model, model_patch=model_patch, image=image,
+                                                               mask=mask, strength=.7, start_percent=0., end_percent=1.))]
+    assert folders == [(("model_patches", str(weights.parent)), {"is_default": True})]
+    assert weights.read_bytes() == b"existing"
+    assert list(tmp_path.rglob("*.safetensors")) == [weights]
+
+
 @pytest.mark.parametrize("key", ["sam1_huge", "sam2_large"])
 def test_sam_public_downloads_disable_implicit_credentials(monkeypatch, key):
     calls = []

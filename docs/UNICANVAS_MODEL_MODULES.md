@@ -22,7 +22,7 @@ A family is extended in three ways, from the lightest to the heaviest:
    requirements, prompt guide) and `lora_requirements`.
 2. **Hooks** - methods on `UniCanvasModelModule` that the default draw pipeline
    calls with the shared `DrawContext` (`validate_request`, `validate_source`,
-   `prepare_pose_edit`, `prepare_draw_assets`, `preload_vae` / `release_vae`,
+   `prepare_pose_edit`, `prepare_draw_assets`,
    `bind_draw_assets`, `encode_draw_prompts`, `on_mask_prepared`,
    `on_masked_mode_dropped`, `prepare_masked_inputs`, `prepare_generation_latent`,
    `prepare_masked_latent`, `after_latent_prepared`, `prepare_model_for_sampling`,
@@ -37,6 +37,15 @@ Shared draw code never names a family: `tests/test_unicanvas_draw_pipeline.py`
 fails if `draw.py`, `draw_request.py`, `draw_pipeline.py`, `generation.py`,
 `latents.py`, `sampling.py` or `loras.py` mention a family key or compare
 `.key`. Add a hook with a generic default instead.
+
+All families share native ComfyUI model residency: clone the non-dynamic ModelPatcher,
+apply native LoRA nodes, and finish every node call with ComfyUI's post-node lifecycle.
+`decode_samples` decodes one batch item at a time and collects CPU images; families
+select full or tiled decoding with `decode_tiled` and customize `decode_sample` when
+needed (for example, the first frame of each H3 video). Never manually move model
+weights, edit `current_loaded_models`, or flush CUDA caches. Anima masked edits use
+the native `ModelPatchLoader` and `AnimaLLLiteApply`; existing controlnet files stay
+in place and their directory is registered with the native patch loader.
 
 ## Capabilities, Tasks And Prompt Help
 

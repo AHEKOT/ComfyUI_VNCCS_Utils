@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from .comfy_bridge import _call_node_method
+from .comfy_bridge import _call_comfy_node
 from .debug import _conditioning_debug, _latent_debug, _uc_log
 
 
@@ -111,11 +111,9 @@ def _prepare_noise_mask_for_latent(
 
 
 def _encode_source_latent(vae: Any, image_tensor: torch.Tensor, mask: torch.Tensor | None, grow_mask_by: int, draw_id: str = "unknown"):
-    import nodes
-
     if mask is not None:
         encode_pixels, noise_mask = _prepare_noise_mask_for_latent(vae, image_tensor, mask, grow_mask_by)
-        encoded = nodes.VAEEncode().encode(vae, encode_pixels)[0]
+        encoded = _call_comfy_node("VAEEncode", vae=vae, pixels=encode_pixels)[0]
         encoded["noise_mask"] = noise_mask
         _uc_log(
             draw_id,
@@ -127,14 +125,8 @@ def _encode_source_latent(vae: Any, image_tensor: torch.Tensor, mask: torch.Tens
         )
         return encoded
 
-    encoded = _call_node_method(["VAEEncode"], ["encode"], vae=vae, pixels=image_tensor, image=image_tensor)
-    if isinstance(encoded, tuple) and encoded:
-        encoded = encoded[0]
-    if encoded is not None:
-        _uc_log(draw_id, "VAEEncode returned latent", _latent_debug(encoded))
-        return encoded
-    encoded = nodes.VAEEncode().encode(vae, image_tensor)[0]
-    _uc_log(draw_id, "fallback VAEEncode returned latent", _latent_debug(encoded))
+    encoded = _call_comfy_node("VAEEncode", vae=vae, pixels=image_tensor)[0]
+    _uc_log(draw_id, "VAEEncode returned latent", _latent_debug(encoded))
     return encoded
 
 
@@ -147,63 +139,13 @@ def _prepare_inpaint_model_conditioning(
     grow_mask_by: int,
     draw_id: str = "unknown",
 ) -> tuple[Any, Any, dict[str, Any]]:
-    import node_helpers
-    import nodes
-
-    try:
-        encoded = nodes.InpaintModelConditioning().encode(
-            positive=positive,
-            negative=negative,
-            pixels=image_tensor,
-            vae=vae,
-            mask=mask,
-            noise_mask=True,
-        )
-        if isinstance(encoded, tuple) and len(encoded) >= 3 and isinstance(encoded[2], dict):
-            native_positive, native_negative, native_latent = encoded[:3]
-            _uc_log(
-                draw_id,
-                "InpaintModelConditioning returned",
-                {
-                    "positive": _conditioning_debug(native_positive),
-                    "negative": _conditioning_debug(native_negative),
-                    "latent": _latent_debug(native_latent),
-                },
-            )
-            return native_positive, native_negative, native_latent
-        _uc_log(draw_id, "InpaintModelConditioning returned unexpected output", {"type": type(encoded).__name__})
-    except Exception as exc:
-        _uc_log(draw_id, "InpaintModelConditioning failed; using manual fallback", {"error": str(exc)})
-
-    encode_pixels, noise_mask = _prepare_noise_mask_for_latent(vae, image_tensor, mask, grow_mask_by)
-    masked_pixels = encode_pixels.clone()
-    pixel_mask = noise_mask.round().squeeze(1)
-    for channel in range(3):
-        masked_pixels[:, :, :, channel] -= 0.5
-        masked_pixels[:, :, :, channel] *= 1.0 - pixel_mask
-        masked_pixels[:, :, :, channel] += 0.5
-
-    latent = nodes.VAEEncode().encode(vae, encode_pixels)[0]
-    latent["noise_mask"] = noise_mask
-    concat_latent = nodes.VAEEncode().encode(vae, masked_pixels)[0]["samples"]
-    positive = node_helpers.conditioning_set_values(
-        positive,
-        {"concat_latent_image": concat_latent, "concat_mask": noise_mask},
+    encoded = _call_comfy_node(
+        "InpaintModelConditioning", positive=positive, negative=negative,
+        pixels=image_tensor, vae=vae, mask=mask, noise_mask=True,
     )
-    negative = node_helpers.conditioning_set_values(
-        negative,
-        {"concat_latent_image": concat_latent, "concat_mask": noise_mask},
-    )
-    _uc_log(
-        draw_id,
-        "manual inpaint conditioning returned",
-        {
-            "positive": _conditioning_debug(positive),
-            "negative": _conditioning_debug(negative),
-            "latent": _latent_debug(latent),
-        },
-    )
-    return positive, negative, latent
+    if not isinstance(encoded, (tuple, list)) or len(encoded) < 3 or not isinstance(encoded[2], dict):
+        raise RuntimeError("InpaintModelConditioning returned no latent output")
+    return encoded[0], encoded[1], encoded[2]
 
 
 def _prepare_masked_generation_latent(

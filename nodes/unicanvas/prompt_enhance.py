@@ -185,31 +185,11 @@ def is_enhance_encoder(settings: dict[str, Any], name: str) -> bool:
 
 
 def load_enhance_clip(name: str) -> Any:
-    """A freshly loaded Qwen3-VL encoder; the caller frees it with ``release_enhance_clip``."""
+    """A native Qwen3-VL encoder whose residency is managed by ComfyUI."""
     clip = _call_loader_node(["CLIPLoader"], ["load_clip"], clip_name=name, model_name=name, type=ENHANCE_CLIP_TYPE)
     if clip is None:
         raise RuntimeError(f"Failed to load the prompt enhance text encoder '{name}'.")
     return clip
-
-
-def release_enhance_clip(clip: Any) -> None:
-    """Unload a dedicated encoder from VRAM and RAM right away (it is not the draw's own CLIP)."""
-    try:
-        import gc
-
-        import comfy.model_management as model_management
-
-        patcher = getattr(clip, "patcher", None)
-        for loaded in list(model_management.current_loaded_models):
-            if loaded.model is patcher:
-                loaded.model_unload()
-                model_management.current_loaded_models.remove(loaded)
-        del clip, patcher
-        model_management.cleanup_models()
-        gc.collect()
-        model_management.soft_empty_cache()
-    except Exception as exc:  # freeing is best effort: ComfyUI still evicts it under memory pressure
-        logging.getLogger(__name__).warning("[VNCCS UniCanvas] Could not release the prompt enhance encoder: %s", exc)
 
 
 def enhance_text(clip: Any, text: str, system_prompt: str, images: list[Image.Image] | None = None) -> str:

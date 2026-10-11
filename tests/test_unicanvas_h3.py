@@ -161,13 +161,13 @@ def test_decode_samples_takes_first_frame(monkeypatch):
         captured.update(kwargs)
         return (frames,)
 
-    monkeypatch.setattr("nodes.unicanvas.models.minimax_h3._call_comfy_node", fake_call)
+    monkeypatch.setattr("nodes.unicanvas.models.base._call_comfy_node", fake_call)
     out = module.decode_samples("V", samples, {"_draw_id": "t"})
     assert out.shape[0] == 1
     assert torch.equal(out, frames[:1])
     # The tile widgets must be passed explicitly: _call_comfy_node cannot supply missing
     # required parameters, and it filters out keywords the installed core does not declare.
-    assert captured["samples"] is samples
+    assert torch.equal(captured["samples"]["samples"], samples)
     assert captured["vae"] == "V"
     assert captured["tile_size"] == 512
     assert captured["overlap"] == 64
@@ -179,12 +179,25 @@ def test_decode_samples_single_frame_passes_through(monkeypatch):
     module = _get_unicanvas_model_module("minimax_h3")
     frame = torch.zeros(1, 32, 32, 3)
     monkeypatch.setattr(
-        "nodes.unicanvas.models.minimax_h3._call_comfy_node",
+        "nodes.unicanvas.models.base._call_comfy_node",
         lambda name, **kwargs: (frame,) if name == "VAEDecodeTiled" else (_ for _ in ()).throw(AssertionError(name)),
     )
     out = module.decode_samples("V", torch.zeros(1, 4, 8, 8), {"_draw_id": "t"})
     assert out is frame
     assert out.shape[0] == 1
+
+
+def test_video_batch_keeps_the_first_frame_of_every_item(monkeypatch):
+    module = _get_unicanvas_model_module("minimax_h3")
+    samples = torch.arange(4).reshape(4, 1, 1, 1, 1).float()
+    def decode(name, **kwargs):
+        assert kwargs["samples"]["samples"].shape[0] == 1
+        index = kwargs["samples"]["samples"].item()
+        return (torch.full((5, 2, 2, 3), index),)
+    monkeypatch.setattr("nodes.unicanvas.models.base._call_comfy_node", decode)
+    out = module.decode_samples("V", {"samples": samples}, {})
+    assert out.shape == (4, 2, 2, 3)
+    assert torch.equal(out[:, 0, 0, 0], torch.arange(4).float())
 
 
 def test_sample_latent_requires_a_text_encoder_but_not_audio_vae(monkeypatch):

@@ -13,7 +13,6 @@ registry), so family modules may subclass the pipeline without import cycles.
 from __future__ import annotations
 
 import contextlib
-import gc
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -165,17 +164,7 @@ class ImageDrawPipeline:
         with _COMFY_MODEL_OP_LOCK, contextlib.suppress(Exception):
             set_interrupt(False)
             _release_generation_state()
-            import comfy.model_management as model_management
-
-            model_management.cleanup_models()
-        gc.collect()
-        with contextlib.suppress(Exception):
-            import comfy.model_management as model_management
-
-            model_management.soft_empty_cache(True)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        _set_draw_progress(ctx.draw_id, "cancelled", 1.0, 0, 0, "Stopped - VRAM freed")
+        _set_draw_progress(ctx.draw_id, "cancelled", 1.0, 0, 0, "Stopped")
 
     def _run(self) -> dict[str, Any]:
         self.prepare_source()
@@ -260,7 +249,6 @@ class ImageDrawPipeline:
         ctx.model, ctx.clip = self.module.clone_assets(model, clip)
         ctx.settings["_draw_id"] = ctx.draw_id
         self.module.prepare_draw_assets(ctx)
-        self.module.preload_vae(ctx)
         self.module.bind_draw_assets(ctx)
 
     def apply_loras(self) -> None:
@@ -425,7 +413,6 @@ class ImageDrawPipeline:
         ctx.decoded = self.module.decode_samples(ctx.vae, ctx.latent, ctx.settings)
         _uc_log(ctx.draw_id, "decoded image tensor", _tensor_debug(ctx.decoded))
         ctx.result_images = _image_tensor_to_pil_list(ctx.decoded)
-        self.module.release_vae(ctx)
 
     def fit_to_output(self) -> None:
         ctx = self.ctx

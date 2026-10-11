@@ -40,8 +40,8 @@ def test_interrupt_releases_draw_references_without_unloading_other_workflows(mo
     pipeline.free_after_interrupt()
     assert pipeline.ctx.model is pipeline.ctx.latent is pipeline.ctx.image_tensor is None
     assert pipeline.ctx.result_images == []
-    cleanup.assert_called_once_with()
-    empty.assert_called_once_with(True)
+    cleanup.assert_not_called()
+    empty.assert_not_called()
     unload.assert_not_called()
 
 

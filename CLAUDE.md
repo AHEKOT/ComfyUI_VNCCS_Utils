@@ -32,7 +32,7 @@ is described in `AGENTS.md`.
   UniCanvas state-cache routes, calls `register_unicanvas_routes()`.
 - `nodes/` - node classes. `nodes/unicanvas/` is a package (below); `pose_studio.py`,
   `factory3d/` (graph nodes and backend services), `vncss_config.py`, `vnccs_bbox_extractor.py`,
-  and `anima_lllite_internal.py`.
+  and shared helpers.
 - `api/` - HTTP handlers and route registration for Factory, Pose Studio, and runtime caches.
   Feature services live in `nodes/factory3d/`, `nodes/posestudio/`, and `nodes/unicanvas/`.
   Shared configuration, progress, and runtime roots live in `nodes/shared/`.

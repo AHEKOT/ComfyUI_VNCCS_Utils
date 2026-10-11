@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import torch
 from PIL import Image
 
+from ..comfy_bridge import _call_comfy_node
 from ..constants import OUTPAINT_PROMPT_SUFFIX
 from ..debug import _latent_debug, _uc_log
 from ..imaging import _decode_data_url, _pil_to_image_tensor
@@ -55,6 +56,7 @@ class UniCanvasModelModule:
     # Settings keys the family stashes during a draw, dropped before the VAE decode.
     sampling_scratch_keys: ClassVar[tuple[str, ...]] = ()
     decode_tile_size: ClassVar[int] = 512
+    decode_tiled: ClassVar[bool] = True
 
     @property
     def label(self) -> str:
@@ -121,12 +123,6 @@ class UniCanvasModelModule:
 
     def prepare_draw_assets(self, ctx: DrawContext) -> None:
         """Load family extras (patches, ControlNets) right after the base models."""
-
-    def preload_vae(self, ctx: DrawContext) -> None:
-        """Pin the VAE on the device before sampling when the family needs it."""
-
-    def release_vae(self, ctx: DrawContext) -> None:
-        """Undo :meth:`preload_vae` after decoding."""
 
     def bind_draw_assets(self, ctx: DrawContext) -> None:
         """Remember clip/vae for later stages: called after loading and again after the LoRAs."""
@@ -203,9 +199,7 @@ class UniCanvasModelModule:
         return _apply_lora_stack(model, clip, gen_settings.get("lora_stack") or [], skip)
 
     def encode_prompt(self, clip: Any, text: str, _gen_settings: dict[str, Any]):
-        tokens = clip.tokenize(text or "")
-        cond, pooled = clip.encode_from_tokens(tokens, return_pooled=True)
-        return [[cond, {"pooled_output": pooled}]]
+        return _call_comfy_node("CLIPTextEncode", clip=clip, text=text or "")[0]
 
     def validate_conditioning(self, _positive: Any, _negative: Any, _gen_settings: dict[str, Any]) -> None:
         return None
@@ -214,19 +208,30 @@ class UniCanvasModelModule:
         return _clone_model_clip(model, clip)
 
     def create_empty_latent(self, width: int, height: int, _gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
-        import nodes
-
         batch_size = max(1, int((_gen_settings or {}).get("batch_size", 1) or 1))
-        encoded = nodes.EmptyLatentImage().generate(width, height, batch_size)[0]
+        encoded = _call_comfy_node("EmptyLatentImage", width=width, height=height, batch_size=batch_size)[0]
         _uc_log(draw_id, "created empty SD latent", _latent_debug(encoded))
         return encoded
 
     def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
-        latent_samples = _unwrap_latent_samples(samples)
-        tile_size = self.decode_tile_size
-        overlap = min(64, max(32, tile_size // 4))
-        _uc_log(str((_gen_settings or {}).get("_draw_id") or "unknown"), "VAE tiled decode", {"tile_size": tile_size, "overlap": overlap})
-        return vae.decode_tiled(latent_samples, tile_x=tile_size, tile_y=tile_size, overlap=overlap)
+        latent = _unwrap_latent_samples(samples)
+        images = []
+        # Native VAE calls own model residency; only one decoded batch item stays on GPU.
+        for index in range(latent.shape[0]):
+            payload = dict(samples) if isinstance(samples, dict) else {}
+            payload["samples"] = latent[index:index + 1]
+            image = self.decode_sample(vae, payload, _gen_settings)
+            images.append(image.cpu())
+            del image
+        return images[0] if len(images) == 1 else torch.cat(images, dim=0)
+
+    def decode_sample(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
+        options = {}
+        if self.decode_tiled:
+            options = dict(tile_size=self.decode_tile_size, overlap=min(64, max(32, self.decode_tile_size // 4)),
+                           temporal_size=64, temporal_overlap=8)
+        return _call_comfy_node("VAEDecodeTiled" if self.decode_tiled else "VAEDecode",
+                                samples=samples, vae=vae, **options)[0]
 
     def prepare_reference_conditioning(
         self,
