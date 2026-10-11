@@ -7701,6 +7701,10 @@ class PoseStudioWidget {
                     this._managerPreviewRefreshFrame = null;
                     this.refreshAllManagerPreviews(generation);
                 });
+            }).catch(error => {
+                if (generation !== this._managerPreviewRefreshGeneration || this._disposed) return;
+                this._managerPreviewRefreshError = { generation, message: String(error?.message || error) };
+                this.showMessage?.(this._managerPreviewRefreshError.message, true);
             });
             return;
         }
@@ -11468,7 +11472,8 @@ class PoseStudioWidget {
     loadLibraryThumbnailSize() {
         const bounds = this.getLibraryThumbnailBounds();
         try {
-            const stored = Number(localStorage.getItem(this.libraryThumbSizeStorageKey));
+            const preference = localStorage.getItem(this.libraryThumbSizeStorageKey);
+            const stored = preference === null ? bounds.defaultSize : Number(preference);
             if (Number.isFinite(stored)) {
                 return Math.max(bounds.min, Math.min(bounds.max, stored));
             }
@@ -14232,6 +14237,7 @@ class PoseStudioWidget {
     }
 
     handleMorphWorkerMessage(message) {
+        if (message.seq != null && !this._morphSeqCharacterIds.has(message.seq)) return;
         if (message.type === "error") {
             console.warn("[VNCCS PoseStudio] Live morph worker failed:", message.message);
             this._morphWorkerFailed = true;
@@ -14249,7 +14255,7 @@ class PoseStudioWidget {
             }
             return;
         }
-        if (message.type !== "result") return;
+        if (message.type !== "result" || message.seq == null) return;
         const requestCharacterId = this._morphSeqCharacterIds.get(message.seq);
         this._morphSeqCharacterIds.delete(message.seq);
         const loadRequest = this._morphLoadTasks.get(message.seq);

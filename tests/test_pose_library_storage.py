@@ -556,3 +556,84 @@ def test_concurrent_worker_saves_cannot_overwrite_a_new_item(store, monkeypatch)
         assert second.result(timeout=3)[1] == 409
     saved = store / library.LOCAL_USER_REPOSITORY / "poses/Standing/Walk.json"
     assert json.loads(saved.read_text())["pose"] == "first"
+
+
+def test_delete_waits_for_an_in_progress_save_and_removes_its_committed_item(store, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+
+    body = {"name": "Walk", "category": "Standing", "pose": {"pose": "first"}}
+    assert library.save_pose(body)[1] == 200
+    started, release = threading.Event(), threading.Event()
+    original_dump = library.json.dump
+    def hold_write(value, handle, **kwargs):
+        started.set()
+        assert release.wait(3)
+        return original_dump(value, handle, **kwargs)
+
+    monkeypatch.setattr(library.json, "dump", hold_write)
+    query = {"repository": library.LOCAL_USER_REPOSITORY, "category": "Standing", "asset_type": "pose"}
+    with ThreadPoolExecutor(2) as workers:
+        saved = workers.submit(library.save_pose, {**body, "old_name": "Walk", "pose": {"pose": "new"}})
+        assert started.wait(3)
+        deleted = workers.submit(library.delete_pose, "Walk", query)
+        try:
+            with pytest.raises(FutureTimeoutError):
+                deleted.result(timeout=0.1)
+        finally:
+            release.set()
+        assert saved.result(timeout=3)[1] == 200
+        assert deleted.result(timeout=3)[1] == 200
+    assert library.scan_poses() == []
+
+
+def test_preview_dimensions_are_checked_before_allocating_decoded_rgb_pixels(store, monkeypatch):
+    source = mock.MagicMock(width=8192, height=8192)
+    source.__enter__.return_value = source
+    source.convert.side_effect = AssertionError("oversized preview must not decode RGB pixels")
+    monkeypatch.setattr(library.Image, "open", lambda *_args: source)
+    with pytest.raises(ValueError, match="dimensions are too large"):
+        library.prepare_image_preview_file(str(store), b"compressed image")
+    source.convert.assert_not_called()
+    assert not list(store.iterdir())
+
+
+def test_delete_during_preview_preparation_cannot_resurrect_the_removed_source(store, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    body = {"name": "Walk", "category": "Standing", "pose": {"pose": "first"}}
+    assert library.save_pose(body)[1] == 200
+    started, release = threading.Event(), threading.Event()
+    def prepare(folder, *_args):
+        started.set()
+        assert release.wait(3)
+        preview = Path(folder) / "pending.webp"
+        preview.write_bytes(b"new preview")
+        return str(preview), ".webp"
+
+    monkeypatch.setattr(library, "prepare_preview_file", prepare)
+    query = {"repository": library.LOCAL_USER_REPOSITORY, "category": "Standing", "asset_type": "pose"}
+    with ThreadPoolExecutor(1) as workers:
+        saved = workers.submit(library.save_pose, {**body, "old_name": "Walk", "preview": "new"})
+        assert started.wait(3)
+        try:
+            assert library.delete_pose("Walk", query)[1] == 200
+        finally:
+            release.set()
+        assert saved.result(timeout=3)[1] == 409
+    assert library.scan_poses() == []
+    assert not list(store.rglob("*.webp"))
+
+
+def test_failed_preview_encoding_cleans_its_partial_file(store, monkeypatch):
+    import io
+    from PIL import Image
+
+    raw = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(raw, "PNG")
+    def fail_save(_image, path, *_args, **_kwargs):
+        Path(path).write_bytes(b"partial")
+        raise OSError("disk full")
+    monkeypatch.setattr(Image.Image, "save", fail_save)
+    with pytest.raises(ValueError, match="disk full"):
+        library.prepare_image_preview_file(str(store), raw.getvalue())
+    assert not list(store.iterdir())

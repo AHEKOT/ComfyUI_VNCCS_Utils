@@ -36,6 +36,8 @@ RESERVED_LIBRARY_JSON = {"repositories.user.json", "pose_library.json"}
 
 MAX_PREVIEW_BYTES = 16 * 1024 * 1024
 
+MAX_PREVIEW_PIXELS = 4096 * 4096
+
 MAX_VIDEO_PREVIEW_INPUT_BYTES = 40 * 1024 * 1024
 
 MAX_VIDEO_PREVIEW_STORED_BYTES = 32 * 1024 * 1024
@@ -957,8 +959,12 @@ def prepare_image_preview_file(folder_path, raw):
     if len(raw) > MAX_PREVIEW_BYTES:
         raise ValueError("Preview image is too large")
     os.makedirs(folder_path, exist_ok=True)
+    output_path = None
     try:
-        image = Image.open(io.BytesIO(raw)).convert("RGB")
+        with Image.open(io.BytesIO(raw)) as source:
+            if source.width * source.height > MAX_PREVIEW_PIXELS:
+                raise ValueError("Preview image dimensions are too large")
+            image = source.convert("RGB")
         resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.LANCZOS)
         image.thumbnail((768, 768), resample)
         fd, output_path = tempfile.mkstemp(prefix="vnccs_preview_", suffix=".webp", dir=folder_path)
@@ -966,6 +972,8 @@ def prepare_image_preview_file(folder_path, raw):
         image.save(output_path, "WEBP", quality=76, method=6)
         return output_path, ".webp"
     except Exception as exc:
+        if output_path and os.path.exists(output_path):
+            os.remove(output_path)
         raise ValueError(f"Preview image could not be decoded: {exc}") from exc
 
 
@@ -1206,17 +1214,18 @@ def delete_pose(name, query):
     if not name:
         return ({"error": "Name required"}, 400)
 
-    try:
-        pose_path, _repository, _category = find_pose_file(
-            name, query.get("repository"), query.get("category"), query.get("asset_type"),
-        )
-    except ValueError as exc:
-        return ({"error": str(exc)}, 400)
-    if not pose_path or not os.path.exists(pose_path):
-        return ({"error": "Pose not found"}, 404)
+    with _LIBRARY_SAVE_LOCK:
+        try:
+            pose_path, _repository, _category = find_pose_file(
+                name, query.get("repository"), query.get("category"), query.get("asset_type"),
+            )
+        except ValueError as exc:
+            return ({"error": str(exc)}, 400)
+        if not pose_path or not os.path.exists(pose_path):
+            return ({"error": "Pose not found"}, 404)
 
-    os.remove(pose_path)
-    remove_previews(os.path.dirname(pose_path), name)
+        os.remove(pose_path)
+        remove_previews(os.path.dirname(pose_path), name)
 
     return ({"success": True}, 200)
 
@@ -1288,6 +1297,8 @@ def save_pose(data):
 
         with _LIBRARY_SAVE_LOCK:
             # Check after preview preparation: another save may finish while it awaits.
+            if old_name and old_repository == LOCAL_USER_REPOSITORY and (not old_pose_path or not os.path.exists(old_pose_path)):
+                return ({"error": "The source library item was removed while saving"}, 409)
             if os.path.exists(pose_path) and (not old_pose_path or os.path.abspath(old_pose_path) != os.path.abspath(pose_path)):
                 return ({"error": "A library item with this name already exists"}, 409)
 

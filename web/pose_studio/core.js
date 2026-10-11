@@ -1316,17 +1316,28 @@ export class PoseViewerCore {
     }
 
     isCaptureReady() {
-        return this.isInitialized() && this._skinTextureReady !== false;
+        return this.isInitialized() && this._skinTextureReady !== false
+            && this._referenceTextureReady !== false && !this._referenceTextureError;
     }
 
-    waitForCaptureReady() {
-        return this._skinTexturePromise || Promise.resolve(true);
+    async waitForCaptureReady() {
+        while (!this._disposed) {
+            const skin = this._skinTexturePromise;
+            const reference = this._referenceTexturePromise;
+            await Promise.all([skin, reference]);
+            if (this._disposed) break;
+            if (skin !== this._skinTexturePromise || reference !== this._referenceTexturePromise) continue;
+            if (this._referenceTextureError) throw new Error(this._referenceTextureError);
+            return true;
+        }
+        throw new Error("Pose Studio was disposed.");
     }
 
     dispose() {
         this._disposed = true;
         this.initialized = false;
         this._referenceGeneration = (this._referenceGeneration || 0) + 1;
+        this._resolveReferenceTexture?.(false);
         this._skinTextureLoadToken += 1;
         this._skinTextureReady = false;
 
@@ -4583,6 +4594,8 @@ export class PoseViewerCore {
 
     loadReferenceImage(url) {
         const generation = this._referenceGeneration = (this._referenceGeneration || 0) + 1;
+        this._resolveReferenceTexture?.(false);
+        this._referenceTextureError = null;
         if (!this.initialized || !this.captureCamera) {
             this.pendingBackgroundUrl = url;
             return;
@@ -4612,9 +4625,14 @@ export class PoseViewerCore {
         }
 
         // Load texture
+        this._referenceTextureReady = false;
+        let resolveReady;
+        this._referenceTexturePromise = new Promise(resolve => { resolveReady = resolve; });
+        this._resolveReferenceTexture = resolveReady;
         new THREE.TextureLoader().load(url, (tex) => {
             if (generation !== this._referenceGeneration || !this.refPlane) {
                 tex.dispose();
+                resolveReady(false);
                 return;
             }
             // Ensure sRGB for real colors
@@ -4628,11 +4646,23 @@ export class PoseViewerCore {
                 this.refPlane.visible = true;
                 this.requestRender();
             }
+            this._referenceTextureReady = true;
+            resolveReady(true);
+        }, undefined, () => {
+            if (generation === this._referenceGeneration && !this._disposed) {
+                this._referenceTextureReady = true;
+                this._referenceTextureError = "Failed to load background image. Replace or remove it before capturing.";
+            }
+            resolveReady(false);
         });
     }
 
     removeReferenceImage() {
         this._referenceGeneration = (this._referenceGeneration || 0) + 1;
+        this._resolveReferenceTexture?.(false);
+        this._referenceTexturePromise = null;
+        this._referenceTextureReady = true;
+        this._referenceTextureError = null;
         this.pendingBackgroundUrl = null;
         if (!this.refPlane) return;
         this.captureCamera.remove(this.refPlane);

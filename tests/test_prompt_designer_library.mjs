@@ -76,6 +76,39 @@ test("late template save, rename and delete failures cannot replace a reconfigur
     }
 });
 
+test("reconfiguration invalidates template opening even when the replacement workflow has identical state", async t => {
+    for (const failed of [false, true]) {
+        const { widget, records } = setup(t);
+        const entry = template(records, "f".repeat(32), "Old workflow template");
+        let respond;
+        widget.api.fetchApi = () => new Promise(resolve => { respond = resolve; });
+        const before = widget.persisted, pending = widget.openSavedPrompt(entry);
+        widget.invalidateRestore();
+        widget.restoring = false; widget.container.inert = false;
+        widget.setStatus("Replacement workflow recovery error", true);
+        respond(failed ? Response.json({ error: "Old template request failed" }, { status: 500 })
+            : Response.json(records.get(entry.id)));
+        await pending;
+        assert.equal(widget.persisted, before);
+        assert.equal(widget.state.promptTabs.length, 1);
+        assert.equal(widget.status.textContent, "Replacement workflow recovery error");
+    }
+});
+
+test("obsolete library requests cannot replace the replacement workflow's recovery status", async t => {
+    for (const catalog of ["prompts", "user blocks", "bundled blocks"]) {
+        const { widget } = setup(t);
+        let respond;
+        widget.api.fetchApi = () => new Promise(resolve => { respond = resolve; });
+        const pending = catalog === "prompts" ? widget.loadSavedPrompts() : widget.loadLibraryCards(catalog === "bundled blocks");
+        widget.invalidateRestore();
+        widget.setStatus("Replacement workflow recovery error", true);
+        respond(Response.json({ error: "Old library request failed" }, { status: 500 }));
+        await pending;
+        assert.equal(widget.status.textContent, "Replacement workflow recovery error");
+    }
+});
+
 test("saving a draft never grants overwrite permission or changes a saved card while typing", async t => {
     const { widget, records } = setup(t);
     widget.editPromptDetails(); widget.promptName.value = "Protected original";

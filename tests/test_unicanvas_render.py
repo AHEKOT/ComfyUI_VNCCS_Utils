@@ -61,6 +61,20 @@ class UniCanvasRenderTests(unittest.TestCase):
             result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
         self.assertEqual(result.getpixel((0, 0)), (0, 0, 0, 0))
 
+    def test_explicitly_uncached_layer_never_restores_retired_cache_pixels(self):
+        crop = {"x": 0, "y": 0, "width": 1, "height": 1}
+        state = {"storage": "server_cache", "state_id": "cleared", "bbox": crop,
+                 "layers": [{"id": "image", "type": "raster", "cached": False}]}
+        cached = {"layers": [{"id": "image", "type": "raster", "crop": crop,
+                             "dataURL": _data_url(Image.new("RGBA", (1, 1), "red")),
+                             "hiresRect": crop, "hiresDataURL": "retired-hires"}]}
+        with mock.patch.object(UNICANVAS.state, "_read_unicanvas_state_cache", return_value=cached):
+            result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+        self.assertEqual(result.getpixel((0, 0)), (0, 0, 0, 0))
+        merged = UNICANVAS.state._merge_unicanvas_state_with_cache(state, cached)["layers"][0]
+        self.assertNotIn("dataURL", merged)
+        self.assertNotIn("hiresDataURL", merged)
+
     def test_large_flat_layer_exports_its_small_bbox_without_decoding_the_whole_layer(self):
         pixels = _data_url(Image.new("RGBA", (6000, 4000), "red"))
         state = {"version": 2, "state_id": "large-layer", "output_id": "large-layer_out",

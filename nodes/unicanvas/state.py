@@ -30,7 +30,7 @@ def _merge_unicanvas_state_with_cache(state: dict[str, Any], cached: dict[str, A
         if not isinstance(live_layer, dict):
             continue
         cached_layer = cached_by_id.get(live_layer.get("id"))
-        if isinstance(cached_layer, dict):
+        if isinstance(cached_layer, dict) and live_layer.get("cached") is not False:
             layer = {**cached_layer, **live_layer}
             if live_layer.get("cached") and not live_layer.get("dataURL"):
                 layer["dataURL"] = cached_layer.get("dataURL")

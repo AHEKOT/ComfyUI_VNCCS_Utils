@@ -66,7 +66,7 @@ def _unicanvas_state_layer_image(state: dict[str, Any], layer_id: str) -> Image.
         for layer in layers:
             if not isinstance(layer, dict) or str(layer.get("id") or "") != str(layer_id):
                 continue
-            data_url = layer.get("dataURL") or layer.get("hiresDataURL")
+            data_url = layer.get("hiresDataURL") or layer.get("dataURL")
             if data_url:
                 return _decode_data_url(str(data_url), "RGBA")
             break

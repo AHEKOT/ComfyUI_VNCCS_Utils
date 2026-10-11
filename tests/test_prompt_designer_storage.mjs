@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { runInNewContext } from "node:vm";
-import { defaultState } from "../web/prompt_designer/state.mjs";
+import { defaultState, normalizeState, MAX_PROMPT_CHARS } from "../web/prompt_designer/state.mjs";
 import { DocumentStorage } from "../web/prompt_designer/storage.mjs";
 import { PromptDesignerWidget } from "../web/prompt_designer/widget.mjs";
 import { readPromptResponse } from "../web/prompt_designer/response.mjs";
@@ -367,6 +367,51 @@ test("late restoration cannot overwrite a newly configured workflow before or af
         assert.equal(widget.container.inert, false);
         widget.documentStorage.dispose();
     }
+});
+
+test("legacy tab migration cannot roll a large restored workflow back to the previous workflow", async t => {
+    const old = { ...defaultState(), parts: [{ text: "OLD WORKFLOW" }] };
+    const restored = normalizeState({ ...defaultState(),
+        blocks: ["a", "b", "c"].map(id => ({ id, name: id, text: "x".repeat(MAX_PROMPT_CHARS) })),
+        parts: [{ text: "new".repeat(19_000) }],
+    });
+    const raw = JSON.stringify(restored), hidden = { name: "node_state", value: raw };
+    const local = memory(), recovery = JSON.stringify({ state: raw, revision: 1, dirty: true });
+    local.setItem(key, recovery);
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: local });
+    t.after(() => { if (descriptor) Object.defineProperty(globalThis, "localStorage", descriptor); else delete globalThis.localStorage; });
+    const properties = { ...documentNode(restored).properties };
+    properties.promptDesigner.dirty = true;
+    const originalProperties = JSON.stringify(properties);
+    const widget = Object.create(PromptDesignerWidget.prototype);
+    Object.assign(widget, {
+        node: { widgets: [hidden], properties }, api: { fetchApi: async (_, options) => reply(options?.method === "PUT"
+            ? { revision: 1 } : { revision: 0, state: null }) },
+        copy: {}, undo: {}, redo: {}, container: {}, state: old, saved: JSON.stringify(old), revision: 0,
+        render() {}, setStatus(message) { this.message = message; }, hideInspector() {}, restorePromptDetails() {},
+        loadLibraryCards() {}, schedulePreview() {},
+    });
+    t.after(() => { widget.documentStorage?.dispose(); });
+    await widget.loadFromNode();
+    assert.equal(hidden.value, raw);
+    assert.equal(JSON.stringify(widget.node.properties), originalProperties);
+    assert.equal(local.getItem(key), recovery);
+    assert.deepEqual(widget.state.parts, restored.parts);
+    assert.equal(widget.saved, null);
+    assert.ok(widget.restoreError);
+    assert.equal(widget.container.inert, true);
+    assert.equal(widget.documentStorage.pending, undefined);
+    assert.throws(() => widget.prepareForQueue(), /restoration is not complete/);
+    assert.match(widget.message, /too large.*retained/i);
+    hidden.value = JSON.stringify(old); widget.node.properties = {};
+    await widget.loadFromNode();
+    assert.equal(widget.restoreError, null);
+    assert.equal(widget.container.inert, false);
+    widget.state.parts = [{ text: "Replacement workflow edit" }];
+    assert.ok(widget.persist());
+    assert.equal(JSON.parse(hidden.value).parts[0].text, "Replacement workflow edit");
+    assert.equal(local.getItem(key), recovery);
 });
 
 test("ComfyUI lifecycle hooks restore configured values once and write the actual serialized payload", async () => {

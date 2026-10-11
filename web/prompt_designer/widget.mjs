@@ -1081,8 +1081,12 @@ export class PromptDesignerWidget {
     invalidateRestore() {
         this.libraryActions?.close(false);
         this.restoreRevision = (this.restoreRevision ?? 0) + 1;
+        for (const key of ["savedPromptLoadRevision", "promptLibraryRevision", "diskLibraryRevision", "bundledLibraryRevision"]) {
+            this[key] = (this[key] ?? 0) + 1;
+        }
         this.documentStorage?.dispose();
         this.documentStorage = null;
+        this.saved = null;
         this.restoring = true;
         this.container.inert = true;
     }
@@ -1123,9 +1127,19 @@ export class PromptDesignerWidget {
             return;
         }
         if (this.disposed || restoreRevision !== this.restoreRevision || this.documentStorage !== storage) return;
-        this.state = restored;
+        this.state = { ...restored };
         this.promptBaselines = new Map();
         this.promptHistories = new Map();
+        try {
+            this.ensurePromptTabs();
+            this.state = normalizeState(this.state);
+        } catch (error) {
+            this.state = restored;
+            this.restoreError = error;
+            this.restoring = false;
+            this.setStatus(`Could not restore state: ${error.message}. Existing data was retained.`, true);
+            return;
+        }
         this.hideInspector();
         this.restoreError = null;
         this.restoring = false;
@@ -1134,7 +1148,7 @@ export class PromptDesignerWidget {
         this.history = new EditHistory();
         this.libraryView = this.node.properties?.promptDesignerLibraryTab === "prompts" ? "prompts" : "blocks";
         this.editingSavedPrompt = this.node.properties?.promptDesignerPromptDetails?.id ? { ...this.node.properties.promptDesignerPromptDetails } : null;
-        this.ensurePromptTabs(); this.restorePromptDetails();
+        this.restorePromptDetails();
         this.render();
         this.commit(null, false);
         this.loadLibraryCards();

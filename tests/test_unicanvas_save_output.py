@@ -117,6 +117,21 @@ def test_layer_id_save_extracts_only_that_layer_from_state(output_dir):
         assert saved.getpixel((0, 0)) == (0, 0, 255, 33)
 
 
+def test_layer_id_save_preserves_native_hires_pixels(output_dir):
+    preview = Image.new("RGBA", (2, 2), (255, 0, 0, 255))
+    native = Image.new("RGBA", (8, 6), (0, 0, 255, 33))
+    state = {"version": 2, "layers": [{"id": "image", "type": "raster",
+        "dataURL": _data_url(preview), "hiresDataURL": _data_url(native),
+        "hiresRect": {"x": 0, "y": 0, "width": 2, "height": 2}}]}
+
+    result = _run_unicanvas_save_output({"state": state, "layer_id": "image"})
+
+    assert (result["width"], result["height"]) == native.size
+    with Image.open(result["path"]) as saved:
+        assert saved.size == native.size
+        assert saved.getpixel((0, 0)) == (0, 0, 255, 33)
+
+
 def test_state_save_renders_flattened_composite(output_dir):
     top = Image.new("RGBA", (1, 1), (255, 0, 0, 255))
     bottom = Image.new("RGBA", (1, 1), (0, 0, 255, 255))
