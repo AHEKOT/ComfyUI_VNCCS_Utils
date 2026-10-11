@@ -1,6 +1,7 @@
 """Catalog persistence and HTTP contracts without importing ComfyUI or model code."""
 import asyncio
 import json
+import stat
 import tempfile
 import threading
 import unittest
@@ -65,6 +66,34 @@ class UniCanvasDocumentTests(unittest.TestCase):
     def upload(self, payload):
         handler = self.runtime["routes"]["/vnccs/unicanvas_state_upload"]
         return asyncio.run(handler(Request(payload)))
+
+    def test_state_pixels_are_durable_before_cache_publication(self):
+        events = []
+        fsync, replace = self.cache.os.fsync, self.cache.os.replace
+
+        def sync(fd):
+            events.append("file" if stat.S_ISREG(self.cache.os.fstat(fd).st_mode) else "directory")
+            return fsync(fd)
+
+        def publish(source, target):
+            self.assertEqual(events, ["file"])
+            self.assertEqual(json.loads(Path(source).read_text())["revision"], 7)
+            events.append("replace")
+            return replace(source, target)
+
+        with mock.patch.object(self.cache.os, "fsync", side_effect=sync), mock.patch.object(self.cache.os, "replace", side_effect=publish):
+            self.save("durable", revision=7)
+        self.assertEqual(events, ["file", "replace", "directory"] if self.cache.os.name == "posix" else ["file", "replace"])
+        self.assertEqual(json.loads(self.path("durable").read_text())["revision"], 7)
+
+    def test_failed_pixel_flush_preserves_the_previous_cache(self):
+        self.save("first")
+        original = self.path("first").read_bytes()
+        with mock.patch.object(self.cache.os, "fsync", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.save("first", count=2, revision=2)
+        self.assertEqual(self.path("first").read_bytes(), original)
+        self.assertEqual(list(self.path("first").parent.glob("cache_*")), [])
 
     def test_legacy_registration_is_idempotent_and_preserves_original_bytes(self):
         legacy = Path(self.cache._UNICANVAS_LEGACY_STATE_CACHE_DIR)

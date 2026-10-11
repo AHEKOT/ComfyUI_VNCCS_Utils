@@ -390,6 +390,59 @@ test("editing rows appends a fresh blank row, persists on each keystroke and pre
     assert.equal(widget.variants.children.length, 4);
 });
 
+test("new rows containing choice separators stay aligned with source before later edits", t => {
+    const { widget } = setup(t); widget.openBlock("artists");
+    for (const source of ["{~one}", "one", ""]) {
+        widget.saveBlockSource(source); widget.renderBlockVariants();
+        const blank = widget.variants.lastElementChild.children[1];
+        blank.textContent = "a|b"; emit(blank, "input");
+        const values = source ? ["one", "a", "b"] : ["a", "b"];
+        assert.deepEqual(widget.variants.children.map(row => row.children[1].textContent), [...values, ""]);
+        assert.deepEqual(widget.blockEditRanges.map(row => row.text), values);
+        const added = widget.variants.children[source ? 1 : 0].children[1];
+        added.textContent = ""; emit(added, "input");
+        assert.equal(widget.activeBlock().text, source ? "{~one|b}" : "{~b}");
+        assert.equal(JSON.parse(widget.node.widgets[0].value).blocks[0].text, widget.activeBlock().text);
+        emit(blank, "input");
+        assert.equal(widget.activeBlock().text, source ? "{~one|b}" : "{~b}", "retired draft callbacks cannot edit new rows");
+    }
+});
+
+test("splitting new and existing rows preserves focus and the source caret, including filtered marks", t => {
+    const { widget, selection } = setup(t); widget.openBlock("artists");
+    for (const [draft, query] of [[true, ""], [false, ""], [false, "b"]]) {
+        widget.saveBlockSource("{~blue|tail}"); widget.blockSearch.value = query; widget.renderBlockVariants();
+        const content = (draft ? widget.variants.lastElementChild : widget.variants.children[0]).children[1];
+        content.textContent = "a|b suffix"; content.focus();
+        const range = document.createRange(); range.setStart(content.firstChild, 3); range.collapse(true);
+        range.toString = () => "a|b"; selection.addRange(range);
+        emit(content, "input");
+        assert.equal(document.activeElement.textContent, "b suffix");
+        assert.equal(selection.anchorNode.textContent, query ? "b" : "b suffix");
+        assert.equal(selection.getRangeAt(0).startOffset, 1);
+        assert.equal(widget.activeBlock().text, draft ? "{~blue|tail|a|b suffix}" : "{~a|b suffix|tail}");
+    }
+});
+
+test("nested separators retain their row and composing or incomplete source stays recoverable", t => {
+    const { widget } = setup(t); widget.openBlock("artists");
+    widget.saveBlockSource("{~one}"); widget.renderBlockVariants();
+    const nested = widget.variants.lastElementChild.children[1];
+    nested.textContent = "{~red|blue} coat"; nested.focus(); emit(nested, "input");
+    assert.equal(document.activeElement, nested);
+    assert.deepEqual(widget.blockEditRanges.map(row => row.text), ["one", "{~red|blue} coat"]);
+    const blank = widget.variants.lastElementChild.children[1];
+    blank.textContent = "a|b"; blank.focus(); emit(blank, "input", { isComposing: true });
+    assert.equal(document.activeElement, blank, "composition keeps its live editor until input completes");
+    assert.equal(widget.activeBlock().text, "{~one|{~red|blue} coat|a|b}");
+    emit(blank, "input", { isComposing: false });
+    assert.deepEqual(widget.blockEditRanges.map(row => row.text), ["one", "{~red|blue} coat", "a", "b"]);
+    const incomplete = widget.variants.lastElementChild.children[1];
+    incomplete.textContent = "{red|"; emit(incomplete, "input");
+    assert.equal(widget.activeBlock().text, "{~one|{~red|blue} coat|a|b|{red|}");
+    assert.equal(JSON.parse(widget.node.widgets[0].value).blocks[0].text, widget.activeBlock().text);
+});
+
 test("clearing a variant removes its whole choice, renumbers rows and keeps one blank draft", t => {
     const { widget } = setup(t); widget.openBlock("artists");
     for (const [source, index, expected, values] of [
@@ -516,6 +569,49 @@ test("source parsing preserves top-level row boundaries and excludes variable br
     assert.deepEqual(parsed.rows.map(row => source.slice(row.start, row.end)), ["ink", "{~red|blue} coat", "pencil"]);
     assert.equal(blockSourceMode("${color} {~red|blue}", "cycle"), "${color} {@red|blue}");
     assert.equal(blockRows("before {~red|blue} after").wrapped, false);
+});
+
+test("comments keep source choice boundaries, literal separators and unfinished drafts", () => {
+    for (const prefix of ["first", "first \\", '"first', "{~nested"]) {
+        const source = `{~${prefix} # ignored | } {\n${prefix === "{~nested" ? "|other}" : ""}|second} # trailing }`;
+        const parsed = blockRows(source);
+        assert.equal(parsed.wrapped, true);
+        assert.equal(parsed.rows.length, 2);
+        assert.equal(parsed.rows[1].text, "second");
+        assert.equal(source.slice(parsed.rows[0].start, parsed.rows[0].end), parsed.rows[0].text);
+    }
+    const separator = "{2$$a#b$$first|second|third}";
+    assert.deepEqual(blockRows(separator).rows.map(row => row.text), ["first", "second", "third"]);
+    for (const source of ["{~// ignored } | first\nfirst|second}", "{~/* ignored } | first */first|second}",
+        "{~2::/* ignored } | first */first|second}",
+        "{~{~nested|inner} // ignored } | first\n|second}"]) {
+        const parsed = blockRows(source);
+        assert.equal(parsed.wrapped, true);
+        assert.equal(parsed.rows.length, 2);
+        assert.equal(parsed.rows[1].text, "second");
+    }
+    for (const literal of ["https://example.test/", "first // literal", "first /* literal"])
+        assert.deepEqual(blockRows(`{~${literal}|second}`).rows.map(row => row.text), [literal, "second"]);
+    const unfinished = "{~first # unfinished |second}";
+    assert.deepEqual(blockRows(unfinished), { wrapped: false, rows: [{ start: 0, end: unfinished.length, text: unfinished }] });
+});
+
+test("editing and deleting commented choices preserves the remaining source and appends before its real closing brace", t => {
+    const { widget } = setup(t);
+    widget.openBlock("hair");
+    const source = "{~first # ignored | }\n|second # retained | }\n} # trailing }";
+    widget.saveBlockSource(source); widget.renderBlockVariants();
+    const rows = widget.variants.querySelectorAll(".vnccs-pd-variant-text");
+    assert.equal(rows.length, 3, "two choices and one blank draft");
+    rows[1].textContent = "updated # retained | }"; emit(rows[1], "input");
+    assert.equal(widget.activeBlock().text, source.replace("second", "updated"));
+    rows[0].textContent = ""; emit(rows[0], "input");
+    assert.equal(widget.activeBlock().text, "{~updated # retained | }\n} # trailing }");
+    const draft = widget.variants.lastElementChild.querySelector(".vnccs-pd-variant-text");
+    draft.textContent = "third"; emit(draft, "input");
+    assert.equal(widget.activeBlock().text, "{~updated # retained | }\n|third} # trailing }");
+    assert.equal(blockRows(widget.activeBlock().text).rows.length, 2);
+    assert.equal(JSON.parse(widget.node.widgets[0].value).blocks.find(block => block.id === "hair").text, widget.activeBlock().text);
 });
 
 test("editable rows hide only weight prefixes recognized by Dynamic Prompts", () => {

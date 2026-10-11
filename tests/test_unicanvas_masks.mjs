@@ -4,7 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { normalizePanorama } from "../web/unicanvas/panorama.mjs";
 import { normalizeTransformMode } from "../web/unicanvas/transform.mjs";
-import { serializePose } from "../web/unicanvas/pose_state.mjs";
+import { isImageLayer, serializePose } from "../web/unicanvas/pose_state.mjs";
 
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 class Element {
@@ -24,7 +24,7 @@ class Canvas {
 let nextId = 0;
 const icons = vm.runInNewContext(source.slice(source.indexOf("const UI_ICONS ="), source.indexOf("\n};", source.indexOf("const UI_ICONS =")) + 3) + "\nUI_ICONS");
 const context = { UI_ICONS: icons, uid: () => `new-${++nextId}`, HISTORY_LIMIT: 20,
-    normalizePanorama, normalizeTransformMode, serializePose, console,
+    normalizePanorama, normalizeTransformMode, isImageLayer, serializePose, console,
     makeDefaultUniCanvasSettings: () => ({ positive: "" }),
     document: { createElement: tag => tag === "canvas" ? new Canvas() : new Element() } };
 const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", context);

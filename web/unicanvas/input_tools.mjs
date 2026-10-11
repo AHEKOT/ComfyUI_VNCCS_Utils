@@ -124,12 +124,12 @@ function syncBrushControlInputs(uc) {
 }
 
 function captureToolSettings(uc) {
-  return uc.createHistorySnapshot(false);
+  return { brushSize: uc.brushSize, opacity: uc.opacity, brushHardness: uc.brushHardness, fg: uc.fg };
 }
 
 function commitToolSettings(uc, before, message) {
   if (!before) return;
-  uc.pushHistoryEntry(before);
+  uc.pushHistoryEntry({ kind: "toolSettings", before, after: captureToolSettings(uc) });
   uc.syncLightStateToWidget();
   if (message) uc.setStatus(message);
 }
@@ -153,6 +153,8 @@ function openRadialHud(uc, e) {
     lastScreen: uc.canvasPointFromEvent(e),
     values: { brushSize: uc.brushSize, opacity: uc.opacity, brushHardness: uc.brushHardness, fg: uc.fg },
     before: captureToolSettings(uc),
+    loadRevision: uc._stateLoadRevision,
+    documentRevision: uc._documentRevision,
     sector: null,
   };
 }
@@ -183,6 +185,11 @@ function applyHudSectorValue(uc, gesture, dx) {
 function updateGesture(uc, e) {
   const gesture = uc._vnccsInputTools.gesture;
   if (!gesture || e.pointerId !== gesture.pointerId) return;
+  if (uc._disposed || uc._isRestoring || gesture.loadRevision !== uc._stateLoadRevision || gesture.documentRevision !== uc._documentRevision) {
+    uc._vnccsInputTools.gesture = null;
+    uc.updateToolPreviewOverlay();
+    return;
+  }
   gesture.lastScreen = uc.canvasPointFromEvent(e);
   // Keep the tool preview circle under the cursor while the gesture runs.
   uc.hoverPoint = uc.worldFromCanvasPoint(gesture.lastScreen);
@@ -201,6 +208,10 @@ function commitGesture(uc) {
   const gesture = state.gesture;
   state.gesture = null;
   if (!gesture) return;
+  if (uc._disposed || uc._isRestoring || gesture.loadRevision !== uc._stateLoadRevision || gesture.documentRevision !== uc._documentRevision) {
+    uc.updateToolPreviewOverlay();
+    return;
+  }
   if (!toolSettingsChanged(uc, gesture.before)) {
     uc.updateToolPreviewOverlay();
     return;
@@ -233,7 +244,7 @@ function drawSoftStampStroke(uc, a, b) {
   const start = uc.alignCoordForTool(a, uc.brushSize);
   const end = uc.alignCoordForTool(b, uc.brushSize);
   if (!uc.ensureStrokeWorldBounds(start, end, uc.brushSize)) return;
-  uc.materializeRasterLayerForEditing(layer);
+  if (uc.materializeRasterLayerForEditing(layer) === false) return;
   const strokeBounds = uc.getStrokeCanvasBounds(layer, start, end, uc.brushSize);
   const radius = uc.brushSize / 2;
   const hardness = clamp01(uc.brushHardness);
@@ -383,12 +394,26 @@ export function installUniCanvasInputTools(uc) {
     uc.renderToolSettings();
   };
 
+  let hardnessGesture = null;
   uc.toolSettings.addEventListener("input", (e) => {
     const target = e.target;
     if (!(target instanceof HTMLInputElement) || target.dataset.control !== "brushHardness") return;
-    uc.recordInputHistory(target);
+    if (uc._disposed || uc._isRestoring) return;
+    if (!hardnessGesture || hardnessGesture.target !== target
+        || hardnessGesture.loadRevision !== uc._stateLoadRevision || hardnessGesture.documentRevision !== uc._documentRevision) {
+      hardnessGesture = { target, before: captureToolSettings(uc),
+        loadRevision: uc._stateLoadRevision, documentRevision: uc._documentRevision };
+    }
     uc.brushHardness = clamp01(Number(target.value));
     uc.updateToolPreviewOverlay();
+  });
+  uc.toolSettings.addEventListener("change", (e) => {
+    if (hardnessGesture?.target !== e.target) return;
+    const gesture = hardnessGesture;
+    hardnessGesture = null;
+    if (uc._disposed || uc._isRestoring || gesture.loadRevision !== uc._stateLoadRevision
+        || gesture.documentRevision !== uc._documentRevision || gesture.before.brushHardness === uc.brushHardness) return;
+    commitToolSettings(uc, gesture.before);
   });
 
   uc.canvas.addEventListener("pointerdown", (e) => {
@@ -426,6 +451,7 @@ export function installUniCanvasInputTools(uc) {
   };
   uc.canvas.addEventListener("pointerup", endGesture);
   uc.canvas.addEventListener("pointercancel", endGesture);
+  uc.canvas.addEventListener("lostpointercapture", endGesture);
 
   uc.renderToolSettings();
   return uc;

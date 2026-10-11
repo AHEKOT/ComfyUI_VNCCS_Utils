@@ -10,6 +10,31 @@ const source = await fs.readFile(new URL("../web/vnccs_pose_studio.js", import.m
 const core = await fs.readFile(new URL("../web/pose_studio/core.js", import.meta.url), "utf8");
 const noop = () => {};
 
+for (const ending of ["pointerup", "pointercancel", "lostpointercapture"]) {
+    test(`Light Radar ${ending} preserves the last preview and stops hover edits`, () => {
+        const { w } = createScene();
+        const light = { type: "point", color: "#ffffff", x: 0, y: 0, z: 0 };
+        const previews = [];
+        let commits = 0;
+        w.applyLighting = () => previews.push([light.x, light.z]);
+        w.syncToNode = () => commits++;
+        const radar = w.createLightRadar(light);
+        radar.emit("pointerdown", { clientX: 70, clientY: 70 });
+        radar.emit("pointermove", { clientX: 80, clientY: 80 });
+        radar.emit("pointermove", { clientX: 90, clientY: 90 });
+        assert.equal(previews.length, 3);
+        assert.notDeepEqual(previews[1], previews[2], "the newest light position previews before release");
+        const latest = [light.x, light.z];
+        radar.emit(ending);
+        radar.emit("pointermove", { clientX: 120, clientY: 120 });
+        radar.emit("pointerup");
+        assert.deepEqual([light.x, light.z], latest);
+        assert.equal(previews.length, 3);
+        assert.equal(commits, 1);
+        assert.equal(radar.hasPointerCapture(1), false);
+    });
+}
+
 function animationScene() {
     const scene = createScene();
     const { w } = scene;
@@ -96,6 +121,132 @@ function libraryScene() {
     return scene;
 }
 
+for (const animation of [false, true]) {
+    for (const fails of [false, true]) {
+        test(`the newest library ${animation ? "video" : "image"} preview survives an older ${fails ? "failure" : "completion"}`, async () => {
+            const { w } = libraryScene();
+            w.showLibraryModal();
+            const pose = { name: "A", repository: "local_user_poses", category: "Standing",
+                asset_type: animation ? "animation" : "pose", data: { prompt: "original" } };
+            if (animation) pose.data.animation = createDefaultAnimationState();
+            await w.renderLibraryInspector(pose);
+            let resolveFirst, rejectFirst;
+            const first = new Promise((resolve, reject) => { resolveFirst = resolve; rejectFirst = reject; });
+            const readPreview = file => file.name === "first" ? first : Promise.resolve("data:latest");
+            w.compressLibraryImage = w.readLibraryFileAsDataUrl = readPreview;
+            const messages = [];
+            w.showMessage = (...args) => messages.push(args);
+            const input = w.libraryInspector.querySelector(".vnccs-ps-library-preview-input");
+            const preview = w.libraryInspector.querySelector(".vnccs-ps-library-inspector-preview");
+            input.value = "first";
+            input.files = [{ name: "first" }];
+            const older = input.onchange({ target: input });
+            input.value = "latest";
+            input.files = [{ name: "latest" }];
+            await input.onchange({ target: input });
+            const latestMarkup = preview.innerHTML;
+            if (fails) rejectFirst(new Error("Old preview could not be read"));
+            else resolveFirst("data:old");
+            await older;
+            assert.equal(preview.innerHTML, latestMarkup);
+            assert.equal(input.value, "latest");
+            assert.deepEqual(messages, []);
+            for (const [field, value] of Object.entries({ name: "A", category: "Standing", tags: "", prompt: "edited" })) {
+                w.libraryInspector.querySelector(`.vnccs-ps-library-edit-${field}`).value = value;
+            }
+            let saved;
+            w.saveLibraryPoseRecord = async payload => { saved = payload; return {}; };
+            await w.libraryInspector.querySelector(".vnccs-ps-library-save-edit").onclick();
+            assert.equal(saved.preview, "data:latest", "the saved item keeps the latest selected file");
+        });
+    }
+}
+
+for (const action of ["selection", "close", "reopen", "remove"]) {
+    test(`late preview read errors are ignored after library ${action}`, async () => {
+        const { w } = libraryScene();
+        w.showLibraryModal();
+        const pose = { name: "A", repository: "local_user_poses", category: "Standing", data: { bones: {} } };
+        await w.renderLibraryInspector(pose);
+        let rejectRead;
+        w.compressLibraryImage = () => new Promise((_resolve, reject) => { rejectRead = reject; });
+        const messages = [];
+        w.showMessage = (...args) => messages.push(args);
+        const input = w.libraryInspector.querySelector(".vnccs-ps-library-preview-input");
+        input.value = "preview";
+        input.files = [{}];
+        const pending = input.onchange({ target: input });
+        if (action === "selection") await w.renderLibraryInspector({ ...pose, name: "B" });
+        if (action === "close") w._closeLibraryModal();
+        if (action === "reopen") {
+            w._closeLibraryModal();
+            w.showLibraryModal();
+            await w.renderLibraryInspector({ ...pose, name: "B" });
+        }
+        if (action === "remove") w._disposed = true;
+        rejectRead(new Error("Old preview could not be read"));
+        await pending;
+        assert.deepEqual(messages, []);
+        assert.equal(input.value, "preview");
+    });
+}
+
+test("library preview failures retain the last valid image and saves wait for the selected file", async () => {
+    const { w } = libraryScene();
+    w.showLibraryModal();
+    const pose = { name: "A", repository: "local_user_poses", category: "Standing", data: { bones: {} } };
+    await w.renderLibraryInspector(pose);
+    const input = w.libraryInspector.querySelector(".vnccs-ps-library-preview-input");
+    const preview = w.libraryInspector.querySelector(".vnccs-ps-library-inspector-preview");
+    const save = w.libraryInspector.querySelector(".vnccs-ps-library-save-edit");
+    for (const [field, value] of Object.entries({ name: "A", category: "Standing", tags: "", prompt: "edited" })) {
+        w.libraryInspector.querySelector(`.vnccs-ps-library-edit-${field}`).value = value;
+    }
+    const saved = [];
+    w.saveLibraryPoseRecord = async payload => { saved.push(payload); return {}; };
+    w.compressLibraryImage = async () => "data:valid";
+    input.files = [{}];
+    await input.onchange({ target: input });
+    const validMarkup = preview.innerHTML;
+    let rejectRead;
+    w.compressLibraryImage = () => new Promise((_resolve, reject) => { rejectRead = reject; });
+    const messages = [];
+    w.showMessage = (...args) => messages.push(args);
+    const pending = input.onchange({ target: input });
+    assert.equal(save.disabled, true);
+    await save.onclick();
+    assert.equal(saved.length, 0, "a pending read must not silently save the previous file");
+    rejectRead(new Error("Selected preview could not be read"));
+    await pending;
+    assert.equal(save.disabled, false);
+    assert.equal(preview.innerHTML, validMarkup);
+    assert.deepEqual(messages, [["Selected preview could not be read", true]]);
+    await save.onclick();
+    assert.equal(saved[0].preview, "data:valid");
+});
+
+test("an older preview completion cannot enable Save while the newest file is still loading", async () => {
+    const { w } = libraryScene();
+    w.showLibraryModal();
+    await w.renderLibraryInspector({ name: "A", repository: "local_user_poses", category: "Standing", data: { bones: {} } });
+    const input = w.libraryInspector.querySelector(".vnccs-ps-library-preview-input");
+    const save = w.libraryInspector.querySelector(".vnccs-ps-library-save-edit");
+    const reads = [];
+    w.compressLibraryImage = () => new Promise(resolve => reads.push(resolve));
+    input.files = [{}];
+    const older = input.onchange({ target: input });
+    const latest = input.onchange({ target: input });
+    reads[0]("data:old");
+    await older;
+    assert.equal(save.disabled, true);
+    w.saveLibraryPoseRecord = () => assert.fail("Pending previews cannot be saved");
+    await save.onclick();
+    reads[1]("data:latest");
+    await latest;
+    assert.equal(save.disabled, false);
+    assert.match(w.libraryInspector.querySelector(".vnccs-ps-library-inspector-preview").innerHTML, /data:latest/);
+});
+
 test("Pose Library header scales with both node dimensions without resizing the thumbnails", () => {
     const { w } = createScene();
     const properties = new Map();
@@ -178,6 +329,53 @@ test("editing a downloaded item saves a local copy while retaining its source id
     assert.match(errorMessage, /already exists/);
     assert.ok(w.libraryModal, "a rejected copy keeps the editor open");
 });
+
+for (const { animation, activeTab = 1, missingBasePose = false } of [
+    { animation: false }, { animation: true },
+    { animation: false, activeTab: 10_000_000_000 },
+    { animation: true, missingBasePose: true },
+]) {
+    test(`editing a scene ${animation ? "animation" : "pose"} prompt survives Apply (tab ${activeTab}, missing base pose ${missingBasePose})`, async () => {
+        const { w, context } = libraryScene();
+        const clip = createDefaultAnimationState({ prompt: "original", bones: { head: [20, 0, 0] } });
+        if (missingBasePose) delete clip.basePose;
+        const asset = {
+            type: animation ? "pose_animation" : "scene_pose", schema_version: 3,
+            active_character_id: "character-2", activeTab,
+            prompt: "original", pose_prompts: ["first pose", "original"],
+            characters: [
+                { id: "character-1", poses: [{ prompt: "other first" }, { prompt: "other second" }], animation: clip },
+                { id: "character-2", poses: [{ prompt: "first pose" }, { prompt: "original", bones: { head: [20, 0, 0] } }], animation: clip },
+            ],
+            ...(animation ? { animation: clip } : {}),
+        };
+        const pose = { name: "Scene", repository: "local_user_poses", category: "Standing",
+            asset_type: animation ? "animation" : "pose", data: asset };
+        w.showLibraryModal();
+        await w.renderLibraryInspector(pose);
+        for (const [field, value] of Object.entries({ name: "Scene", category: "Standing", tags: "", prompt: "edited" })) {
+            w.libraryInspector.querySelector(`.vnccs-ps-library-edit-${field}`).value = value;
+        }
+        let saved;
+        w.saveLibraryPoseRecord = async payload => { saved = payload.pose; return { id: "Scene" }; };
+        await w.libraryInspector.querySelector(".vnccs-ps-library-save-edit").onclick();
+        const poseIndex = activeTab === 1 ? 1 : 0;
+        assert.equal(saved.activeTab, poseIndex);
+        assert.equal(saved.characters[1].poses[poseIndex].prompt, "edited");
+        assert.equal(saved.pose_prompts[poseIndex], "edited");
+        assert.equal(saved.pose_prompts.length, 2, "invalid legacy indices must not create sparse arrays");
+        assert.equal(saved.characters[0].poses[1].prompt, "other second");
+        assert.equal(saved.characters[1].poses[1 - poseIndex].prompt, poseIndex === 1 ? "first pose" : "original");
+        assert.equal(asset.characters[1].poses[1].prompt, "original", "editing must not mutate the cached response");
+        if (animation) assert.equal(saved.characters[1].animation.basePose.prompt, "edited");
+        context.fetch = async () => ({ ok: true, json: async () => ({ pose: saved, asset_type: pose.asset_type }) });
+        w.hydrateCharacterSceneModels = async () => true;
+        w.setInterfaceMode = noop;
+        await w.loadFromLibrary(pose);
+        assert.equal(w.getPosePrompt(), "edited");
+        if (animation) assert.equal(w.animationState.basePose.prompt, "edited");
+    });
+}
 
 test("Apply closes the library through cleanup and reopening observes the new workspace", async () => {
     const { w } = libraryScene();

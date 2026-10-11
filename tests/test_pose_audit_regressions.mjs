@@ -206,6 +206,89 @@ for (const stage of ["modules", "file"]) {
     });
 }
 
+test("an FBX retargeting error restores the original pose and releases the file URL", async () => {
+    const mixamo = await fs.readFile(new URL("../web/pose_studio/imports/mixamo.js", import.meta.url), "utf8");
+    const start = mixamo.indexOf("export async function importMixamoFBXAnimation");
+    const end = mixamo.indexOf("export const importMixamoFBXAsPoses", start);
+    const original = { bones: { head: [30, 0, 0] }, cameraParams: { zoom: 2 } };
+    let pose = original, revoked = 0;
+    const root = { animations: [{ duration: 1 }], updateMatrixWorld: noop };
+    const context = {
+        console: { info: noop },
+        loadMixamoModules: async () => ({ THREE: { AnimationMixer: class {
+            clipAction() { return { reset: noop, play: noop }; }
+            setTime() {}
+        } }, FBXLoader: class { async loadAsync() { return root; } } }),
+        URL: { createObjectURL: () => "blob:test", revokeObjectURL: () => revoked++ },
+        collectSourceBones: () => ({ bones: { Hips: {} } }),
+        buildFrameRotationMap: () => ({}), buildSampleTimes: () => [0],
+        buildMixamoWorldKeypoints: () => null, buildMixamoLegTargets: () => null,
+        MIXAMO_RETARGET_PARENTS: {}, MIXAMO_RETARGET_ORDER: [], MIXAMO_DEBUG_BONES: [],
+    };
+    const importer = vm.runInNewContext(mixamo.slice(start, end).replace("export async", "async") + "\nimportMixamoFBXAnimation", context);
+    const viewer = { THREE: {}, isInitialized: () => true,
+        getPose: () => pose, resetPose: () => { pose = { bones: {} }; }, setPose: value => { pose = value; },
+        applyWorldRotationImport: () => { throw new Error("retarget failed"); } };
+    await assert.rejects(importer({}, viewer), /retarget failed/);
+    assert.equal(pose, original);
+    assert.equal(revoked, 1);
+});
+
+test("successful FBX retargeting keeps calibrated geometry when camera reset follows sampling", async () => {
+    const mixamo = await fs.readFile(new URL("../web/pose_studio/imports/mixamo.js", import.meta.url), "utf8");
+    const neutral = createScene({ skinned: true });
+    const { THREE } = neutral;
+    let root;
+    const modules = { THREE, FBXLoader: class { async loadAsync() { return root.clone(true); } } };
+    const { importer, names } = vm.runInNewContext(mixamo.replace(/^export /gm, "")
+        + "\nloaderPromise = Promise.resolve(modules); ({ importer: importMixamoFBXAnimation, names: MIXAMO_TO_MH_BONE_MAP });", {
+        modules, URL: { createObjectURL: () => "blob:test", revokeObjectURL: noop }, console: { info: noop },
+    });
+    const sourceNames = new Map(Object.entries(names).map(([mixamoName, boneName]) => [boneName, mixamoName]));
+    root = new THREE.Group();
+    root.add(neutral.viewer.boneList[0].clone(true));
+    root.traverse(bone => { if (sourceNames.has(bone.name)) bone.name = sourceNames.get(bone.name); });
+    const end = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.2, 0, 0));
+    root.animations = [new THREE.AnimationClip("Head nod", 1, [new THREE.QuaternionKeyframeTrack(
+        "Head.quaternion", [0, 1], [0, 0, 0, 1, end.x, end.y, end.z, end.w],
+    )])];
+    const scenes = [];
+    for (const resetBefore of [true, false]) {
+        const scene = createScene({ skinned: true });
+        const { w, viewer, context } = scene;
+        viewer._initIKHelpers();
+        w.showMessage = noop;
+        w.exportParams.cam_zoom = 2;
+        w.exportParams.cam_offset_x = 5;
+        w.persistActivePoseCameraParams();
+        if (resetBefore) {
+            w.clearSAMCameraMode();
+            w.resetCameraParams();
+            const result = await importer({}, viewer, { fps: 2, maxFrames: 3 });
+            w.replaceAnimationFromPoses(result.poseSamples, { duration: result.duration });
+        } else {
+            let importing;
+            context.importMixamoFBXAnimation = (...args) => (importing = importer(...args));
+            w.handleFileImport({ target: { files: [{ name: "clip.fbx", type: "" }], value: "clip" } });
+            await importing;
+            for (let index = 0; index < 12; index++) await Promise.resolve();
+        }
+        assert.equal(w.getActiveCharacter().transform.zoom, 1);
+        assert.equal(w.getActiveCharacter().transform.x, 0);
+        assert.equal(w.exportParams.editor_mode, "animation");
+        scenes.push(scene);
+    }
+    // Compare matching source times: the real file handler samples at 12 FPS.
+    for (const time of [0, 0.5, 1]) {
+        const bounds = scenes.map(scene => {
+            const frame = Math.round(time * (scene.w.animationState.frameCount - 1));
+            scene.w.applyAnimationFrame(frame, { transient: true });
+            return scene.projection();
+        });
+        for (const key of Object.keys(bounds[0])) assert.ok(Math.abs(bounds[0][key] - bounds[1][key]) < 1e-6, key);
+    }
+});
+
 test("active and passive skeleton resources are freed on replacement and removal", () => {
     for (const action of ["replace", "remove"]) {
         const { viewer } = createScene({ skinned: true });

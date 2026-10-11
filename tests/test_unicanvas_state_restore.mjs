@@ -57,6 +57,22 @@ test("flat restore keeps workflow metadata and borrows pixels by surviving layer
     assert.equal(w.stateCacheId, base.state_id, "reopening a workflow preserves its cache reference");
 });
 
+test("compact workflows restore native pixels when the layer has no backing-canvas crop", async () => {
+    const saved = { ...base, layers: [{ id: "outside", type: "raster", crop: null, dataURL: null,
+        hiresRect: { x: 150, y: 10, width: 20, height: 20 }, hiresDataURL: "native-pixels" }] };
+    const original = widget(saved);
+    original.syncToNode(saved);
+    const compact = JSON.parse(original.node.widgets[0].value);
+    assert.equal(compact.layers[0].cached, true, "native pixels still depend on the saved cache");
+    assert.equal(compact.layers[0].hiresDataURL, null, "workflow JSON remains compact");
+    cache(saved);
+    const reopened = widget(compact);
+    await reopened._loadFromNode();
+    assert.equal(reopened._stateRestoreFailed, false);
+    assert.equal(reopened.restored.layers[0].hiresDataURL, "native-pixels");
+    assert.deepEqual(reopened.restored.layers[0].hiresRect, saved.layers[0].hiresRect);
+});
+
 test("a copied node reads original pixels then persists an independent writable cache", async () => {
     const saved = { ...base, layers: [{ id: "image", cached: true }] };
     const reads = cache({ ...saved, layers: [{ id: "image", dataURL: "original-pixels" }] });

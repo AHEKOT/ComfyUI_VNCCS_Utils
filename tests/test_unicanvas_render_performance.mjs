@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import { homographyFromUnitSquare, rectToQuad, transformDraftBounds } from "../web/unicanvas/transform.mjs";
+import { homographyFromUnitSquare, normalizeTransformMode, rectToQuad, transformDraftBounds } from "../web/unicanvas/transform.mjs";
+import { normalizePanorama, trimPanoramaHistory } from "../web/unicanvas/panorama.mjs";
 
 // An alpha-only canvas: getImageData returns the requested region and records every readback.
 class AlphaCanvas {
@@ -44,11 +45,12 @@ const context = {
   STAGING_ICONS: { show: "<svg>show</svg>", hide: "<svg>hide</svg>" },
   MASK_OVERLAY_COLOR: "rgba(255,0,0,0.5)",
   serializePose: () => null,
-  homographyFromUnitSquare, transformDraftBounds,
+  homographyFromUnitSquare, normalizeTransformMode, transformDraftBounds, normalizePanorama, trimPanoramaHistory,
+  isImageLayer: layer => ["raster", "pose"].includes(layer.type),
 };
 const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", context);
 const widget = (values = {}) => Object.assign(Object.create(prototype), {
-  layers: [], panorama: null, origin: { x: 0, y: 0 }, size: { width: 100, height: 100 }, setStatus() {}, ...values,
+  layers: [], undoStack: [], redoStack: [], panorama: null, origin: { x: 0, y: 0 }, size: { width: 100, height: 100 }, setStatus() {}, ...values,
 });
 
 for (const bbox of [{ x: 0, y: 0, width: 1024, height: 1024 }, { x: -384, y: 128, width: 768, height: 640 }]) {
@@ -457,6 +459,74 @@ test("hi-res layer move metadata keeps its original offset and matches the rende
   assert.equal(original.y + held.dy, committed.y);
 });
 
+for (const release of ["pointerup", "pointercancel"]) {
+  test(`native-only movement outside the backing canvas keeps held placement after ${release}`, () => {
+    const frames = [], draws = [], history = [], stack = [];
+    let tx = 0, ty = 0;
+    context.window.requestAnimationFrame = callback => frames.push(callback);
+    const ctx = {
+      setTransform() { tx = 0; ty = 0; }, clearRect() { draws.length = 0; },
+      save() { stack.push([tx, ty]); }, restore() { [tx, ty] = stack.pop(); },
+      translate(x, y) { tx += x; ty += y; }, scale() {},
+      drawImage(image, sx, sy, sw, sh, x, y, width, height) {
+        draws.push({ source: image, x: tx + x, y: ty + y, width, height });
+      },
+    };
+    const layer = { id: "native-only", type: "raster", visible: true, opacity: 1,
+      canvas: new AlphaCanvas(100, 100), hiresCanvas: new AlphaCanvas(80, 80),
+      hiresRect: { x: 150, y: 10, width: 20, height: 20 } };
+    const other = { id: "other", type: "raster", visible: true, opacity: 1,
+      canvas: new AlphaCanvas(100, 100), hiresCanvas: new AlphaCanvas(20, 20),
+      hiresRect: { x: 10, y: 60, width: 20, height: 20 } };
+    const backingDraws = [];
+    layer.canvas.getContext = () => ({ clearRect() {}, drawImage: (...args) => backingDraws.push(args) });
+    const w = widget({ layers: [layer, other], activeLayerId: layer.id, tool: "move",
+      view: { x: 0, y: 0, scale: 1 }, bbox: { width: 100, height: 100 }, lassoPoints: [],
+      canvas: { width: 220, height: 100, getContext: () => ctx, setPointerCapture() {} }, hud: {},
+      visibleWorldRect: () => ({ x: 0, y: 0, width: 220, height: 100 }),
+      canvasPointFromEvent: e => ({ x: e.clientX, y: e.clientY }),
+      configureImageContext: value => value, hasOpenStagingPanel: () => false,
+      getRenderLodCanvas: () => null,
+      getInferenceSize: () => ({ width: 100, height: 100 }), pushHistoryEntry: entry => history.push(entry),
+    });
+    for (const name of ["drawBackground", "drawStagingOverlay", "drawShapeDraft", "drawLassoDraft",
+      "drawResizeOverlay", "drawBbox", "updateInferenceSizeLabels", "updateZoomResetButton", "updateStagingControls",
+      "updateTransformControls", "updateSamControls", "clearToolPreviewOverlay", "updateToolPreviewOverlay",
+      "updateContextCursor", "refreshLayerRow", "syncLightStateToWidget", "scheduleFullSync"]) w[name] = () => {};
+    const event = (x, y, type = "pointermove") => ({ pointerId: 1, button: 0, clientX: x, clientY: y, type,
+      preventDefault() {}, stopPropagation() {} });
+    const frame = () => { assert.equal(frames.length, 1); frames.shift()(); };
+    const position = source => draws.find(draw => draw.source === source);
+    w.onPointerDown(event(150, 10, "pointerdown"));
+    assert.equal(w.dragStart.layerCanvas, null, "native pixels start completely outside the backing canvas");
+    for (const [x, y] of [[120, 20], [70, 30]]) {
+      w.onPointerMove(event(x, y)); frame();
+      assert.deepEqual(position(layer.hiresCanvas), { source: layer.hiresCanvas, x, y, width: 20, height: 20 });
+      assert.deepEqual(position(other.hiresCanvas), { source: other.hiresCanvas, x: 10, y: 60, width: 20, height: 20 });
+      assert.equal(history.length, 0);
+      assert.equal(backingDraws.length, 0, "held previews do not write pixels");
+    }
+    const held = { ...position(layer.hiresCanvas) };
+    w.onPointerUp(event(70, 30, release)); frame();
+    assert.deepEqual(position(layer.hiresCanvas), held, "release must preserve the last visible native placement");
+    assert.deepEqual(plain(layer.hiresRect), { x: 70, y: 30, width: 20, height: 20 });
+    assert.deepEqual(plain(w.getLayerAlphaBounds(layer)), { x: 70, y: 30, width: 20, height: 20 });
+    assert.deepEqual(backingDraws, [[layer.hiresCanvas, 70, 30, 20, 20]], "pixels entering the backing canvas receive a saved preview");
+    assert.equal(history.length, 1);
+    assert.equal(history[0].kind, "layerPixels");
+    assert.equal(history[0].before.crop, null);
+    assert.deepEqual(plain(history[0].after.hiresRect), plain(layer.hiresRect));
+    w.onPointerUp(event(70, 30));
+    assert.equal(history.length, 1, "a pointerup following cancellation cannot commit twice");
+    w._generationLocked = true;
+    w.onPointerDown(event(70, 30, "pointerdown"));
+    w.onPointerMove(event(90, 40));
+    assert.equal(w.isPointerDown, false, "generation still blocks document movement");
+    assert.deepEqual(plain(layer.hiresRect), { x: 70, y: 30, width: 20, height: 20 });
+    assert.deepEqual(plain(other.hiresRect), { x: 10, y: 60, width: 20, height: 20 });
+  });
+}
+
 test("mask transform keeps opacity in held frames and after Apply", () => {
   const draws = [], frames = [], history = [];
   const fakeContext = () => {
@@ -569,6 +639,118 @@ test("hires PNGs refresh only for pixel changes or replaced backing images", () 
   w.invalidateLayerRenderCaches(layer);
   w.serializeLayer(layer);
   assert.equal(layer.hiresCanvas.encodes, 3);
+});
+
+test("hires pixels outside the backing canvas survive repeated save and restore without staging", async () => {
+  const layer = { id: "hires", type: "raster", canvas: new AlphaCanvas(100, 100),
+    hiresCanvas: new AlphaCanvas(80, 80), hiresRect: { x: 150, y: 10, width: 20, height: 20 } };
+  const w = widget({ layers: [layer], stateCacheId: "hires-roundtrip", bbox: {}, settings: {},
+    stagingItems: [{ url: "unaccepted" }], activeStagingIndex: 0,
+    _createCanvas: (width, height) => new AlphaCanvas(width, height),
+    configureImageContext: value => value, loadLocalStateBackup: () => null,
+    loadImage: async () => ({ width: 80, height: 80 }),
+  });
+  context.makeDefaultUniCanvasSettings = () => ({});
+  for (const method of ["sanitizeMaskLayer", "applySeedModeDefault", "normalizeLayerOrder", "syncPromptControls",
+    "updateSnapButton", "updatePanoramaControls", "renderLayerList"]) w[method] = () => {};
+  for (let index = 0; index < 2; index++) {
+    const saved = w.buildSerializedState(true);
+    assert.equal(saved.layers[0].crop, null, "the native image has no preview pixels inside the backing canvas");
+    assert.ok(saved.layers[0].hiresDataURL, "the saved state must still contain native pixels");
+    assert.equal(w.stateHasMissingLayerPixels(saved), false);
+    assert.equal("stagingItems" in saved, false);
+    assert.equal("activeStagingIndex" in saved, false);
+    assert.equal(w.buildSerializedState(true).layers[0].hiresDataURL, saved.layers[0].hiresDataURL);
+    assert.equal(w.layers[0].hiresCanvas.encodes, 1, "unchanged off-canvas pixels reuse their PNG");
+    assert.equal(await w.applySerializedState(JSON.parse(JSON.stringify(saved)), { replaceDocument: true }), true);
+    assert.deepEqual({ ...w.layers[0].hiresRect }, layer.hiresRect);
+  }
+});
+
+for (const bbox of [{ x: 150, y: 10, width: 64, height: 64 }, { x: 90, y: 10, width: 64, height: 64 },
+  { x: 250, y: 10, width: 64, height: 64 }, { x: 150, y: 10, width: 1, height: 1 }]) {
+  test(`native pixels beyond backing remain in bbox output and generation content at ${bbox.x} (${bbox.width}×${bbox.height})`, async () => {
+    const modes = readFileSync(new URL("../web/unicanvas/modes.mjs", import.meta.url), "utf8");
+    const helper = vm.runInNewContext(modes.slice(modes.indexOf("export function uniCanvasBboxPixelRect"), modes.indexOf("const canvasToPngBlob"))
+      .replaceAll("export function", "function") + "\nbuildUniCanvasBboxCompositeCanvas", context);
+    const previousDocument = context.document;
+    class Canvas {
+      constructor() { this.width = this.height = 0; this.draws = []; }
+      alpha(x, y) {
+        if (x < 0 || y < 0 || x >= this.width || y >= this.height) return 0;
+        let alpha = 0;
+        for (const draw of this.draws) {
+          const [source, sx, sy, sw, sh, dx, dy, dw, dh] = draw.args;
+          if (x < dx || y < dy || x >= dx + dw || y >= dy + dh) continue;
+          const sourceAlpha = source.alpha(Math.floor(sx + (x - dx) * sw / dw), Math.floor(sy + (y - dy) * sh / dh)) * draw.opacity;
+          alpha = sourceAlpha + alpha * (1 - sourceAlpha / 255);
+        }
+        return alpha;
+      }
+      getContext() {
+        const canvas = this, stack = [];
+        return { globalAlpha: 1, globalCompositeOperation: "source-over", save() { stack.push([this.globalAlpha, this.globalCompositeOperation]); },
+          restore() { [this.globalAlpha, this.globalCompositeOperation] = stack.pop(); },
+          drawImage(source, ...args) {
+            if (args.length === 2) args = [0, 0, source.width, source.height, ...args, source.width, source.height];
+            canvas.draws.push({ args: [source, ...args], opacity: this.globalAlpha, blendMode: this.globalCompositeOperation });
+          },
+          getImageData(x, y, width, height) {
+            const data = new Uint8ClampedArray(width * height * 4);
+            for (let row = 0; row < height; row++) for (let col = 0; col < width; col++) data[(row * width + col) * 4 + 3] = canvas.alpha(x + col, y + row);
+            return { data };
+          },
+        };
+      }
+      toDataURL() { return JSON.stringify(Array.from(this.getContext().getImageData(0, 0, this.width, this.height).data).filter((_, index) => index % 4 === 3)); }
+    }
+    context.document = { createElement: () => new Canvas() };
+    try {
+      const native = { width: 80, height: 80, alpha: () => 255 };
+      const blank = { width: 100, height: 100, alpha: () => 0 };
+      const layerX = bbox.x === 90 ? 90 : 150;
+      const layer = { id: "native", type: "raster", visible: true, opacity: .5, blendMode: "multiply",
+        canvas: blank, hiresCanvas: native, hiresRect: { x: layerX, y: 10, width: 20, height: 20 } };
+      const bottom = { id: "bottom", type: "raster", visible: true, opacity: 1, canvas: blank };
+      const w = widget({ bbox, layers: [{ ...layer, id: "mask", type: "mask" }, { ...layer, id: "hidden", visible: false }, layer, bottom],
+        configureImageContext: value => value, getReadbackContext: canvas => canvas.getContext("2d"), _generationLocked: true,
+      });
+      const output = helper(w);
+      const overlap = Math.max(0, Math.min(bbox.x + bbox.width, layerX + 20) - Math.max(bbox.x, layerX))
+        * Math.max(0, Math.min(bbox.y + bbox.height, 30) - Math.max(bbox.y, 10));
+      const pixels = JSON.parse(output.toDataURL());
+      assert.equal(pixels.filter(alpha => alpha > 8).length, overlap, "output must include native pixels outside the backing canvas");
+      assert.equal(output.width, bbox.width); assert.equal(output.height, bbox.height);
+      assert.equal(w.getRasterContentInBboxStats().nonzeroAlphaPixels, overlap, "generation must classify the same visible pixels");
+      assert.equal(w.getMaskContentInBboxStats().nonzeroAlphaPixels, 0, "mask pixels remain clipped to their backing canvas");
+      if (overlap) {
+        assert.equal(output.draws[0].args[0], blank, "bottom layer draws first");
+        assert.equal(output.draws[1].args[0], native, "hidden images and masks stay out of output");
+        assert.equal(output.draws[1].opacity, .5); assert.equal(output.draws[1].blendMode, "multiply");
+        assert.ok(pixels.filter(Boolean).every(alpha => alpha === 128), "layer opacity survives compositing");
+      }
+      const uploads = [];
+      context.fetch = async (_url, request) => { uploads.push(JSON.parse(request.body)); return { ok: true, json: async () => ({ status: "ok" }) }; };
+      context.buildUniCanvasBboxCompositeCanvas = helper;
+      w.stateCacheId = "native-output";
+      assert.equal(await w.uploadOutputSnapshot(), true);
+      assert.equal(uploads[0].state_id, "native-output_out");
+      assert.deepEqual(JSON.parse(uploads[0].state.layers[0].dataURL), pixels, "queued output matches the downloadable image");
+      assert.equal(w.editingBlocked, true); assert.equal(w.layers[2], layer); assert.equal(layer.hiresCanvas, native);
+    } finally { context.document = previousDocument; }
+  });
+}
+
+test("flatten refuses to clip native pixels outside the backing canvas", () => {
+  const layer = { id: "outside", type: "raster", visible: true, canvas: new AlphaCanvas(100, 100),
+    hiresCanvas: new AlphaCanvas(80, 80), hiresRect: { x: 150, y: 10, width: 20, height: 20 } };
+  const statuses = [], history = [], layers = [layer];
+  const w = widget({ layers, undoStack: history, recordHistoryBefore: () => assert.fail("refused flatten cannot create history"),
+    setStatus: (message, error) => statuses.push({ message, error }) });
+  w.flattenLayersToMaster();
+  assert.equal(w.layers, layers); assert.equal(w.undoStack, history); assert.equal(layer.hiresCanvas.width, 80);
+  assert.equal(statuses.length, 1); assert.equal(statuses[0].error, true);
+  assert.match(statuses[0].message, /outside the current canvas area/i);
 });
 
 test("unchanged sidebar selection does not force repeated standalone paints", () => {

@@ -48,7 +48,15 @@ def _vnccs_write_unicanvas_state_cache_file(state_id, entry):
                                          prefix="cache_", delete=False) as handle:
             temp_path = handle.name
             json.dump(entry, handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temp_path, path)
+        if os.name == "posix":
+            directory_fd = os.open(os.path.dirname(path), os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
     finally:
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)

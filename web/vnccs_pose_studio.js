@@ -10,13 +10,13 @@ import {
     POSE_STUDIO_CAPTURE_FOV,
     PoseViewerCore,
     buildEquivalentPerspectiveProjectionFrame,
-} from "./pose_studio/core.js?v=20261009.audit";
+} from "./pose_studio/core.js?v=1791754604000";
 import {
     cameraPromptToSkydomeRotation,
 } from "./camera_control/utils.mjs";
 import { HAND_PRESETS } from "./pose_studio/hand_presets.js";
-import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js";
-import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js";
+import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js?v=1791754604000";
+import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js?v=1791754604000";
 import { installCustomSelects } from "./shared/custom_select.mjs";
 import {
     DEFAULT_CHARACTER_COLORS,
@@ -82,7 +82,7 @@ import {
     serializeAnimationStateSnapshot,
     setCharacterTransformKeyframe,
     setTrackKeyframeFromEuler,
-} from "./pose_studio/animation.mjs?v=20260908.14";
+} from "./pose_studio/animation.mjs?v=1791754604000";
 
 const VNCCS_POSE_MORPH_WORKER_URL = new URL("./pose_studio/morph_worker.js", import.meta.url);
 let VNCCS_SHARED_MORPH_WORKER = null;
@@ -5902,11 +5902,14 @@ class PoseStudioWidget {
                     .filter(entry => entry?.id && entry?.animation && typeof entry.animation === "object")
                     .map(entry => [String(entry.id), entry.animation]),
             );
+            for (const source of [cachedAnimation, ...nestedAnimations.values()]) {
+                if (source.basePose != null) this.validateImportedPose(source.basePose);
+            }
             const hasSceneBundle = !!cachedAnimation.primaryCharacterId || nestedAnimations.size > 0;
             const restoredFrame = Math.max(0, Math.round(Number(
                 reference.currentFrame ?? cachedAnimation.currentFrame,
             ) || 0));
-            let restored = null;
+            const prepared = new Map();
             if (hasSceneBundle) {
                 for (const character of this.characters || []) {
                     const source = String(character.id) === String(cachedAnimation.primaryCharacterId)
@@ -5918,17 +5921,21 @@ class PoseStudioWidget {
                         || fallbackPose;
                     const state = normalizeAnimationState(source, characterFallback);
                     state.currentFrame = Math.min(state.frameCount - 1, restoredFrame);
-                    character.animationState = state;
-                    character.animation = source;
+                    prepared.set(character, { state, source });
                 }
-                restored = this.getActiveCharacter()?.animationState || null;
             }
+            const activeCharacter = this.getActiveCharacter();
+            let restored = prepared.get(activeCharacter)?.state
+                || (hasSceneBundle ? activeCharacter?.animationState : null);
             if (!restored) {
                 restored = normalizeAnimationState(cachedAnimation, fallbackPose);
                 restored.currentFrame = Math.min(restored.frameCount - 1, restoredFrame);
-                const activeCharacter = this.getActiveCharacter();
-                if (activeCharacter) activeCharacter.animationState = restored;
             }
+            for (const [character, { state, source }] of prepared) {
+                character.animationState = state;
+                character.animation = source;
+            }
+            if (activeCharacter) activeCharacter.animationState = restored;
             const cacheBelongsToNode = this.animationCacheIdBelongsToNode(sourceCacheId);
             this._animationCacheId = cacheBelongsToNode ? sourceCacheId : null;
             this._animationCacheRevision = Math.max(
@@ -8758,15 +8765,17 @@ class PoseStudioWidget {
             if (isDragging) updateFromMouse(e);
         });
 
-        canvas.addEventListener("pointerup", (e) => {
-            if (isDragging) {
-                if (canvas.hasPointerCapture(e.pointerId)) {
-                    canvas.releasePointerCapture(e.pointerId);
-                }
-                isDragging = false;
-                this.syncToNode(false);
+        const finishDrag = (e) => {
+            if (!isDragging) return;
+            isDragging = false;
+            if (canvas.hasPointerCapture(e.pointerId)) {
+                canvas.releasePointerCapture(e.pointerId);
             }
-        });
+            this.syncToNode(false);
+        };
+        canvas.addEventListener("pointerup", finishDrag);
+        canvas.addEventListener("pointercancel", finishDrag);
+        canvas.addEventListener("lostpointercapture", finishDrag);
 
         draw();
         return canvas;
@@ -10539,6 +10548,17 @@ class PoseStudioWidget {
         if (!this.viewer?.isInitialized?.()) throw new Error("Pose viewer is not ready.");
         if (!plan || plan.duration <= 0 || !plan.times?.length) throw new Error("Select a non-empty video segment.");
 
+        const viewer = this.viewer;
+        const restoreToken = this._poseDataRestoreToken;
+        const loadToken = this._libraryLoadToken;
+        const characterId = this.activeCharacterId;
+        const tab = this.activeTab;
+        const isCurrent = () => !this._disposed && this.viewer === viewer
+            && restoreToken === this._poseDataRestoreToken && loadToken === this._libraryLoadToken
+            && characterId === this.activeCharacterId && tab === this.activeTab;
+        const assertCurrent = () => {
+            if (signal?.aborted || !isCurrent()) throw new DOMException("Video import cancelled.", "AbortError");
+        };
         const originalPose = this.viewer.getPose();
         const originalBoneLengthParams = { ...(this.viewer.boneLengthParams || {}) };
         const originalCameraParams = this.currentCameraParams();
@@ -10561,7 +10581,7 @@ class PoseStudioWidget {
         try {
             video.pause();
             for (let index = 0; index < captureSchedule.times.length; index++) {
-                if (signal?.aborted) throw new DOMException("Video import cancelled.", "AbortError");
+                assertCurrent();
                 const time = captureSchedule.times[index];
                 const sourceFrame = captureSchedule.frameIndices[index];
                 onProgress?.({
@@ -10572,6 +10592,7 @@ class PoseStudioWidget {
                     phase: "capture",
                 });
                 const frameBlob = await this.captureVideoFrameBlob(video, time, captureCanvas, signal);
+                assertCurrent();
                 const taskId = `video-${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`;
                 onProgress?.({
                     index,
@@ -10589,6 +10610,7 @@ class PoseStudioWidget {
                         fileName: `video_frame_${String(sourceFrame).padStart(5, "0")}.jpg`,
                     });
                 } catch (error) {
+                    assertCurrent();
                     if (error?.name === "AbortError" || !lastPoseData) throw error;
                     // Match the SAM mocap exporter contract: an isolated missed
                     // detection holds the previous valid pose instead of
@@ -10605,12 +10627,14 @@ class PoseStudioWidget {
                         phase: "reuse",
                     });
                 }
+                assertCurrent();
                 const fitData = reusedPreviousPose
                     ? { poseData, meshData: lastMeshData }
                     : await this.prepareSAM3DRenderFit(poseData, {
                         signal,
                         reportError: false,
                     });
+                assertCurrent();
                 const poseForImport = fitData?.poseData || poseData;
                 const applied = this.viewer.applySAM3DImport(
                     poseForImport,
@@ -10640,6 +10664,7 @@ class PoseStudioWidget {
                 ));
             }
 
+            assertCurrent();
             if (poseSamples.length < 2) throw new Error("Video capture produced fewer than two pose frames.");
             const stableBoneLengths = stableVideoBoneLengthParams(
                 boneLengthSamples,
@@ -10653,7 +10678,7 @@ class PoseStudioWidget {
             // estimates robust body proportions; rotations captured while the
             // skeleton changes per frame are intentionally discarded.
             for (let index = 0; index < poseSamples.length; index++) {
-                if (signal?.aborted) throw new DOMException("Video import cancelled.", "AbortError");
+                assertCurrent();
                 const applied = this.viewer.applySAM3DImport(
                     poseSamples[index],
                     this._shoulderYOffset || 0,
@@ -10686,6 +10711,7 @@ class PoseStudioWidget {
                     ));
                 }
             }
+            assertCurrent();
             if (lastMeshData && lastPoseData) {
                 this.viewer.setSAMMeshOverlayData?.(lastMeshData, lastPoseData);
                 this.viewer.setSAMMeshOverlayVisible?.(!!this.exportParams.debugShowSAMMeshOverlay);
@@ -10702,7 +10728,7 @@ class PoseStudioWidget {
                 : stabilizeVideoPoseSequence(poses, stabilization, {
                     sampleFps: captureSchedule.effectiveFps,
                 });
-            if (signal?.aborted) throw new DOMException("Video import cancelled.", "AbortError");
+            assertCurrent();
             onProgress?.({
                 index: poses.length,
                 count: poses.length,
@@ -10735,7 +10761,7 @@ class PoseStudioWidget {
                 reusedPoseCount,
             };
         } catch (error) {
-            if (this.container?.isConnected && this.viewer?.isInitialized?.()) {
+            if (isCurrent() && this.container?.isConnected && this.viewer?.isInitialized?.()) {
                 for (const [group, value] of Object.entries(originalBoneLengthParams)) {
                     this.viewer.updateBoneLengthScale?.(group, value);
                 }
@@ -10743,6 +10769,7 @@ class PoseStudioWidget {
                 this.applyCameraToViewer(true);
                 this.viewer.setCameraParams?.(originalCameraParams);
             }
+            if (!isCurrent()) assertCurrent();
             throw error;
         }
     }
@@ -11045,6 +11072,7 @@ class PoseStudioWidget {
         };
         timeline.addEventListener("pointerup", finishTimelineDrag);
         timeline.addEventListener("pointercancel", finishTimelineDrag);
+        timeline.addEventListener("lostpointercapture", finishTimelineDrag);
         timeline.addEventListener("pointerdown", event => {
             if (processing || event.target === inHandle || event.target === outHandle) return;
             event.preventDefault();
@@ -11179,7 +11207,8 @@ class PoseStudioWidget {
                 this.showMessage(`Video imported: ${result.sampleCount} poses → ${result.keyedFrameCount} keys across ${result.keyedTrackCount} tracks.`);
                 close({ abort: false });
             } catch (error) {
-                if (closed || error?.name === "AbortError") return;
+                if (closed) return;
+                if (error?.name === "AbortError") { close(); return; }
                 console.error("Error importing video animation:", error);
                 summary.textContent = `Import failed: ${error?.message || error}`;
                 summary.classList.add("is-limited");
@@ -11263,14 +11292,14 @@ class PoseStudioWidget {
         if (lowerName.endsWith('.fbx')) {
             (async () => {
                 try {
-                    this.clearSAMCameraMode();
-                    this.resetCameraParams();
                     const result = await importMixamoFBXAnimation(file, this.viewer, {
                         fps: 12,
                         maxFrames: 48,
                         isCurrent,
                     });
                     if (!isCurrent() || !result) return;
+                    this.clearSAMCameraMode();
+                    this.resetCameraParams();
                     this.replaceAnimationFromPoses(result.poseSamples, { duration: result.duration });
                     this.updateCaptureCameraPreview();
                     this.showMessage(`Mixamo FBX imported as one animation: ${result.poseSamples.length} keyed frames from ${result.clipName}.`);
@@ -11369,14 +11398,14 @@ class PoseStudioWidget {
 
                 if (data?.version === 'hmr2_3d_v1') {
                     if (this.viewer && this.viewer.isInitialized()) {
-                        this.clearSAMCameraMode();
-                        this.resetCameraParams();
                         const ok = this.viewer.applyHMR2v1Import(
                             data,
                             this._smplRefHeight || 1.45,
                             this._shoulderYOffset || 0
                         );
                         if (ok) {
+                            this.clearSAMCameraMode();
+                            this.resetCameraParams();
                             this.updateRotationSliders();
                             this.applyCameraToViewer(true);
                             this.commitViewerPoseToCurrentEditor();
@@ -11393,10 +11422,10 @@ class PoseStudioWidget {
                 const openPoseKeypoints = detectAndParseJSON(data);
                 if (openPoseKeypoints) {
                     if (this.viewer && this.viewer.isInitialized()) {
-                        this.clearSAMCameraMode();
-                        this.resetCameraParams();
                         const poseData = convertOpenPoseToPose(openPoseKeypoints, this.viewer);
                         if (poseData) {
+                            this.clearSAMCameraMode();
+                            this.resetCameraParams();
                             this.viewer.setPose(this.stripSceneCameraFromPose(poseData), true);
                             this.updateRotationSliders();
                             this.applyCameraToViewer(true);
@@ -11419,6 +11448,7 @@ class PoseStudioWidget {
                     this.loadPoseSetAsset(data);
                 } else if (data.type === "single_pose" || data.bones) {
                     // Import Single to current tab
+                    this.validateImportedPose(data);
                     this._poseDataRestoreError = null;
                     if (!this.isAnimationMode()) this.viewer?.recordState?.();
                     this.clearSAMCameraMode();
@@ -11443,6 +11473,8 @@ class PoseStudioWidget {
                     }
                     this.updateCaptureCameraPreview();
                     this.commitViewerPoseToCurrentEditor();
+                } else {
+                    this.showMessage("No usable pose data was found in this file.", true);
                 }
 
             } catch (err) {
@@ -12589,7 +12621,9 @@ class PoseStudioWidget {
         requestAnimationFrame(() => this.updateLibraryInspectorScale());
 
         let pendingPreview = null;
+        let previewReadToken = 0;
         const previewBox = this.libraryInspector.querySelector('.vnccs-ps-library-inspector-preview');
+        const saveEditButton = this.libraryInspector.querySelector('.vnccs-ps-library-save-edit');
         const closeLibraryModal = this._closeLibraryModal;
         this.libraryInspector.querySelector('.vnccs-ps-library-apply').onclick = async () => {
             await this.loadFromLibrary(pose);
@@ -12599,20 +12633,29 @@ class PoseStudioWidget {
         this.libraryInspector.querySelector('.vnccs-ps-library-preview-input').onchange = async (event) => {
             const file = event.target.files?.[0];
             if (!file) return;
+            const readToken = ++previewReadToken;
+            const isCurrent = () => readToken === previewReadToken
+                && token === this._libraryInspectorLoadToken && !this._disposed;
+            saveEditButton.disabled = true;
             try {
-                pendingPreview = isAnimation
+                const preview = isAnimation
                     ? await this.readLibraryFileAsDataUrl(file, 40 * 1024 * 1024)
                     : await this.compressLibraryImage(file);
+                if (!isCurrent()) return;
+                pendingPreview = preview;
                 previewBox.innerHTML = isAnimation
                     ? `<video src="${pendingPreview}" controls muted loop playsinline></video>`
                     : `<img src="${pendingPreview}" alt="${this.escapeHtml(pose.name)}" decoding="async">`;
             } catch (error) {
-                pendingPreview = null;
+                if (!isCurrent()) return;
                 event.target.value = "";
                 this.showMessage(error?.message || String(error), true);
+            } finally {
+                if (isCurrent()) saveEditButton.disabled = false;
             }
         };
-        this.libraryInspector.querySelector('.vnccs-ps-library-save-edit').onclick = async () => {
+        saveEditButton.onclick = async () => {
+            if (saveEditButton.disabled) return;
             const newName = this.libraryInspector.querySelector('.vnccs-ps-library-edit-name').value.trim();
             const category = this.libraryInspector.querySelector('.vnccs-ps-library-edit-category').value.trim() || "Uncategorized";
             const tags = this.libraryInspector.querySelector('.vnccs-ps-library-edit-tags').value
@@ -12631,6 +12674,21 @@ class PoseStudioWidget {
             if (isAnimation && updatedPoseData.animation) {
                 updatedPoseData.animation.basePose = updatedPoseData.animation.basePose || {};
                 updatedPoseData.animation.basePose.prompt = posePromptValue;
+            }
+            if (Array.isArray(updatedPoseData.characters)) {
+                const activeCharacterId = String(updatedPoseData.active_character_id || updatedPoseData.activeCharacterId || "");
+                const activeCharacter = updatedPoseData.characters.find(character => String(character?.id || "") === activeCharacterId)
+                    || updatedPoseData.characters[0];
+                let poseIndex = Math.max(0, Math.floor(Number(updatedPoseData.activeTab) || 0));
+                if (!activeCharacter?.poses?.[poseIndex]) poseIndex = 0;
+                updatedPoseData.activeTab = poseIndex;
+                const activePose = activeCharacter?.poses?.[poseIndex];
+                if (activePose) activePose.prompt = posePromptValue;
+                if (isAnimation && activeCharacter?.animation) {
+                    activeCharacter.animation.basePose = activeCharacter.animation.basePose || {};
+                    activeCharacter.animation.basePose.prompt = posePromptValue;
+                }
+                if (Array.isArray(updatedPoseData.pose_prompts)) updatedPoseData.pose_prompts[poseIndex] = posePromptValue;
             }
             try {
                 const result = await this.saveLibraryPoseRecord({
@@ -13115,14 +13173,79 @@ class PoseStudioWidget {
         this._animationCacheUploadTimer = null;
     }
 
+    validateImportedPose(pose) {
+        if (!pose || typeof pose !== "object" || Array.isArray(pose)) {
+            throw new TypeError("Invalid pose: expected an object.");
+        }
+        const validVector = value => Array.isArray(value) && value.length >= 3
+            && value.slice(0, 3).every(component => (
+                (typeof component === "number" || typeof component === "string" && component.trim() !== "")
+                && Number.isFinite(Number(component))
+            ));
+        if (pose.modelRotation != null && !validVector(pose.modelRotation)) {
+            throw new TypeError("Invalid pose model rotation.");
+        }
+        for (const key of ["bones", "bonePositions", "ikEffectorPositions", "poleTargetPositions", "hipBonePosition"]) {
+            const coordinates = pose[key];
+            if (coordinates == null) continue;
+            if (typeof coordinates !== "object" || Array.isArray(coordinates)
+                || !Object.values(coordinates).every(validVector)) {
+                throw new TypeError(`Invalid pose coordinates in ${key}.`);
+            }
+        }
+    }
+
+    normalizeImportedMesh(mesh) {
+        if (!mesh || typeof mesh !== "object" || Array.isArray(mesh)) {
+            throw new TypeError("Invalid pose mesh: expected an object.");
+        }
+        const normalized = { ...mesh };
+        for (const key of Object.keys(mesh)) {
+            if (key === "show_genitals" || !(this.isLiveMorphKey(key)
+                || Object.prototype.hasOwnProperty.call(DEFAULT_POSE_STUDIO_MESH_PROPORTIONS, key)
+                || LEGACY_POSE_STUDIO_MESH_PROPORTION_KEYS.includes(key))) continue;
+            const value = mesh[key];
+            if (!(typeof value === "number" || typeof value === "string" && value.trim() !== "")
+                || !Number.isFinite(Number(value))) {
+                throw new TypeError(`Invalid pose mesh value in ${key}.`);
+            }
+            normalized[key] = Number(value);
+        }
+        return normalized;
+    }
+
     async loadCharacterSceneLibraryAsset(asset, { animation = false } = {}) {
         if (!asset || !Array.isArray(asset.characters) || !asset.characters.length) {
             throw new Error("Library scene does not contain characters.");
+        }
+        if (animation && Array.isArray(asset.animation)) {
+            throw new Error("Library animation is missing its timeline data.");
+        }
+        for (const character of asset.characters) {
+            if (!character || typeof character !== "object" || Array.isArray(character)
+                || character.poses != null && !Array.isArray(character.poses)) {
+                throw new TypeError("Invalid pose character or pose set.");
+            }
         }
         const token = this._libraryLoadToken;
         const restoreToken = this._poseDataRestoreToken;
         if (this._sceneModelHydrationPromise) await this._sceneModelHydrationPromise;
         if (this._disposed || token !== this._libraryLoadToken || restoreToken !== this._poseDataRestoreToken) return;
+        const normalized = normalizePoseStudioCharacters(asset, { mesh: this.meshParams });
+        const active = normalized.characters.find(character => character.id === normalized.activeCharacterId);
+        const activeTab = Math.max(0, Math.min(
+            Math.floor(Number(asset.activeTab) || 0),
+            Math.max(0, (active?.poses?.length || 1) - 1),
+        ));
+        for (const character of normalized.characters) {
+            character.mesh = this.normalizeImportedMesh(character.mesh);
+            character.poses.forEach(pose => this.validateImportedPose(pose));
+            if (character.animation?.basePose != null) this.validateImportedPose(character.animation.basePose);
+            const fallbackPose = character.poses[activeTab] || character.poses[0] || {};
+            character.animationState = character.animation && typeof character.animation === "object"
+                ? normalizeAnimationState(character.animation, fallbackPose)
+                : createDefaultAnimationState(fallbackPose, { baseTransform: character.transform });
+        }
         this._poseDataRestoreError = null;
         this.clearAnimationCacheReference();
         this._pendingMorphSolve = null;
@@ -13134,14 +13257,9 @@ class PoseStudioWidget {
         if (asset.characters.length > MAX_POSE_STUDIO_CHARACTERS) {
             console.warn(`[VNCCS PoseStudio] Library scene contains ${asset.characters.length} characters; only the first ${MAX_POSE_STUDIO_CHARACTERS} can be loaded.`);
         }
-        const normalized = normalizePoseStudioCharacters(asset, { mesh: this.meshParams });
         this.characters = normalized.characters;
         this.activeCharacterId = normalized.activeCharacterId;
-        const active = this.getActiveCharacter();
-        this.activeTab = Math.max(0, Math.min(
-            Math.floor(Number(asset.activeTab) || 0),
-            Math.max(0, (active?.poses?.length || 1) - 1),
-        ));
+        this.activeTab = activeTab;
         this.posePrompts = Array.isArray(asset.pose_prompts)
             ? asset.pose_prompts.map(value => String(value ?? ""))
             : [String(asset.prompt || "")];
@@ -13154,15 +13272,6 @@ class PoseStudioWidget {
             currentFrame: Math.max(0, Math.floor(Number(asset.timeline?.currentFrame) || 0)),
             loop: asset.timeline?.loop !== false,
         };
-        for (const character of this.characters) {
-            const fallbackPose = character.poses[this.activeTab] || character.poses[0] || {};
-            character.animationState = character.animation && typeof character.animation === "object"
-                ? normalizeAnimationState(character.animation, fallbackPose)
-                : createDefaultAnimationState(fallbackPose, {
-                    baseTransform: character.transform,
-                });
-        }
-
         this.meshParams = active.mesh;
         this.poses = active.poses;
         this.animationState = active.animationState;
@@ -13206,6 +13315,7 @@ class PoseStudioWidget {
         if (!Array.isArray(sourcePoses) || !sourcePoses.length) {
             throw new Error("Pose set does not contain poses.");
         }
+        sourcePoses.forEach(pose => this.validateImportedPose(pose));
         this._poseDataRestoreError = null;
 
         this.setEditorMode("image", { sync: false });
@@ -13246,17 +13356,16 @@ class PoseStudioWidget {
 
     loadAnimationLibraryAsset(asset) {
         const source = asset?.animation;
-        if (!source || typeof source !== "object") {
+        if (!source || typeof source !== "object" || Array.isArray(source)) {
             throw new Error("Library animation is missing its timeline data.");
         }
+        if (source.basePose != null) this.validateImportedPose(source.basePose);
+        const normalized = normalizeAnimationState(source, source.basePose || {});
         this._poseDataRestoreError = null;
 
         this.animationTimeline?.stopPlayback?.();
         this.clearSAMCameraMode();
-        const fallbackPose = source.basePose && typeof source.basePose === "object"
-            ? source.basePose
-            : {};
-        this.animationState = normalizeAnimationState(source, fallbackPose);
+        this.animationState = normalized;
         const activeCharacter = this.getActiveCharacter();
         this.animationState.basePose = this.animationState.basePose || {};
         this.animationState.basePose.prompt = (
@@ -13297,12 +13406,13 @@ class PoseStudioWidget {
         const tab = this.activeTab;
         const name = this.getLibraryPoseName(poseOrName);
         try {
-            this.clearSAMCameraMode();
             const res = await fetch(`/vnccs/pose_library/get/${encodeURIComponent(name)}${this.getLibraryPoseQuery(poseOrName)}`);
             const data = await res.json();
             if (this._disposed || token !== this._libraryLoadToken || characterId !== this.activeCharacterId || tab !== this.activeTab) return;
             if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-            if (!this.isAnimationMode()) this.viewer?.recordState?.();
+            if (!data?.pose || typeof data.pose !== "object" || Array.isArray(data.pose)) {
+                throw new Error("Library item does not contain a valid pose.");
+            }
 
             if (data.pose && this.viewer) {
                 const isPoseSet = data.pose?.type === "pose_set"
@@ -13317,6 +13427,9 @@ class PoseStudioWidget {
                     ? extractActiveCharacterTransformFromSceneAsset(data.pose)
                     : null;
                 if (isPoseSet) {
+                    if (!data.pose.poses.length) throw new Error("Pose set does not contain poses.");
+                    data.pose.poses.forEach(pose => this.validateImportedPose(pose));
+                    if (!this.isAnimationMode()) this.viewer?.recordState?.();
                     this.loadPoseSetAsset(data.pose);
                 } else if (
                     assetType === "animation"
@@ -13330,6 +13443,7 @@ class PoseStudioWidget {
                     this.loadAnimationLibraryAsset(data.pose);
                 } else {
                     const poseSource = JSON.parse(JSON.stringify(activeScenePose || data.pose));
+                    this.validateImportedPose(poseSource);
                     const savedFraming = (
                         poseSource.cameraParams
                         && typeof poseSource.cameraParams === "object"
@@ -13346,6 +13460,14 @@ class PoseStudioWidget {
                         pitch_deg: savedFraming?.pitch_deg ?? data.pose?.camera?.pitch_deg ?? 0,
                     };
                     const pose = this.stripSceneCameraFromPose(poseSource);
+                    if (this.host?.embedded !== true && (activeSceneTransform || savedFraming)) {
+                        if (!activeSceneTransform) cameraFramingToCharacterTransform(savedFraming, this.viewer.sceneCameraTarget);
+                        if (![savedAngles.yaw_deg, savedAngles.pitch_deg].every(value => Number.isFinite(Number(value)))) {
+                            throw new TypeError("Pose framing requires finite camera angles.");
+                        }
+                    }
+                    if (!this.isAnimationMode()) this.viewer?.recordState?.();
+                    this.clearSAMCameraMode();
                     this.viewer.setPose(pose, true);
                     if (this.host?.embedded === true) {
                         // Embedded in UniCanvas the mannequin is already placed in the image:
@@ -14935,7 +15057,7 @@ class PoseStudioWidget {
             for (const light of lights) {
                 const { name: colorName, sat, l } = getColorName(light.color);
 
-                if (light.type === 'directional') {
+                if (light.type === 'directional' || light.type === 'point') {
                     // --- 2. Determine Position ---
                     const y = light.y || 0;
                     const x = light.x || 0;
@@ -14947,8 +15069,8 @@ class PoseStudioWidget {
                     let vertDesc = "eye-level";
                     if (yNorm > 70) vertDesc = "overhead";
                     else if (yNorm > 25) vertDesc = "high";
-                    else if (yNorm < -25) vertDesc = "low";
                     else if (yNorm < -70) vertDesc = "bottom-up";
+                    else if (yNorm < -25) vertDesc = "low";
 
                     const distXZ = Math.sqrt(x * x + z * z);
                     let horizDesc = "centered";
@@ -15036,7 +15158,7 @@ class PoseStudioWidget {
         // Perform Replacements (Robust Global Replace)
         let result = template
             .replace(/<lighting>/g, lightingString)
-            .replace(/<user_prompt>/g, userPromptString);
+            .replace(/<user_prompt>/g, () => userPromptString);
 
         // Clean up accidental double-newlines, extra spaces, and empty lines
         result = result.split('\n')
@@ -15619,13 +15741,19 @@ class PoseStudioWidget {
 
     loadFromNode() {
         const restoreToken = this._poseDataRestoreToken = (this._poseDataRestoreToken || 0) + 1;
+        this._activeVideoImportClose?.();
         this.node._vnccsPoseAwaitingRestore = false;
-        this.clearPoseHistory();
+        this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
         this._referenceReadToken = (this._referenceReadToken || 0) + 1;
-        this.clearSAMCameraMode();
+        // Cancel the previous restore even when the replacement workflow is invalid.
+        ++this._animationCacheRestoreToken;
+        this._animationCacheRestorePending = false;
+        this._animationCacheRestorePromise = null;
         // Load from pose_data widget
         const widget = this.getNodeWidget("pose_data");
         if (!widget || !widget.value) {
+            this.clearPoseHistory();
+            this.clearSAMCameraMode();
             this._poseDataRestoreError = null;
             this._poseDataRestorePending = false;
             if (this.container) this.container.inert = false;
@@ -15650,6 +15778,69 @@ class PoseStudioWidget {
                     throw new Error(`pose_data.${key} must be an array`);
                 }
             }
+            if (data.export && "bg_color" in data.export) {
+                const rgb = data.export.bg_color;
+                if (!Array.isArray(rgb) || rgb.length < 3 || !rgb.slice(0, 3).every(value => (
+                    (typeof value === "number" || typeof value === "string" && value.trim() !== "")
+                    && Number.isFinite(Number(value))
+                ))) throw new TypeError("Invalid pose background color.");
+                data.export.bg_color = rgb.map((value, index) => index < 3 ? Number(value) : value);
+            }
+            for (const light of data.lights || []) {
+                if (!light || typeof light !== "object" || Array.isArray(light)) {
+                    throw new TypeError("Invalid pose light: expected an object.");
+                }
+                for (const key of ["intensity", "radius", "x", "y", "z"]) {
+                    if (light[key] == null) continue;
+                    const value = light[key];
+                    if (!(typeof value === "number" || typeof value === "string" && value.trim() !== "")
+                        || !Number.isFinite(Number(value))) {
+                        throw new TypeError(`Invalid pose light value in ${key}.`);
+                    }
+                    light[key] = Number(value);
+                }
+            }
+            for (const source of [data, ...(data.characters || [])]) {
+                if (!source || typeof source !== "object" || Array.isArray(source)) {
+                    throw new TypeError("Invalid pose character.");
+                }
+                if (source.mesh != null) source.mesh = this.normalizeImportedMesh(source.mesh);
+                for (const key of ["poses", "image_poses"]) {
+                    if (source[key] == null) continue;
+                    if (!Array.isArray(source[key])) throw new TypeError("Invalid pose set.");
+                    source[key].forEach(pose => this.validateImportedPose(pose));
+                }
+                if (source.animation?.basePose != null) this.validateImportedPose(source.animation.basePose);
+                if (source.animation?.pendingAnimation) {
+                    const pending = source.animation.pendingAnimation;
+                    for (const clip of [pending, ...(pending.characterAnimations || []).map(entry => entry.animation)]) {
+                        if (clip?.basePose != null) this.validateImportedPose(clip.basePose);
+                        normalizeAnimationState(clip);
+                    }
+                }
+            }
+            const normalizedScene = normalizePoseStudioCharacters(data, {
+                mesh: data.mesh || this.meshParams,
+                color: DEFAULT_CHARACTER_COLORS[0],
+            });
+            const restoredActiveCharacter = normalizedScene.characters.find(
+                character => character.id === normalizedScene.activeCharacterId,
+            );
+            const savedImagePoses = Array.isArray(data.image_poses) ? data.image_poses : data.poses;
+            if (!Array.isArray(data.characters) && Array.isArray(savedImagePoses) && savedImagePoses.length) {
+                restoredActiveCharacter.poses = savedImagePoses;
+            }
+            const restoredTab = typeof data.activeTab === "number"
+                ? Math.max(0, Math.min(data.activeTab, restoredActiveCharacter.poses.length - 1))
+                : this.activeTab;
+            for (const character of normalizedScene.characters) {
+                const fallbackPose = character.poses[restoredTab] || character.poses[0] || {};
+                character.animationState = character.animation && typeof character.animation === "object"
+                    ? normalizeAnimationState(character.animation, fallbackPose)
+                    : createDefaultAnimationState(fallbackPose, { baseTransform: character.transform });
+            }
+            this.clearPoseHistory();
+            this.clearSAMCameraMode();
             this._poseDataRestorePending = true;
             if (this.container) this.container.inert = true;
             const knownRootKeys = new Set([
@@ -15771,13 +15962,8 @@ class PoseStudioWidget {
             this.viewer?.clearPassiveCharacters?.();
             this._pendingMorphSolve = null;
             this._lastAppliedMorphSeq = ++this._morphSeq;
-            const normalizedScene = normalizePoseStudioCharacters(data, {
-                mesh: data.mesh || this.meshParams,
-                color: DEFAULT_CHARACTER_COLORS[0],
-            });
             this.characters = normalizedScene.characters;
             this.activeCharacterId = normalizedScene.activeCharacterId;
-            const restoredActiveCharacter = this.getActiveCharacter();
             if (restoredActiveCharacter) {
                 this.meshParams = { ...this.meshParams, ...restoredActiveCharacter.mesh };
                 restoredActiveCharacter.mesh = this.meshParams;
@@ -15791,7 +15977,6 @@ class PoseStudioWidget {
                 }
             }
 
-            const savedImagePoses = Array.isArray(data.image_poses) ? data.image_poses : data.poses;
             if (!Array.isArray(data.characters) && Array.isArray(savedImagePoses) && savedImagePoses.length) {
                 this.poses = savedImagePoses;
                 if (restoredActiveCharacter) restoredActiveCharacter.poses = this.poses;
@@ -15805,10 +15990,7 @@ class PoseStudioWidget {
             const restoredAnimationSource = Array.isArray(data.characters)
                 ? restoredActiveCharacter?.animation
                 : data.animation;
-            // A previous scene's asynchronous response must not change this scene or show its errors.
-            ++this._animationCacheRestoreToken;
-            this._animationCacheRestorePending = false;
-            this._animationCacheRestorePromise = null;
+            this.animationState = restoredActiveCharacter.animationState;
             this._deferredAnimationReference = null;
             clearTimeout(this._animationCacheUploadTimer);
             this._animationCacheUploadTimer = null;
@@ -15824,7 +16006,6 @@ class PoseStudioWidget {
                     ? restoredAnimationSource.cacheId
                     : null;
                 this._animationCacheRevision = Math.max(0, Math.floor(Number(restoredAnimationSource.revision) || 0));
-                this.animationState = normalizeAnimationState(restoredAnimationSource, this.poses[this.activeTab] || {});
                 this._animationInitialized = true;
             } else if (restoredAnimationSource && typeof restoredAnimationSource === "object") {
                 ++this._animationCacheRestoreToken;
@@ -15832,7 +16013,6 @@ class PoseStudioWidget {
                 this._animationCacheRestorePromise = null;
                 this._animationCacheId = null;
                 this._animationCacheRevision = 0;
-                this.animationState = normalizeAnimationState(restoredAnimationSource, this.poses[this.activeTab] || {});
                 this._animationInitialized = true;
             } else {
                 ++this._animationCacheRestoreToken;
@@ -15840,10 +16020,6 @@ class PoseStudioWidget {
                 this._animationCacheRestorePromise = null;
                 this._animationCacheId = null;
                 this._animationCacheRevision = 0;
-                this.animationState = createDefaultAnimationState(
-                    this.poses[this.activeTab] || {},
-                    { baseTransform: restoredActiveCharacter?.transform },
-                );
                 this._animationInitialized = false;
             }
             if (restoredActiveCharacter) restoredActiveCharacter.animationState = this.animationState;
@@ -15856,7 +16032,6 @@ class PoseStudioWidget {
                 loop: savedTimeline.loop ?? this.animationState.loop ?? true,
             };
             for (const character of this.characters) {
-                if (character !== restoredActiveCharacter) character.animationState = null;
                 this.ensureCharacterRuntime(character);
             }
             this.animationState = restoredActiveCharacter?.animationState || this.animationState;

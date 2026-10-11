@@ -329,23 +329,39 @@ def resolve_prompt(node_state):
             return value
 
         def checked_value(block_id, key, output):
+            nonlocal context
             if block_id in selected[output]:
                 return selected[output][block_id]
             # A forward check reserves the next insertion, without choosing it again later.
+            definitions = []
             for position in range(key[0] + 1, len(parts)):
                 part = parts[position]
-                if part.get("blockId") == block_id:
-                    return block_value(block_id, (position,), output)
                 if "multiPrompt" in part:
                     variants = part["multiPrompt"]["variants"]
-                    for index, item in enumerate(variants[output] if output < len(variants) else []):
-                        if item.get("blockId") == block_id:
-                            return block_value(block_id, (position, output, index), output)
+                    items = variants[output] if output < len(variants) else []
+                else:
+                    items = [part]
+                for index, item in enumerate(items):
+                    insertion = (position, output, index) if "multiPrompt" in part else (position,)
+                    if item.get("blockId") == block_id:
+                        before, previous = context, selected[output].copy()
+                        try:
+                            # Replay only unconditional definitions; an unselected branch stays lazy.
+                            for definition, definition_key in definitions:
+                                fragment(definition, definition_key, output)
+                            value = block_value(block_id, insertion, output)
+                        finally:
+                            context, selected[output] = before, previous
+                        selected[output][block_id] = value
+                        return value
+                    if "${" in item.get("text", library.get(item.get("blockId"), "")):
+                        definitions.append((item, insertion))
             return block_value(block_id, (*key, "check", block_id), output)
 
         def fragment(part, key, output):
             if "text" in part:
-                return sample_once(part["text"], (key, id(context.variables) if "${" in part["text"] else None))
+                cache = reservations.setdefault((key, output), (key, id(context.variables) if "${" in part["text"] else None))
+                return sample_once(part["text"], cache)
             if "blockId" in part:
                 return block_value(part["blockId"], key, output)
             condition = part["condition"]
@@ -405,7 +421,7 @@ def cycle_period(command, context, position):
     """Bound the native cycle period so old workflows never require replaying every past queue."""
     from collections import Counter
     from math import factorial, lcm
-    from dynamicprompts.commands import SequenceCommand, VariantCommand
+    from dynamicprompts.commands import SequenceCommand, VariantCommand, WrapCommand
     from dynamicprompts.commands.variable_commands import VariableAccessCommand, VariableAssignmentCommand
     from dynamicprompts.enums import SamplingMethod
 
@@ -430,6 +446,9 @@ def cycle_period(command, context, position):
                 else:
                     lengths.append(period(token, variables, method, visiting))
             return min(position + 1, lcm(*lengths))
+        if isinstance(value, WrapCommand):
+            return min(position + 1, lcm(period(value.wrapper, variables, method, visiting),
+                                         period(value.inner, variables, method, visiting)))
         if isinstance(value, VariantCommand):
             command = value.adjust_range()
             length = lcm(*(period(item, variables, method, visiting) for item in command.values))
@@ -453,11 +472,16 @@ def cycle_period(command, context, position):
 
 def choice_mode(value, method):
     """Change parsed choice modes while retaining bounds, weights and separators."""
+    from dynamicprompts.commands import WrapCommand
+    from dynamicprompts.enums import SamplingMethod
+
     if isinstance(value, list):
         return [choice_mode(item, method) for item in value]
     if not is_dataclass(value):
         return value
-    return replace(value, **{field.name: method if field.name == "sampling_method"
+    # The native random sampler joins wrapping streams; the cyclic sampler cannot wrap.
+    sampling_method = SamplingMethod.RANDOM if isinstance(value, WrapCommand) and method == SamplingMethod.CYCLICAL else method
+    return replace(value, **{field.name: sampling_method if field.name == "sampling_method"
                             else choice_mode(getattr(value, field.name), method) for field in fields(value)})
 
 

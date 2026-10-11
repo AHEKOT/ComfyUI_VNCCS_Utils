@@ -46,6 +46,22 @@ POSE_STUDIO = _load_pose_studio_module()
 
 
 class PoseOutputLimitTests(unittest.TestCase):
+    def test_pose_image_changes_invalidate_cache_for_every_pixel_and_dimension(self):
+        def changed(array):
+            tensor = types.SimpleNamespace(numpy=lambda: array)
+            tensor.detach = lambda: tensor
+            tensor.cpu = lambda: tensor
+            return POSE_STUDIO.VNCCS_PoseStudio.IS_CHANGED(pose_image=tensor)
+
+        image = POSE_STUDIO.np.zeros((1, 64, 64, 3), dtype=POSE_STUDIO.np.float32)
+        original = changed(image)
+        self.assertEqual(changed(image.copy()), original)
+        edited = image.copy()
+        edited.flat[1] = 1
+        self.assertNotEqual(changed(edited), original)
+        self.assertNotEqual(changed(image.reshape(1, 32, 128, 3)), original)
+        self.assertNotEqual(changed(image.astype(POSE_STUDIO.np.int32)), original)
+
     def test_pending_animation_tracks_are_available_before_cache_acknowledgement(self):
         animation = {"fps": 24, "tracks": {"head": {"keys": [{"frame": 0, "value": [0, 0, 0, 1]}]}}}
         data = {"animation": {"storage": "server_cache", "cacheId": "pending", "pendingAnimation": animation}}

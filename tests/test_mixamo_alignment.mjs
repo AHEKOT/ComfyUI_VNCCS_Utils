@@ -528,7 +528,9 @@ test("SAM import fits body proportions before building IK targets", () => {
         return true;
     };
 
-    assert.equal(viewer.applySAM3DImport({ joint_coords: [] }), true);
+    viewer.ikController = {};
+    viewer.bones.pelvis = {};
+    assert.equal(viewer.applySAM3DImport({ joint_coords: [[0, 0, 0]], joint_names: ["pelvis"] }), true);
     assert.ok(calls.indexOf("auto-fit") < calls.indexOf("build-targets"));
     assert.ok(calls.indexOf("build-targets") < calls.indexOf("world-import"));
 });
@@ -557,6 +559,8 @@ test("repeated SAM video imports reset pose-derived foot scale", () => {
     viewer.skeleton = { update() {} };
     viewer.recordState = () => {};
     viewer.autoFitSAM3DBoneLengths = () => {};
+    viewer.ikController = {};
+    viewer.bones.pelvis = {};
     viewer._buildSAM3DImportTargets = () => ({ worldKps: { pelvis: {} } });
     viewer._applySAM3DRotationImport = () => false;
     const startingScales = [];
@@ -567,8 +571,9 @@ test("repeated SAM video imports reset pose-derived foot scale", () => {
         return true;
     };
 
-    assert.equal(viewer.applySAM3DImport({}, 0, { recordState: false }), true);
-    assert.equal(viewer.applySAM3DImport({}, 0, { recordState: false }), true);
+    const poseData = { joint_coords: [[0, 0, 0]], joint_names: ["pelvis"] };
+    assert.equal(viewer.applySAM3DImport(poseData, 0, { recordState: false }), true);
+    assert.equal(viewer.applySAM3DImport(poseData, 0, { recordState: false }), true);
     assert.deepEqual(startingScales, [[1.25, 1.25], [1.25, 1.25]]);
 });
 
@@ -582,6 +587,8 @@ test("dense SAM rotations are not overwritten by rear-view head and foot point f
     viewer.skeleton = { update() {} };
     viewer.recordState = () => {};
     viewer.autoFitSAM3DBoneLengths = () => {};
+    viewer.ikController = {};
+    viewer.bones.pelvis = {};
     viewer._buildSAM3DImportTargets = () => ({ worldKps: { pelvis: {} } });
     viewer._applySAM3DRotationImport = () => true;
     let importOptions = null;
@@ -590,11 +597,12 @@ test("dense SAM rotations are not overwritten by rear-view head and foot point f
         return true;
     };
 
-    assert.equal(viewer.applySAM3DImport({}, 0, { recordState: false }), true);
+    const poseData = { joint_coords: [[0, 0, 0]], joint_names: ["pelvis"] };
+    assert.equal(viewer.applySAM3DImport(poseData, 0, { recordState: false }), true);
     assert.equal(importOptions.alignHead, false, "MHR head rotation must remain authoritative");
     assert.equal(importOptions.alignFeet, true, "image import keeps exact foot surface fitting by default");
 
-    assert.equal(viewer.applySAM3DImport({}, 0, {
+    assert.equal(viewer.applySAM3DImport(poseData, 0, {
         recordState: false,
         alignHead: false,
         alignFeet: false,

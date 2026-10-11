@@ -74,6 +74,17 @@ def test_output_variable_assignments_do_not_leak_into_other_outputs_or_the_share
     assert list(VNCCS_PromptDesigner().execute(raw)["result"][:3]) == result["prompts"]
 
 
+def test_forward_conditions_reserve_each_output_in_its_future_variable_scope():
+    blocks = [{"id": "color", "name": "Color", "text": "${color:undefined}"}]
+    parts = [{"condition": {"blockId": "color", "operator": "equals", "value": "red",
+                            "then": {"text": "red:"}, "else": {"text": "blue:"}}},
+             multi([{"text": "${color=!red}"}, {"blockId": "color"}],
+                   [{"text": "${color=!blue}"}, {"blockId": "color"}]),
+             {"text": " ${color}"}]
+    result = resolve_prompt(state(parts, blocks))
+    assert result["prompts"] == ["red:red red", "blue:blue blue"]
+
+
 @pytest.mark.parametrize("suffix", ["{~red|blue}", "${who} {~red|blue}", "${color=!{~red|blue}}${who} ${color}"])
 def test_common_random_draws_remain_shared_when_output_variables_differ(suffix):
     for seed in range(20):

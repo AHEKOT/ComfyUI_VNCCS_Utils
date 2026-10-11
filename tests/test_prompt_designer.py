@@ -89,15 +89,40 @@ def test_explicit_cycle_syntax_in_main_text_and_variables_advances_without_block
     assert [resolve_prompt(state(text, cycleIndex=index))["prompt"] for index in range(4)] == ["red", "blue", "green", "red"]
 
 
+@pytest.mark.parametrize("source,period", [
+    ("%{(...)$${@red|blue}}", 2),
+    ("%{{@(...)|[...] }$${@red|blue|green}}", 6),
+    ("%{(...)$$%{[...]$${@red|blue}}}", 2),
+])
+@pytest.mark.parametrize("location", ["main", "block", "lazy_variable", "immediate_variable", "cycle_card"])
+def test_wrapped_cycles_retain_native_sampling_order_in_preview_and_execution(source, period, location):
+    from nodes.prompt_designer import bounded_sampling_context
+    expected = [str(value) for value in bounded_sampling_context().sample_prompts(source, period * 2)]
+    assert expected[:period] == expected[period:]
+    assert len(set(expected)) > 1
+    for index in [*range(period * 2), 2**53 - 1]:
+        blocks = [{"id": "a", "name": "Wrapped choices", "text": source}]
+        if location == "cycle_card":
+            blocks[0].update(text=source.replace("{@", "{~"), mode="cycle")
+        text = source if location == "main" else "${wrapped=" + ("!" if location == "immediate_variable" else "") + source + "}${wrapped}"
+        parts = [{"blockId": "a"}] if location in ("block", "cycle_card") else [{"text": text}]
+        raw = state(parts=parts, blocks=blocks, cycleIndex=index)
+        result = resolve_prompt(raw)
+        assert result["prompt"] == expected[index % period]
+        assert VNCCS_PromptDesigner().execute(raw)["result"][0] == result["prompt"]
+        assert result["prompt"] in preview_block(raw, "a")["variants"]
+
+
 @pytest.mark.parametrize("index", [True, 0.5, "1", None, -2, 2**53])
 def test_cycle_position_is_validated_at_the_backend_boundary(index):
     with pytest.raises(ValueError, match="cycle position"):
         resolve_prompt(state(cycleIndex=index))
 
 
-def test_cycle_replay_work_is_bounded():
+@pytest.mark.parametrize("text", ["{@6$$|a|b|c|d|e|f|g|h|i|j|k|l}", "%{(...)$${@6$$|a|b|c|d|e|f|g|h|i|j|k|l}}"])
+def test_cycle_replay_work_is_bounded(text):
     with pytest.raises(ValueError, match="too complex"):
-        resolve_prompt(state("{@6$$|a|b|c|d|e|f|g|h|i|j|k|l}", cycleIndex=100_000))
+        resolve_prompt(state(text, cycleIndex=100_000))
 
 
 @pytest.mark.parametrize("index", [-1, 0, 1, 2**53 - 1])
@@ -289,6 +314,34 @@ def test_false_condition_does_not_search_the_library_or_resolve_its_output():
     assert resolve_prompt(raw)["prompt"] == "blue"
 
 
+@pytest.mark.parametrize("location", ["text", "block"])
+def test_forward_conditions_use_assignments_before_the_reserved_insertion_without_leaking_future_scope(location):
+    blocks = [{"id": "color", "name": "Color", "text": "${color:red}"},
+              {"id": "assignment", "name": "Assignment", "text": "${color=!blue}"}]
+    assignment = {"text": "${color=!blue}"} if location == "text" else {"blockId": "assignment"}
+    parts = [{"condition": {"blockId": "color", "operator": "equals", "value": "blue",
+                            "then": {"text": "${color:before}:"}, "else": {"text": "{unfinished"}}},
+             assignment, {"blockId": "color"}, {"text": " ${color}"}]
+    assert resolve_prompt(state(blocks=blocks, parts=parts))["prompt"] == "before:blue blue"
+
+
+@pytest.mark.parametrize("method", ["~", "@"])
+def test_forward_assignment_draws_are_reused_when_the_prompt_reaches_the_definition(method):
+    blocks = [{"id": "color", "name": "Color", "text": "${color:undefined}"}]
+    parts = [{"condition": {"blockId": "color", "operator": "equals", "value": "red",
+                            "then": {"text": "red:"}, "else": {"text": "blue:"}}},
+             {"text": "${color=!{" + method + "red|blue}}${color}:"}, {"blockId": "color"}]
+    results = set()
+    for seed in range(10):
+        for index in range(3):
+            raw = state(blocks=blocks, parts=parts, seed=str(seed), cycleIndex=index)
+            result = resolve_prompt(raw)
+            assert result["prompt"] in {"red:red:red", "blue:blue:blue"}
+            assert result == resolve_prompt(raw)
+            results.add(result["prompt"])
+    assert len(results) == 2
+
+
 def test_conditional_prompt_keeps_dynamic_prompts_variables_across_fragments():
     condition = {"blockId": "color", "operator": "equals", "value": "red", "then": {"text": "${word}"}}
     raw = state(blocks=[{"id": "color", "name": "Color", "text": "red"}],
@@ -428,6 +481,23 @@ def test_unrecognized_weight_prefixes_remain_literal_in_preview_and_execution(li
                 parts=[{"blockId": "a"}])
     assert preview_block(raw, "a") == {"variants": [literal], "truncated": False}
     assert resolve_prompt(raw)["prompt"] == literal
+
+
+@pytest.mark.parametrize("source,expected", [
+    ("{~first # ignored | }\n|second} # trailing }", ["first  \n", "second"]),
+    ("{~first \\# ignored | }\n|second}", ["first \\ \n", "second"]),
+    ('{~"first # ignored | }\n|second}', ['"first  \n', "second"]),
+    ("{~// ignored } | first\nfirst|second}", ["first", "second"]),
+    ("{~/* ignored } | first */first|second}", ["first", "second"]),
+    ("{~2::/* ignored } | first */first|second}", ["first", "second"]),
+    ("{2$$a#b$$first|second}", ["firsta#bsecond", "seconda#bfirst"]),
+    ("{~https://example.test/|first // literal|first /* literal}",
+     ["https://example.test/", "first // literal", "first /* literal"]),
+])
+def test_source_comment_boundaries_match_the_installed_dynamic_prompts_grammar(source, expected):
+    raw = state(blocks=[{"id": "a", "name": "Comments", "text": source}], parts=[{"blockId": "a"}])
+    assert preview_block(raw, "a") == {"variants": expected, "truncated": False}
+    assert resolve_prompt(raw)["prompt"] in expected
 
 
 def test_block_preview_limits_rows_and_total_text():

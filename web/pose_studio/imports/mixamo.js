@@ -659,6 +659,7 @@ export async function importMixamoFBXAnimation(file, viewer, options = {}) {
     if (options.isCurrent && !options.isCurrent()) return null;
     const loader = new FBXLoader();
     const fileUrl = URL.createObjectURL(file);
+    let originalPose = null;
 
     try {
         const root = await loader.loadAsync(fileUrl);
@@ -692,7 +693,7 @@ export async function importMixamoFBXAnimation(file, viewer, options = {}) {
         action.reset();
         action.play();
 
-        const originalPose = viewer.getPose();
+        originalPose = viewer.getPose();
         const poses = [];
         const debugFrames = [];
 
@@ -827,8 +828,6 @@ export async function importMixamoFBXAnimation(file, viewer, options = {}) {
             // ignore debug publishing failures
         }
 
-        viewer.setPose(originalPose, true);
-
         if (!poses.length) {
             throw new Error('The FBX clip loaded, but no pose frames could be retargeted onto the MH rig.');
         }
@@ -842,7 +841,11 @@ export async function importMixamoFBXAnimation(file, viewer, options = {}) {
             sampleTimes,
         };
     } finally {
-        URL.revokeObjectURL(fileUrl);
+        try {
+            if (originalPose) viewer.setPose(originalPose, true);
+        } finally {
+            URL.revokeObjectURL(fileUrl);
+        }
     }
 }
 

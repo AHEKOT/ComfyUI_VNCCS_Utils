@@ -20,7 +20,7 @@ export async function canvasRequest(path = "", method = "GET", body) {
 }
 
 function available(widget) {
-  if (widget.isPointerDown || widget.transformDraft || widget.poseEditor?.isGestureActive?.()) {
+  if (widget.isPointerDown || widget.historyGestureActive || widget.transformDraft || widget.poseEditor?.isGestureActive?.()) {
     widget.setStatus("Finish the current edit before managing canvases.", true);
     return false;
   }

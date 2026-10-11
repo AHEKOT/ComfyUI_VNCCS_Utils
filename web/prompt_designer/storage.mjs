@@ -44,6 +44,7 @@ export class DocumentStorage {
             }
         } catch (error) {
             draft = undefined;
+            if (this.corruptDraft) this.restoreError = error;
             this.status(`Browser recovery could not be read: ${error.message}. Recovery data was retained.`, true);
         }
         // The property mirror also survives ComfyUI widget ordering changes.
@@ -51,7 +52,7 @@ export class DocumentStorage {
         let state;
         for (const value of [draft?.state, metadata?.state, raw]) {
             if (value === undefined) continue;
-            // An empty constructor placeholder cannot recover damaged authored metadata.
+            // An empty constructor placeholder cannot recover damaged authored data.
             if (value === raw && this.restoreError && /^\s*\{\s*\}\s*$/.test(value)) continue;
             try { state = normalizeState(JSON.parse(value)); break; }
             catch (error) { this.restoreError = error; }

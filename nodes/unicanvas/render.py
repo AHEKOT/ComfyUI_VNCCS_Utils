@@ -120,19 +120,21 @@ def _blend_overlay(backdrop: np.ndarray, source: np.ndarray) -> np.ndarray:
 
 
 def _blend_color_dodge(backdrop: np.ndarray, source: np.ndarray) -> np.ndarray:
-    return np.where(
+    result = np.where(
         source >= 1.0 - 1e-7,
         1.0,
         np.minimum(1.0, backdrop / np.maximum(1.0 - source, 1e-7)),
     )
+    return np.where(backdrop == 0.0, 0.0, result)
 
 
 def _blend_color_burn(backdrop: np.ndarray, source: np.ndarray) -> np.ndarray:
-    return np.where(
+    result = np.where(
         source <= 1e-7,
         0.0,
         1.0 - np.minimum(1.0, (1.0 - backdrop) / np.maximum(source, 1e-7)),
     )
+    return np.where(backdrop == 1.0, 1.0, result)
 
 
 def _blend_hard_light(backdrop: np.ndarray, source: np.ndarray) -> np.ndarray:
@@ -369,6 +371,11 @@ def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
             continue
         crop = layer.get("crop")
         data_url = layer.get("dataURL")
+        native = not document.state.get("panorama") and isinstance(layer.get("hiresRect"), dict) and bool(layer.get("hiresDataURL"))
+        if native:
+            crop = {**layer["hiresRect"], "x": _number(layer["hiresRect"].get("x"), 0) - origin["x"],
+                    "y": _number(layer["hiresRect"].get("y"), 0) - origin["y"]}
+            data_url = layer["hiresDataURL"]
         if not isinstance(crop, dict) or not data_url:
             document.missing_pixels(layer)
             continue
@@ -393,7 +400,14 @@ def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
         src_top = inter_top - dst_y
         src_right = src_left + (inter_right - inter_left)
         src_bottom = src_top + (inter_bottom - inter_top)
-        image = image.crop((src_left, src_top, src_right, src_bottom))
+        if native:
+            # Transform only the bbox intersection; native world bounds can exceed the backing canvas.
+            scale_x, scale_y = image.width / layer_w, image.height / layer_h
+            image = image.transform((inter_right - inter_left, inter_bottom - inter_top), Image.Transform.EXTENT,
+                                    (src_left * scale_x, src_top * scale_y, src_right * scale_x, src_bottom * scale_y),
+                                    Image.Resampling.BICUBIC)
+        else:
+            image = image.crop((src_left, src_top, src_right, src_bottom))
         image = _apply_layer_opacity(image, _number(layer.get("opacity"), 1.0))
         blend_mode = str(layer.get("blendMode") or "source-over").lower()
         if blend_mode in {"source-over", "normal"} or blend_mode not in BLEND_MODES:

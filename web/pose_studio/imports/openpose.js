@@ -675,6 +675,12 @@ function _normalizeAngle(a) {
 export function convertOpenPoseToPose(parsed, viewer) {
     if (!parsed || !parsed.joints || !viewer || !viewer.bones) return null;
 
+    const points = [
+        ...Object.values(parsed.joints),
+        ...(parsed.handLeft || []), ...(parsed.handRight || []), ...(parsed.face || []),
+    ];
+    if (points.some(point => !point || ![point.x, point.y, point.c].every(Number.isFinite))) return null;
+
     const joints = parsed.joints;
     const bones = {};
     const modelRotation = [0, 0, 0];
@@ -779,6 +785,7 @@ export function convertOpenPoseToPose(parsed, viewer) {
         _processFingers(parsed.handRight, "r", viewer, bones);
     }
 
+    if (!Object.keys(bones).length && modelRotation.every(value => value === 0)) return null;
     return { bones, modelRotation, cameraYRotation: bodyYRot };
 }
 
@@ -1107,6 +1114,7 @@ export function parseHMR2JSON(data) {
             } else {
                 continue;
             }
+            if (!Number.isFinite(nx) || !Number.isFinite(ny)) return null;
 
             // Normalize name conventions: left_ -> l_, right_ -> r_
             let name = rawName.replace(/^left_/, 'l_').replace(/^right_/, 'r_');
@@ -1129,6 +1137,7 @@ export function parseHMR2JSON(data) {
         for (const [rawName, val] of Object.entries(kp3d)) {
             if (!val || !Array.isArray(val) || val.length < 2) continue;
             let nx = val[0], ny = val[1];
+            if (!Number.isFinite(nx) || !Number.isFinite(ny)) return null;
             let name = rawName.replace(/^left_/, 'l_').replace(/^right_/, 'r_');
             // If values look already pixel coords (large), use as-is; else assume normalized
             const x = Math.abs(nx) > 1.5 ? nx : nx * canvasWidth;

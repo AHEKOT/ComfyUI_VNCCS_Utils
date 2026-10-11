@@ -295,9 +295,10 @@ class VNCCS_PoseStudio:
             return change_key
         try:
             tensor = pose_image.detach().cpu()
-            arr = tensor.numpy()
-            sample = arr.flat[::max(1, arr.size // 1000)]
-            digest = hashlib.sha256(bytes(sample)).hexdigest()
+            arr = np.ascontiguousarray(tensor.numpy())
+            image_hash = hashlib.sha256(f"{arr.shape}|{arr.dtype}".encode("utf-8"))
+            image_hash.update(memoryview(arr))
+            digest = image_hash.hexdigest()
             return f"{change_key}|pose_image:{digest}"
         except Exception:
             return f"{change_key}|pose_image:{id(pose_image)}"

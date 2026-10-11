@@ -75,6 +75,38 @@ class UniCanvasRenderTests(unittest.TestCase):
         self.assertNotIn("dataURL", merged)
         self.assertNotIn("hiresDataURL", merged)
 
+    def test_cached_native_pixels_render_without_a_backing_crop_or_output_cache(self):
+        rect = {"x": 150, "y": 10, "width": 20, "height": 20}
+        native = Image.new("RGBA", (4, 4), "red")
+        native.paste("blue", (2, 0, 4, 4))
+        pixels = _data_url(native)
+        layer = {"id": "outside", "type": "raster", "crop": None, "dataURL": None,
+                 "hiresRect": rect, "hiresDataURL": pixels}
+        saved = {"version": 2, "origin": {"x": 25, "y": -10}, "layers": [layer]}
+        compact = {**saved, "storage": "server_cache", "state_id": "native-only",
+                   "layers": [{**layer, "cached": True, "hiresDataURL": None}]}
+        for bbox, point, expected in (
+            ({"x": 145, "y": 5, "width": 30, "height": 30}, (5, 5), (255, 0, 0, 255)),
+            ({"x": 155, "y": 15, "width": 10, "height": 10}, (9, 9), (0, 0, 255, 255)),
+            ({"x": 0, "y": 0, "width": 10, "height": 10}, (0, 0), (0, 0, 0, 0)),
+        ):
+            with self.subTest(bbox=bbox), mock.patch.object(UNICANVAS.state, "_read_unicanvas_state_cache", return_value=saved):
+                state = {**compact, "bbox": bbox}
+                restored = UNICANVAS.state._load_unicanvas_state(json.dumps(state))
+                self.assertEqual(restored["layers"][0]["hiresDataURL"], pixels)
+                result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+                self.assertEqual(result.getpixel(point), expected)
+                if bbox["width"] == 30:
+                    self.assertEqual(result.getpixel((0, 0)), (0, 0, 0, 0))
+                    self.assertEqual(result.getpixel((24, 24)), (0, 0, 255, 255))
+                    self.assertEqual(result.getpixel((25, 25)), (0, 0, 0, 0))
+
+        distant = {**saved, "bbox": {"x": 0, "y": 0, "width": 10, "height": 10},
+                   "layers": [{**layer, "hiresRect": {**rect, "width": 100_000_000}, "hiresDataURL": "invalid"}]}
+        with mock.patch.object(UNICANVAS.render, "_decode_data_url", side_effect=AssertionError("Offscreen pixels must not be decoded")):
+            result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(distant))
+        self.assertEqual(result.getbbox(), None)
+
     def test_large_flat_layer_exports_its_small_bbox_without_decoding_the_whole_layer(self):
         pixels = _data_url(Image.new("RGBA", (6000, 4000), "red"))
         state = {"version": 2, "state_id": "large-layer", "output_id": "large-layer_out",
@@ -88,6 +120,34 @@ class UniCanvasRenderTests(unittest.TestCase):
         read.assert_called_once_with("large-layer_out")
         self.assertEqual(result.size, (1024, 1024))
         self.assertEqual(result.getpixel((0, 0)), (255, 0, 0, 255))
+
+    def test_cached_native_pixels_win_over_a_clipped_backing_image(self):
+        native = Image.new("RGBA", (4, 4), (255, 0, 0, 128))
+        native.paste((0, 0, 255, 128), (2, 0, 4, 4))
+        bbox = {"x": 27, "y": -10, "width": 8, "height": 8}
+        layer = {"id": "native", "type": "raster", "opacity": 0.5, "blendMode": "screen",
+                 "crop": {"x": 4, "y": 2, "width": 2, "height": 4},
+                 "dataURL": _data_url(native.crop((0, 0, 2, 4))),
+                 "hiresRect": {"x": 29, "y": -8, "width": 4, "height": 4},
+                 "hiresDataURL": _data_url(native)}
+        backdrop = {"id": "backdrop", "type": "raster",
+                    "crop": {"x": 2, "y": 0, "width": 8, "height": 8},
+                    "dataURL": _data_url(Image.new("RGBA", (8, 8), "lime"))}
+        for layers, expected in (([layer], (0, 0, 255, 64)),
+                                 ([layer, backdrop], (0, 255, 64, 255))):
+            with self.subTest(backdrop=len(layers) > 1):
+                saved = {"version": 2, "origin": {"x": 25, "y": -10}, "bbox": bbox, "layers": layers}
+                compact = {**saved, "storage": "server_cache", "state_id": "native-and-backing",
+                           "layers": [{**item, "cached": True, "dataURL": None, "hiresDataURL": None}
+                                      for item in layers]}
+                with mock.patch.object(UNICANVAS.state, "_read_unicanvas_state_cache", return_value=saved):
+                    result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(compact))
+                self.assertEqual(result.getpixel((5, 4)), expected)
+                self.assertEqual(result.getpixel((2, 4)), (64, 255, 0, 255) if len(layers) > 1 else (255, 0, 0, 64))
+
+        distant = {**saved, "bbox": {"x": 0, "y": 0, "width": 8, "height": 8}, "layers": [layer]}
+        with mock.patch.object(UNICANVAS.render, "_decode_data_url", side_effect=AssertionError("Offscreen pixels must not be decoded")):
+            self.assertEqual(UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(distant)).getbbox(), None)
 
     def test_uploaded_reference_gaps_keep_their_socket_numbers(self):
         uploads = [None, "", "third", *([None] * 6), "tenth", "outside_limit"]
@@ -301,6 +361,24 @@ class UniCanvasRenderTests(unittest.TestCase):
         result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
 
         self.assertEqual(result.getpixel((0, 0)), (64, 64, 64, 255))
+
+    def test_dodge_and_burn_preserve_backdrop_boundary_channels(self):
+        bottom = Image.new("RGBA", (1, 1), (0, 128, 255, 255))
+        crop = {"x": 0, "y": 0, "width": 1, "height": 1}
+        for mode, source, expected in (
+            ("color-dodge", (255, 255, 255, 255), (0, 255, 255, 255)),
+            ("color-dodge", (255, 255, 255, 128), (0, 192, 255, 255)),
+            ("color-burn", (0, 0, 0, 255), (0, 0, 255, 255)),
+            ("color-burn", (0, 0, 0, 128), (0, 64, 255, 255)),
+        ):
+            with self.subTest(mode=mode, source=source):
+                state = {"bbox": crop, "layers": [
+                    {"type": "raster", "blendMode": mode, "crop": crop,
+                     "dataURL": _data_url(Image.new("RGBA", (1, 1), source))},
+                    {"type": "raster", "crop": crop, "dataURL": _data_url(bottom)},
+                ]}
+                result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+                self.assertEqual(result.getpixel((0, 0)), expected)
 
     def test_all_widget_blend_modes_produce_finite_rgba(self):
         backdrop = Image.new("RGBA", (2, 2), (70, 130, 220, 190))

@@ -7,7 +7,7 @@
  */
 
 import { app } from "../../../scripts/app.js";
-import { STANDALONE_STYLES } from "./standalone_theme.mjs?v=1791717134721";
+import { STANDALONE_STYLES } from "./standalone_theme.mjs?v=1791754604000";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 
@@ -745,14 +745,8 @@ export function uniCanvasBboxPixelRect(bbox, origin) {
 
 // Save to output: every visible image layer flattened, cropped to the generation bbox.
 export function buildUniCanvasBboxCompositeCanvas(widget) {
-  const full = buildUniCanvasCompositeCanvas(widget);
   const rect = uniCanvasBboxPixelRect(widget.bbox, widget.origin);
-  const out = document.createElement("canvas");
-  out.width = rect.width;
-  out.height = rect.height;
-  const ctx = widget.configureImageContext(out.getContext("2d"), false);
-  ctx.drawImage(full, -rect.x, -rect.y);
-  return out;
+  return widget.makeExportCanvas("image", { width: rect.width, height: rect.height });
 }
 
 export function buildUniCanvasCompositeCanvas(widget) {

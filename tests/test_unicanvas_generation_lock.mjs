@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { trimPanoramaHistory } from "../web/unicanvas/panorama.mjs";
 
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const modes = readFileSync(new URL("../web/unicanvas/modes.mjs", import.meta.url), "utf8");
@@ -26,6 +27,7 @@ class Element {
 
 const domDocument = { createElement: tag => new Element(tag), activeElement: null };
 const context = { clearTimeout, console, document: domDocument, DEFAULT_SEED_MODE: "randomize",
+  trimPanoramaHistory,
   poseGenerationLayer: () => null, window: { setTimeout() {} },
   resolveConfigDrawSettings: () => ({ unsupported: "external model tensors" }) };
 const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension("))
@@ -43,6 +45,7 @@ function widget(values = {}) {
   const statuses = [];
   const w = Object.assign(Object.create(prototype), {
     container: new Element(), panorama: null, drawInProgress: false,
+    undoStack: [], redoStack: [],
     left: new Element(), drawControl: new Element(), drawBtn: new Element("button"), batchInput: new Element("input"),
     captureGenerationSettings: () => ({}),
     _documentRevision: 4, _importRevision: 7,

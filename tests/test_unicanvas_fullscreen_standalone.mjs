@@ -328,9 +328,9 @@ test("modal keydown stops propagation so Esc cannot exit fullscreen behind a mod
 test("Save to output saves the bbox crop and reports the result in a toast", () => {
     const crop = region(modesSource, "export function uniCanvasBboxPixelRect", "export function buildUniCanvasCompositeCanvas");
     assert.ok(crop.includes("bbox?.x || 0) - Number(origin?.x || 0)"), "the crop must convert the world bbox to canvas pixels");
-    assert.ok(crop.includes("out.width = rect.width") && crop.includes("out.height = rect.height"),
-        "the saved image must have the generation bbox size");
-    assert.ok(crop.includes("buildUniCanvasCompositeCanvas(widget)"), "the crop must start from the flattened composite");
+    assert.ok(crop.includes('widget.makeExportCanvas("image", { width: rect.width, height: rect.height })'),
+        "the saved image must render every image layer directly into the generation bbox size");
+    assert.ok(!crop.includes("buildUniCanvasCompositeCanvas(widget)"), "the bbox export cannot clip native pixels to the backing canvas first");
     const save = region(modesSource, "export async function saveUniCanvasOutput", "export async function newUniCanvasDocument");
     assert.ok(save.includes("canvasToPngBlob(buildUniCanvasBboxCompositeCanvas(widget))"), "Save to output must download the bbox crop");
     assert.ok(save.includes('showUniCanvasToast(widget, "Image downloaded"'), "success must show a toast with the file name");

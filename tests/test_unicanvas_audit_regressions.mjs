@@ -11,6 +11,7 @@ const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url
 const modes = readFileSync(new URL("../web/unicanvas/modes.mjs", import.meta.url), "utf8");
 const canvas = (width = 4096, height = 4096) => ({ width, height, getContext: () => ({ drawImage() {} }) });
 const context = { console, clearTimeout, trimPanoramaHistory, compositeBlendModeToPsd, Blob,
+  HISTORY_LIMIT: 80,
   isImageLayer: layer => layer.type !== "mask", document: { createElement: () => canvas(1, 1) } };
 const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", context);
 const widget = props => Object.assign(Object.create(prototype), {
@@ -19,6 +20,76 @@ const widget = props => Object.assign(Object.create(prototype), {
   cancelDeferredCanvasCommit() {}, syncPoseToolToActiveLayer() {}, syncActiveLayerControls() {},
   renderLayerList() {}, requestRender() {}, syncLightStateToWidget() {},
 }, props);
+
+for (const mode of ["move", "resize"]) for (const release of ["pointerup", "pointercancel"]) {
+  test(`bbox ${mode} previews continuously and ${release} records one geometry-only undo command`, () => {
+    const original = { x: 0, y: 0, width: 128, height: 128 };
+    const layer = { id: "layer", canvas: canvas() }, settings = { positive: "current prompt" }, staged = [{}];
+    const frames = [];
+    let inferenceSyncs = 0;
+    const w = widget({ tool: "bbox", bbox: { ...original }, view: { x: 0, y: 0, scale: 1 },
+      layers: [layer], settings, stagingItems: staged, undoStack: [], redoStack: [],
+      canvas: { setPointerCapture() {} }, canvasPointFromEvent: e => ({ x: e.clientX, y: e.clientY }),
+      isStagingActive: () => false, getGridSize: () => 8,
+      clearToolPreviewOverlay() {}, updateContextCursor() {}, updateToolPreviewOverlay() {},
+      syncSettingsToWidget() {}, scheduleFullSync() {}, syncInferenceControls() { inferenceSyncs++; },
+      requestRender() { frames.push({ ...this.bbox }); },
+      createHistorySnapshot() { throw Error("BBox history must not clone the document"); },
+    });
+    const event = (x, y, type = "pointermove") => ({ pointerId: 1, button: 0, clientX: x, clientY: y, type,
+      preventDefault() {}, stopPropagation() {} });
+    const start = mode === "move" ? [64, 64] : [128, 64];
+    w.onPointerDown(event(...start, "pointerdown"));
+    assert.deepEqual({ ...w.dragStart.bbox }, original);
+    for (const distance of [16, 32]) {
+      w.onPointerMove(event(start[0] + distance, start[1] + distance / 2));
+      const expected = mode === "move" ? { ...original, x: distance, y: distance / 2 }
+        : { ...original, width: original.width + distance };
+      assert.deepEqual(frames.at(-1), expected);
+      assert.equal(w.undoStack.length, 0, "held frames do not commit history");
+    }
+    const final = frames.at(-1);
+    w.onPointerUp(event(start[0] + 32, start[1] + 16, release));
+    w.onPointerUp(event(start[0] + 32, start[1] + 16, "pointerup"));
+    assert.deepEqual({ ...w.bbox }, final, "release preserves the last held geometry");
+    assert.equal(w.undoStack.length, 1);
+    assert.equal(w.undoStack[0].kind, "bbox");
+    assert.deepEqual({ ...w.undoStack[0].before }, original);
+    assert.deepEqual({ ...w.undoStack[0].after }, final);
+    const committedInferenceSyncs = inferenceSyncs;
+    w.undo();
+    assert.deepEqual({ ...w.bbox }, original);
+    w.redo();
+    assert.deepEqual({ ...w.bbox }, final);
+    assert.equal(inferenceSyncs, committedInferenceSyncs + 2);
+    assert.equal(w.layers[0], layer); assert.equal(w.settings, settings); assert.equal(w.stagingItems, staged);
+  });
+}
+
+test("bbox release without a geometry change records no history and generation blocks late bbox callbacks", () => {
+  const original = { x: 0, y: 0, width: 128, height: 128 };
+  const w = widget({ tool: "bbox", bbox: { ...original }, view: { x: 0, y: 0, scale: 1 },
+    undoStack: [], redoStack: [], canvas: { setPointerCapture() {} },
+    canvasPointFromEvent: e => ({ x: e.clientX, y: e.clientY }),
+    isStagingActive: () => false, getGridSize: () => 8,
+    clearToolPreviewOverlay() {}, updateContextCursor() {}, updateToolPreviewOverlay() {},
+    syncSettingsToWidget() {}, syncInferenceControls() {},
+  });
+  const e = { pointerId: 1, button: 0, clientX: 64, clientY: 64, preventDefault() {}, stopPropagation() {} };
+  w.onPointerDown(e); w.onPointerUp(e);
+  assert.equal(w.undoStack.length, 0);
+  w.onPointerDown(e);
+  w.onPointerMove({ ...e, clientX: 96 }); w.onPointerMove(e); w.onPointerUp(e);
+  assert.equal(w.undoStack.length, 0, "returning to the initial geometry is a no-op");
+  w.onPointerDown(e);
+  w._generationLocked = true;
+  w.onPointerMove({ ...e, clientX: 96 }); w.onPointerUp(e);
+  assert.deepEqual({ ...w.bbox }, original);
+  assert.equal(w.undoStack.length, 0);
+  w._generationLocked = false;
+  w.onPointerUp(e);
+  assert.equal(w.undoStack.length, 0);
+});
 
 test("layer controls update live and record one undo snapshot per gesture", () => {
   class Input {}
@@ -206,6 +277,54 @@ for (const edit of ["paint", "rename", "delete", "dispose", "unchanged"]) {
       assert.equal(layer.name, edit === "unchanged" ? "Subject" : edit === "rename" ? "My name" : "Layer");
       assert.equal(w._vnccsNameTokens.size, 0);
     } finally { globalThis.fetch = originalFetch; }
+  });
+}
+
+for (const crop of [null, { x: 0, y: 0, width: 2, height: 8 }]) {
+  for (const edit of ["unchanged", "generation"]) {
+    test(`native layer naming sends complete pixels with ${crop ? "partial" : "no"} backing overlap (${edit})`, async () => {
+      const originalFetch = globalThis.fetch;
+      let uploaded, finish;
+      globalThis.fetch = (_url, options) => {
+        uploaded = JSON.parse(options.body);
+        return new Promise(resolve => { finish = resolve; });
+      };
+      try {
+        const layer = { id: "native", name: "Layer", type: "raster", canvas: canvas(8, 8),
+          hiresCanvas: { toDataURL: () => "complete native pixels" },
+          hiresRect: { x: -10, y: 0, width: 12, height: 8 } };
+        const w = widget({ layers: [layer], getLayerAlphaBounds: () => crop,
+          cloneCanvasCrop: () => ({ toDataURL: () => "clipped backing" }) });
+        const pending = autoNameLayers(w, [layer]);
+        if (edit === "generation") w._generationPreparing = true;
+        finish?.({ ok: true, json: async () => ({ names: [{ id: layer.id, name: "Subject" }] }) });
+        await pending;
+        assert.equal(uploaded?.layers[0].image, "complete native pixels");
+        assert.equal(layer.name, edit === "unchanged" ? "Subject" : "Layer");
+        assert.equal(w._vnccsNameTokens.size, 0);
+      } finally { globalThis.fetch = originalFetch; }
+    });
+  }
+
+  test(`native thumbnails draw complete pixels with ${crop ? "partial" : "no"} backing overlap`, () => {
+    const originalDocument = context.document, draws = [];
+    context.document = { createElement: () => ({ getContext: () => ({
+      drawImage: (...args) => draws.push(args), beginPath() {}, arc() {}, fill() {}, save() {}, restore() {},
+    }) }) };
+    try {
+      const native = canvas(240, 100);
+      const layer = { type: "raster", canvas: canvas(8, 8), opacity: 1,
+        hiresCanvas: native, hiresRect: { x: -10, y: 0, width: 12, height: 8 } };
+      const w = widget({ getLayerAlphaBounds: () => crop, drawCheckerboard() {}, configureImageContext: value => value });
+      const thumb = w.getLayerThumbnailCanvas(layer, 68);
+      assert.equal(draws[0]?.[0], native);
+      assert.deepEqual(draws[0].slice(1, 5), [0, 0, 240, 100]);
+      assert.equal(draws[0][7] / draws[0][8], 12 / 8, "the thumbnail keeps the displayed layer's aspect ratio");
+      assert.equal(thumb.width, 68);
+      assert.equal(thumb.height, 68);
+      assert.equal(w.getLayerThumbnailCanvas(layer, 68), thumb, "unchanged thumbnails reuse their cached canvas");
+      assert.equal(draws.length, 1);
+    } finally { context.document = originalDocument; }
   });
 }
 

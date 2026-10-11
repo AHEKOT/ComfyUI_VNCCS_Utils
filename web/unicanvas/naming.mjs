@@ -24,6 +24,7 @@ export function resolveAutoNameModel(settings) {
 }
 
 function layerImageDataURL(uc, layer) {
+  if (layer.hiresCanvas && layer.hiresRect) return layer.hiresCanvas.toDataURL("image/png");
   const crop = uc.getLayerAlphaBounds?.(layer);
   if (!crop) return null;
   return uc.cloneCanvasCrop(layer.canvas, crop).toDataURL("image/png");

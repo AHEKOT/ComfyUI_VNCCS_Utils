@@ -1,3 +1,79 @@
+# Version 0.7.1
+
+## Audit Fixes for Pose Studio, UniCanvas, and Prompt Designer
+
+### Pose Studio: Bug Fixes
+
+#### Workflow State, Animation, and Imports
+
+* **Pose validation before state changes**: Single poses, pose sets, character scenes, library items, workflows, and animation base poses reject invalid rotations or joint coordinates before replacing the current scene. Failed restoration retains authored workflow bytes, Undo/Redo history, and SAM camera state; valid partial poses and finite numeric strings remain supported.
+* **Mesh, background, and light restoration**: Malformed mesh values, background colors, and light entries are checked before restoring controls or clearing history. This prevents exceptions such as `mesh.weight: null`, `export.bg_color: null`, and `lights: [null]` from partially replacing the scene. Legacy numeric strings are normalized, and unknown mesh metadata survives restoration and saving.
+* **Animation preflight**: Library and workflow clips are normalized before mutation, including every character's tracks and pending animation payloads. Invalid animation arrays or malformed tracks cannot clear the current clip, history, or camera state.
+* **Atomic animation cache restoration**: Cached base poses and all character clips are validated before any character receives replacement tracks. A malformed secondary clip cannot leave the primary character using a partially restored animation.
+* **Invalid replacement workflows**: Loading a replacement workflow invalidates the previous animation-cache request even when the new JSON fails validation. An older response cannot replace the retained scene or publish an unrelated error.
+* **Failed pose and library imports**: SAM camera mode and capture framing are cleared only after a usable import succeeds. Empty pose sets, invalid library items, and malformed saved framing are rejected before recording history or applying poses.
+* **SAM, HMR2, and OpenPose validation**: Empty, non-finite, or unmapped input cannot reset the character or create an empty pose. Rotation matrices, keypoints, hands, and face data are checked before mutation; usable partial imports remain accepted. Files without usable pose data show an error.
+* **FBX rollback**: Retargeting restores the original viewer pose on both success and failure, and always releases the temporary file URL. Failed imports preserve the previous SAM camera and capture framing.
+* **Video import ownership**: Frame capture, SAM analysis, proportion fitting, animation construction, and rollback remain tied to the original viewer, workflow, character, and pose tab. Cancelled or stale work cannot mutate a replacement scene; workflow restoration closes the active import dialog, and aborted imports close cleanly.
+
+#### Pose Library
+
+* **Character-scene prompt editing**: Editing a library item's prompt updates the active character's selected pose, animation base pose, and per-pose prompt list. Invalid saved tab indices fall back to an existing pose, so reloading the item uses the edited prompt.
+* **Preview replacement races**: Save is disabled while an uploaded preview is being prepared. Only the newest selection can replace the preview; stale reads and failed replacements retain the last valid image or animation preview.
+
+#### Interaction, Captures, and Resource Cleanup
+
+* **Live timeline key dragging**: Moving selected keys updates the visible pose during pointer movement while retaining the current playhead. Previewing from the original tracks prevents permanent key loss from temporary collisions; release commits one history command without a final frame jump. Cancellation, timeline hiding, and state replacement end the old gesture.
+* **Cancelled pointer captures**: Light Radar and the video trim timeline finish their gestures on pointer cancellation or lost capture as well as release. Controls cannot remain stuck dragging, and final synchronization runs once.
+* **Complete capture invalidation**: Input-image fingerprints include every contiguous pixel byte, image shape, and dtype. Changes between previously sampled pixels now invalidate cached Pose Studio outputs.
+* **Lighting prompts**: Point lights contribute to generated lighting descriptions. Very low lights correctly produce the bottom-up description instead of being swallowed by the ordinary low-position branch.
+* **Literal prompt text**: Author-written `$$`, `$&`, `` $` ``, and `$'` sequences remain literal when inserted into the prompt template. Repeated placeholders still receive the same text without duplicating template fragments.
+* **Skin replacement lifetime**: Previous skin textures are released after all characters use the replacement. Superseded loads settle pending readiness promises, so captures wait for the newest texture rather than an obsolete request. Cached-skin reuse, flat-color mode, and disposal also release pending waits; failed replacements retain the last valid texture.
+* **Background texture cleanup**: Removing the viewer releases its loaded background texture, plane geometry, and material exactly once. Pending captures end, and late background callbacks dispose their own textures without restoring the removed plane.
+* **Line resource cleanup**: Viewer disposal releases geometry and materials for the capture frame and imported SAM skeleton lines. The separately managed skeleton helper is excluded from duplicate disposal.
+
+### UniCanvas: Bug Fixes
+
+#### Saving, Native Pixels, and Exports
+
+* **Durable cache writes**: Canvas cache files are flushed and synchronized before atomic replacement; the containing directory is synchronized on POSIX. A successful save no longer depends only on buffered writes surviving shutdown.
+* **Native-only layer persistence**: High-resolution layers retain their pixels when the backing canvas has no alpha crop. Serialization includes their native PNGs, and compact workflow metadata marks them as cached so restoration does not treat them as empty.
+* **CPU native rendering**: Rendering saved layers without a ready output cache uses native pixels and world coordinates, including layers outside the backing canvas. When both native and clipped backing images exist, native pixels take precedence. Only the generation-box intersection is resampled; nonintersecting native images are not decoded, and opacity and blend modes remain applied.
+* **Generation-box composites**: Standalone and queued composites render the requested world rectangle directly instead of cropping an incomplete backing image. Native pixels beyond backing bounds remain visible, raster-content checks include them, and small exports retain their requested dimensions down to one pixel instead of being enlarged to 64 pixels.
+* **Native-only layer movement**: A layer without a backing crop commits the same position shown during dragging. Release records one undo command instead of dropping the movement or jumping back.
+* **Safe native raster editing**: The backing canvas expands to contain a native layer before brush, shape, soft-stamp, SAM, background-removal, or Color Match edits discard its native representation. Failed expansion stops the operation before pixel changes or history commits.
+* **Async crop coordinates**: SAM masks, background-removal results, and Color Match previews keep their world placement when materialization shifts the backing origin. Later preview frames use the same corrected crop, and failed materialization cannot record a partial edit.
+* **Full-resolution tool inputs**: SAM, background removal, and Color Match use complete native layer pixels rather than a clipped backing crop. SAM points are scaled into native image coordinates before segmentation.
+* **Native thumbnails and naming**: Layer thumbnails and automatic naming include native pixels outside the backing area. Thumbnail rendering stays bounded to the thumbnail size instead of allocating a full native composite.
+* **Panorama conversion**: Existing content is detected through world bounds, so conversion and its confirmation include layers whose pixels are entirely outside the flat backing canvas.
+* **Flatten data-loss safeguard**: Flatten rejects visible native layers that extend outside the current backing area before changing history or pixels. Move those layers inside the canvas before flattening; expanding the master to support this case remains a known limitation.
+* **Color Match strength and transparency**: Matched RGB is blended once at the selected strength while retaining the target layer's alpha. Semi-transparent pixels receive the full correction at Strength 10 instead of a second alpha reduction; Strength 0, intermediate previews, and one undo per gesture are preserved.
+* **CPU blend boundaries**: Color Dodge keeps a black backdrop black when the source is white, and Color Burn keeps a white backdrop white when the source is black. Saved-layer rendering now handles these boundary cases correctly, including partially transparent layers.
+
+#### Gestures and Undo/Redo
+
+* **History during active edits**: Undo/Redo is blocked while a document-editing pointer gesture is held, preventing a history operation from replacing its baseline. Buttons update on gesture start, release, and cancellation; pan, zoom, and idle pointer modes remain available.
+* **Panorama orbit ownership**: An active orbit gesture also blocks Undo/Redo, Generate, queue preparation, and canvas management. Release, cancellation, and lost capture finish one camera-history command, refresh controls, and prevent stale movement from continuing the gesture.
+* **Generation-box history**: Moving or resizing generation bounds records one geometry-only undo command when the rectangle changes. Undo/Redo restores the box and inference controls while retaining layers, settings, and staging; no-op gestures do not add history.
+* **Brush HUD history**: Radial size, opacity, hardness, and color edits store only tool settings rather than a whole-document snapshot. Undo/Redo preserves current layers and unaccepted generation results. Lost capture completes the gesture, while callbacks from an older document or restoration cannot apply settings or history to the replacement.
+* **Hardness slider history**: Hardness updates continuously and commits one tool-settings command on completion. It no longer restores obsolete document pixels or staging through Undo/Redo; unchanged values and stale document callbacks do not add history.
+
+### Prompt Designer: Bug Fixes
+
+* **Damaged recovery drafts**: A corrupt browser draft combined with an empty constructor placeholder and unavailable disk recovery no longer restores a blank document. Original recovery data is retained, restoration reports an error, and destructive saves or queueing stay blocked until valid authored state is recovered.
+* **Preview restoration races**: Starting workflow restoration invalidates and aborts pending prompt and block previews, cancels scheduled preview work, and advances both preview revisions. Scheduling is blocked while the widget restores or remains inert, so stale responses cannot replace the restored preview or status.
+* **Variant-row editing**: Typing a choice separator rebuilds the rows to match the authored source immediately, including when adding a new variant. Focus, caret position, and formatted editor content are retained; row rebuilding waits until IME composition ends.
+* **Comment-aware choice editing**: Dynamic Prompts line and block comments do not contribute structural braces or separators. Choice bounds, custom separators, literal slash text, URLs, weights, and authored source offsets are preserved. Adding a variant uses the parsed closing boundary instead of a brace inside a trailing comment.
+* **Forward conditional checks**: Conditions checking a later block evaluate it with the unconditional variable definitions that precede its insertion. The sampled insertion is reserved and reused without an extra random draw; unselected conditional branches remain lazy, and temporary variable scopes do not leak across checks or prompt outputs.
+* **Cyclic wrapped expressions**: Cycle periods account for both wrapper and inner streams, including different lengths and very large saved queue positions. Wrapped expressions use the native wrapper-capable sampler while their inner choices retain cyclic behavior, preserving seeded results, source text, and queue progression.
+
+### Compatibility and Validation
+
+* **Frontend cache refresh**: Pose Studio module queries and UniCanvas entry, local imports, and standalone theme use refreshed cache stamps. Hard-reload with Ctrl+Shift+R after updating before checking the live installation.
+* **Regression coverage**: Added regressions for the corrected persistence, import validation, async ownership, realtime gestures, history isolation, native rendering, blending, prompt sampling, and resource cleanup paths. Existing workflow formats and public node identifiers are retained.
+* **Automated checks**: The audited implementation passed 1,332 JavaScript tests with VM-module coverage enabled, plus 922 Python tests and 251 subtests in an isolated environment without PyTorch; 15 Python tests were skipped. Collection completed without errors. The security scanner, its 10 integrity checks, edited-file syntax checks, and diff checks also passed.
+* **Runtime verification scope**: Live ComfyUI interaction, browser rendering, GPU inference, SAM/model execution, model downloads, and video codecs were not verified by these automated checks.
+
 # Version 0.7.0
 ## New Prompt Designer Node, Multi-Document UniCanvas, and Editor Bug Fixes
 

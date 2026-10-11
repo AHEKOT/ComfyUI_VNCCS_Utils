@@ -1080,6 +1080,13 @@ export class PromptDesignerWidget {
 
     invalidateRestore() {
         this.libraryActions?.close(false);
+        this.revision++;
+        this.blockRevision = (this.blockRevision ?? 0) + 1;
+        this.request?.abort();
+        this.blockRequest?.abort();
+        if (this.previewFrame) cancelAnimationFrame(this.previewFrame);
+        this.previewFrame = null;
+        clearTimeout(this.blockTimer);
         this.restoreRevision = (this.restoreRevision ?? 0) + 1;
         for (const key of ["savedPromptLoadRevision", "promptLibraryRevision", "diskLibraryRevision", "bundledLibraryRevision"]) {
             this[key] = (this[key] ?? 0) + 1;
@@ -1993,7 +2000,7 @@ export class PromptDesignerWidget {
         this.blockRequest?.abort();
         this.blockRevision++;
         const block = this.activeBlock();
-        if (!block || this.disposed) return;
+        if (!block || this.disposed || this.restoring || this.container.inert) return;
         if (this.variants.dataset.blockId !== block.id) {
             this.variants.replaceChildren();
             this.variants.dataset.blockId = block.id;
@@ -2086,7 +2093,7 @@ export class PromptDesignerWidget {
                     const current = blockRows(active.text);
                     let source, ranges;
                     if (current.wrapped) {
-                        const end = active.text.lastIndexOf("}");
+                        const end = current.rows.at(-1).choiceEnd;
                         source = active.text.slice(0, end) + "|" + value + active.text.slice(end);
                         ranges = [...this.blockEditRanges, { start: end + 1, end: end + 1 + value.length, text: value }];
                     } else {
@@ -2097,6 +2104,10 @@ export class PromptDesignerWidget {
                             { start, end: start + value.length, text: value }];
                     }
                     if (!this.saveBlockSource(source)) return;
+                    if (!event.isComposing && blockRows(source).rows.length !== ranges.length) {
+                        this.refreshVariantRows(content, ranges.at(-1).start);
+                        return;
+                    }
                     draft = false; delete content.dataset.placeholder;
                     this.blockEditRanges = ranges;
                     this.blockVariants = { variants: ranges.map(item => item.text) };
@@ -2124,9 +2135,10 @@ export class PromptDesignerWidget {
                 }
                 const range = this.blockEditRanges[index];
                 const source = active.text.slice(0, range.start) + value + active.text.slice(range.end);
-                const changed = blockRows(source).rows.length !== this.blockEditRanges.length;
+                const changed = !event.isComposing && blockRows(source).rows.length !== this.blockEditRanges.length;
                 const delta = value.length - (range.end - range.start);
-                if (this.saveBlockSource(source, changed) && !changed) {
+                if (this.saveBlockSource(source)) {
+                    if (changed) { this.refreshVariantRows(content, range.start); return; }
                     this.blockEditRanges = this.blockEditRanges.map((item, position) => position > index
                         ? { ...item, start: item.start + delta, end: item.end + delta }
                         : position === index ? { ...item, end: item.end + delta, text: value } : item);
@@ -2155,6 +2167,34 @@ export class PromptDesignerWidget {
         this.blockStatus.textContent = query ? rows.length ? `${rows.length} of ${result.variants.length} variants match`
             : "No matches · Try another search or clear the field"
             : result.variants.length ? `${result.variants.length} variants` : "Empty block";
+    }
+
+    refreshVariantRows(content, start) {
+        let offset;
+        if (document.activeElement === content) {
+            const selection = window.getSelection();
+            const range = selection?.rangeCount && content.contains(selection.focusNode) ? selection.getRangeAt(0).cloneRange() : null;
+            if (range) { range.setStart(content, 0); offset = start + range.toString().length; }
+            else offset = start + readEditor(content).map(part => part.text ?? "").join("").length;
+        }
+        this.renderBlockVariants();
+        if (offset === undefined) return;
+        const index = this.blockEditRanges.findIndex(row => offset <= row.end);
+        const position = index < 0 ? this.blockEditRanges.length - 1 : index;
+        const editor = [...this.variants.children].find(row => Number(row.children[0].textContent) === position + 1)?.children[1];
+        if (!editor) return;
+        let remaining = Math.max(0, offset - this.blockEditRanges[position].start);
+        const caret = document.createRange();
+        const place = node => {
+            if (node.nodeType === 3) {
+                if (remaining <= node.textContent.length) { caret.setStart(node, remaining); return true; }
+                remaining -= node.textContent.length;
+            }
+            return [...(node.childNodes ?? [])].some(place);
+        };
+        if (place(editor)) caret.collapse(true);
+        else { caret.selectNodeContents(editor); caret.collapse(false); }
+        editor.focus({ preventScroll: true }); this.selectRange(caret);
     }
 
     async previewBlock() {
@@ -2449,6 +2489,7 @@ export class PromptDesignerWidget {
     }
 
     schedulePreview() {
+        if (this.disposed || this.restoring || this.container?.inert) return;
         this.revision++;
         this.copy.disabled = true;
         if (this.restoreError) { this.setStatus(`Could not restore state: ${this.restoreError.message}`, true); return; }
