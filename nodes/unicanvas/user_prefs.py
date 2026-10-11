@@ -11,6 +11,7 @@ best-effort and never overwritten, preserving the keys this version does not kno
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 from typing import Any, Callable
@@ -68,15 +69,15 @@ def sanitize_entry(entry: Any) -> dict[str, Any]:
             continue
         try:
             strength = float(item.get("strength", 1))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             strength = 1.0
-        loras.append({"name": name, "strength": strength if strength == strength else 1.0})
+        loras.append({"name": name, "strength": strength if math.isfinite(strength) else 1.0})
     if not clean and not loras:
         return {}
     clean["lora_stack"] = loras
     try:
         clean["at"] = int(entry.get("at") or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         clean["at"] = 0
     return clean
 
@@ -85,9 +86,13 @@ def migrate(document: Any) -> dict[str, Any]:
     """Bring any stored document to the current envelope ``{"schema", "entries", ...}``."""
     if not isinstance(document, dict):
         return {"schema": SCHEMA_VERSION, "entries": {}}
+    if "schema" in document and (type(document["schema"]) is not int or document["schema"] < 0):
+        raise ValueError("invalid model memory schema")
     version = document.get("schema") if isinstance(document.get("schema"), int) else 0
     if version > SCHEMA_VERSION:
         return document  # written by a newer version: read as is, never downgraded
+    if version == SCHEMA_VERSION and not isinstance(document.get("entries"), dict):
+        raise ValueError("model memory entries must be an object")
     current = document
     while version < SCHEMA_VERSION:
         step = _MIGRATIONS.get(version)

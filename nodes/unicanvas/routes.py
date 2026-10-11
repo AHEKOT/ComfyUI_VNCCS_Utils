@@ -195,7 +195,10 @@ def register_unicanvas_routes() -> None:
             return web.json_response({"error": "UniCanvas draw payload is too large"}, status=413)
         payload: dict[str, Any] = {}
         try:
-            payload = await request.json()
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("UniCanvas draw request must be an object")
+            payload = body
             async with _DRAW_LOCK:
                 result = await asyncio.to_thread(_run_draw_cancellable, payload)
             return web.json_response(result)
@@ -205,7 +208,7 @@ def register_unicanvas_routes() -> None:
             traceback.print_exc()
             draw_id = str(payload.get("debug_id") or "unknown")
             _set_draw_progress(draw_id, "error", 1.0, 0, 0, str(exc))
-            return web.json_response({"error": str(exc)}, status=500)
+            return web.json_response({"error": str(exc)}, status=400 if isinstance(exc, ValueError) else 500)
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/interrupt")
     async def vnccs_unicanvas_interrupt(request):

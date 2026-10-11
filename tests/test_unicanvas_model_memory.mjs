@@ -89,9 +89,51 @@ test("files that are gone from the assets lists are not recalled", () => {
     });
     assert.equal(patch.diffusion_model_name, undefined, "a missing diffusion model is dropped");
     assert.equal(patch.clip_name, "qwen.safetensors");
-    assert.equal(patch.vae_name, "vae.safetensors", "an empty (not loaded) list keeps the remembered file");
+    assert.equal(patch.vae_name, undefined, "a confirmed empty catalog drops the remembered file");
     assert.equal(patch.lora_stack.length, 1);
-    assert.equal(patchFromEntry(entry, { loras: ["x.safetensors"] }).lora_stack, undefined);
+    assert.deepEqual(patchFromEntry(entry, { loras: ["x.safetensors"] }).lora_stack, []);
+    assert.deepEqual(patchFromEntry(entry, { loras: [] }).lora_stack, [], "deleting the last installed LoRA clears the stack");
+    assert.equal(patchFromEntry(entry).vae_name, "vae.safetensors", "an unavailable catalog keeps remembered files");
+});
+
+test("recalling an explicitly empty LoRA stack clears the previous model's LoRAs", () => {
+    const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+    const memory = new ModelMemory();
+    memory.entries["diffusion|anima"] = entryFromSettings({ ...custom, lora_stack: [] });
+    const methods = source.slice(source.indexOf("  recallModelChoice("), source.indexOf("  changeLoraRows("));
+    const widget = runInNewContext(`(class { ${methods} }).prototype`, { sharedModelMemory: () => memory });
+    Object.assign(widget, { settings: { ...custom, model_selection_mode: "custom" }, assets: {}, renderLoraStackControls() {} });
+    assert.equal(widget.recallModelChoice(), true);
+    assert.deepEqual(widget.settings.lora_stack, []);
+    assert.equal(widget.settings.diffusion_model_name, custom.diffusion_model_name);
+    assert.equal(patchFromEntry({ clip_name: "legacy" }).lora_stack, undefined, "old entries without a stack do not override it");
+});
+
+test("the widget only treats empty asset lists as authoritative after a successful load", async () => {
+    const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+    const memory = new ModelMemory();
+    memory.entries["diffusion|anima"] = entryFromSettings(custom);
+    const methods = source.slice(source.indexOf("  recallModelChoice("), source.indexOf("  changeLoraRows("));
+    const widget = runInNewContext(`(class { ${methods} }).prototype`, { sharedModelMemory: () => memory });
+    Object.assign(widget, { settings: { ...custom, model_selection_mode: "custom" },
+        assets: { loras: [] }, renderLoraStackControls() {} });
+    widget.recallModelChoice();
+    assert.equal(widget.settings.lora_stack[0].name, "style.safetensors", "the initial empty lists are still loading");
+    widget._assetsLoaded = true;
+    widget.recallModelChoice();
+    assert.deepEqual(widget.settings.lora_stack, []);
+
+    const errors = [], original = { loras: [] };
+    const load = source.slice(source.indexOf("  async _loadAssets("), source.indexOf("  async loadPresets("));
+    const loader = runInNewContext(`(class { ${load} }).prototype`, {
+        sharedModelMemory: () => memory,
+        fetch: async () => ({ ok: false, status: 500, json: async () => ({ error: "Assets unavailable" }) }),
+    });
+    Object.assign(loader, { assets: original, setStatus: message => errors.push(message) });
+    await loader._loadAssets();
+    assert.equal(loader.assets, original);
+    assert.equal(loader._assetsLoaded, undefined);
+    assert.match(errors[0], /Assets unavailable/);
 });
 
 test("a failing server never throws and recalls nothing", async () => {

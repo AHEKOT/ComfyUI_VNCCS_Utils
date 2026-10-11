@@ -58,6 +58,56 @@ def request(name="Walk", asset_type="pose", repository="artist/poses", **body):
     )
 
 
+@pytest.mark.parametrize("handler", [routes.add_pose_repository, routes.toggle_pose_repository,
+                                     routes.refresh_pose_repositories, routes.auto_refresh_enabled_pose_repositories])
+@pytest.mark.parametrize("body", [None, [], "text", ValueError("Invalid JSON")])
+def test_repository_requests_reject_invalid_json_without_starting_work(store, monkeypatch, handler, body):
+    invalid = request()
+    invalid.json = mock.AsyncMock(side_effect=body) if isinstance(body, Exception) else mock.AsyncMock(return_value=body)
+    refresh = mock.Mock(side_effect=AssertionError("Invalid requests must not refresh repositories"))
+    monkeypatch.setattr(library, "refresh_pose_repository", refresh)
+    monkeypatch.setattr(library, "load_pose_repositories", refresh)
+    monkeypatch.setattr(routes.threading, "Thread", refresh)
+    response = asyncio.run(handler(invalid))
+    assert response.status == 400
+    refresh.assert_not_called()
+    assert not list(store.iterdir())
+
+
+def test_repository_request_negative_content_length_is_rejected_before_json(store):
+    invalid = request()
+    invalid.headers["Content-Length"] = "-1"
+    invalid.json = mock.AsyncMock()
+    assert asyncio.run(routes.refresh_pose_repositories(invalid)).status == 413
+    invalid.json.assert_not_called()
+
+
+def test_pose_named_like_manifest_remains_visible_in_its_asset_folder(store):
+    repository = library.LOCAL_USER_REPOSITORY
+    result = library.save_pose({"name": "pose_library", "repository": repository,
+                                "category": "Standing", "pose": {"bones": {"head": [0, 0, 0]}}})
+    assert result[1] == 200
+    (store / "pose_library.json").write_text('{"poses": []}')
+    (store / repository / "pose_library.json").write_text('{"poses": []}')
+    assert [pose["name"] for pose in library.scan_poses()] == ["pose_library"]
+    assert [pose["name"] for pose in library.collect_local_pose_files()] == ["pose_library"]
+    assert library.find_pose_file("pose_library", repository, "Standing", "pose")[0]
+
+
+def test_in_progress_save_never_lists_its_temporary_json_as_a_pose(store, monkeypatch):
+    replace = library.os.replace
+    observed = []
+    def list_before_commit(source, destination):
+        observed.extend(pose["name"] for pose in library.scan_poses())
+        return replace(source, destination)
+    monkeypatch.setattr(library.os, "replace", list_before_commit)
+    result = library.save_pose({"name": "Walk", "repository": library.LOCAL_USER_REPOSITORY,
+                                "pose": {"bones": {"head": [0, 0, 0]}}})
+    assert result[1] == 200
+    assert observed == []
+    assert [pose["name"] for pose in library.scan_poses()] == ["Walk"]
+
+
 def test_repository_directory_collision_preserves_settings_and_assets(store, monkeypatch):
     first, second = "artist/poses__v1", "artist__poses/v1"
     monkeypatch.setattr(library, "load_pose_repositories", lambda: [{"repo_id": first}, {"repo_id": second}])

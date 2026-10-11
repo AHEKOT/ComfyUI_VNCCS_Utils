@@ -334,6 +334,11 @@ export class PromptDesignerWidget {
                 else { this.loadLibraryCards(); this.loadLibraryCards(true); }
             }, 200);
         });
+        for (const control of [this.blockColor, this.categoryColor, this.promptColor]) {
+            for (const type of ["pointerdown", "focus", "change", "blur"]) this.on(control, type, () => { this.history.group = null; });
+            // A color picker gesture remains one undo command even when held longer than the typing timeout.
+            this.on(control, "input", () => { this.history.time = Date.now(); });
+        }
         for (const control of [this.promptName, this.promptCategory, this.promptColor]) {
             this.on(control, control === this.promptCategory ? "change" : "input", () => this.savePromptDetails());
         }
@@ -1064,11 +1069,7 @@ export class PromptDesignerWidget {
         const categories = this.state.categories.filter(category => category.name !== name);
         categories.push({ name, color: this.categoryColor.value });
         try {
-            this.state = normalizeState({ ...this.state, categories, blocks: this.state.blocks.map(block => {
-                if (block.category !== name) return block;
-                const { color, ...inherited } = block;
-                return inherited;
-            }) });
+            this.state = normalizeState({ ...this.state, categories });
         } catch (error) { this.setStatus(error.message, true); return; }
         for (const block of this.state.blocks) this.updateChips(block);
         this.renderLibrary(); this.refreshCardCategories(); this.commit(`category-color:${name}`);
@@ -2362,6 +2363,14 @@ export class PromptDesignerWidget {
             // Undo belongs to this prompt; retain drafts and blocks opened in other tabs.
             const activePrompt = this.state.activePrompt;
             const current = this.activePrompt(), restored = previous.promptTabs?.find(tab => tab.id === activePrompt) ?? current;
+            // Undo edits, never disk acknowledgements or permission to overwrite a template.
+            restored.details = { ...restored.details };
+            for (const key of ["id", "revision"]) {
+                if (Object.hasOwn(current.details, key)) restored.details[key] = current.details[key];
+                else delete restored.details[key];
+            }
+            if (current.templateId !== undefined) restored.templateId = current.templateId;
+            else delete restored.templateId;
             previous.promptTabs = this.state.promptTabs.map(tab => tab.id === activePrompt ? { ...restored } : tab);
             previous.activePrompt = activePrompt;
             const inactive = this.state.promptTabs.filter(tab => tab.id !== activePrompt);

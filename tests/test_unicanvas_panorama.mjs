@@ -72,12 +72,47 @@ const context = {
   normalizePanorama, isPanoramaCandidate, PanoramaDocument, trimPanoramaHistory, normalizeTransformMode, snapAxisAngles, DEFAULT_PANORAMA_CAMERA,
   document: { createElement: () => new Element() },
   window: { setTimeout: () => 0 }, clearTimeout, URLSearchParams,
-  uid: () => "new-layer", HISTORY_LIMIT: 20, DEFAULT_SEED_MODE: "randomize",
+  uid: () => "new-layer", HISTORY_LIMIT: 20, DEFAULT_SEED_MODE: "randomize", PANORAMA_MAX_VIEW: 4096,
 };
 const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", context);
 const widget = (values = {}) => Object.assign(Object.create(prototype), {
   layers: [], panorama: null, bbox: { x: 0, y: 0, width: 1024, height: 1024 }, origin: { x: 0, y: 0 }, size: { width: 1024, height: 1024 },
   setStatus() {}, requestRender() {}, syncLightStateToWidget() {}, scheduleFullSync() {}, ...values,
+});
+
+for (const native of [false, true]) test(`panorama import keeps live pose bounds aligned with raster placement in ${native ? "native" : "scaled"} mode`, async () => {
+  const realDocument = context.PanoramaDocument, realCreate = context.document.createElement;
+  const rasterDestinations = [];
+  context.document.createElement = () => ({ getContext: () => ({ drawImage() {} }) });
+  context.PanoramaDocument = class {
+    constructor() { this.settings = { yaw: 0, pitch: 0, roll: 0, fov: 90 }; }
+    commitLayer() {}
+    ensureLayer() { return { getContext: () => ({ drawImage() {} }) }; }
+    project() {}
+  };
+  try {
+    const pose = { id: "pose", type: "pose", canvas: {}, pose: { rect: { x: 200, y: 350, width: 128, height: 256 } } };
+    const w = widget({ layers: [pose], settings: { panorama_native_layers: native },
+      undoStack: [], redoStack: [], getLayerAlphaBounds: () => ({}),
+      getLayersVisibleWorldRect: () => ({ x: 100, y: 200, width: 512, height: 768 }),
+      drawRasterLayerToWorldRect: (_ctx, _layer, _source, destination) => rasterDestinations.push(destination),
+      createHistorySnapshot: () => ({}), invalidateLayerCaches() {},
+      addLayer(type, name) { const layer = { id: "base", type, name }; this.layers.push(layer); return layer; },
+      normalizeLayerOrder() {}, setTool() {}, updatePanoramaControls() {},
+      renderLayerList() {}, fitView() {}, updateHistoryButtons() {}, syncToNode() {},
+    });
+    await w.importPanorama({ width: 4096, height: 2048 }, "Panorama");
+    const destination = rasterDestinations[0];
+    assert.ok(destination);
+    const scaleX = destination.width / 512, scaleY = destination.height / 768;
+    assert.ok(Math.abs(scaleX - scaleY) < .002, "the fitted raster preserves aspect ratio within pixel rounding");
+    assert.deepEqual(JSON.parse(JSON.stringify(pose.pose.rect)), {
+      x: destination.x + 100 * scaleX, y: destination.y + 150 * scaleY,
+      width: 128 * scaleX, height: 256 * scaleY,
+    });
+    if (native) assert.equal(scaleX, 1, "native poses retain their original size");
+    assert.equal(w.undoStack.length, 1);
+  } finally { context.PanoramaDocument = realDocument; context.document.createElement = realCreate; }
 });
 
 test("panorama panel holds the orbit widget and one Reset button", () => {

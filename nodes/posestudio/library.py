@@ -402,7 +402,7 @@ def collect_local_pose_files():
     poses = []
     for root, _dirs, files in os.walk(local_root):
         for filename in files:
-            if not filename.endswith(".json") or filename in RESERVED_LIBRARY_JSON:
+            if not filename.endswith(".json") or (filename in RESERVED_LIBRARY_JSON and root == local_root):
                 continue
             name = sanitize_pose_name(filename[:-5])
             if not name:
@@ -1172,12 +1172,13 @@ def find_pose_file(name, repository=None, category=None, asset_type=None):
 
 def scan_poses(full_details=False):
     poses = {}
+    lib_path = get_library_path()
     repo_map = repository_dir_map()
     states = {repo["repo_id"]: bool(repo.get("enabled", True)) for repo in load_pose_repositories()}
     states[LOCAL_USER_REPOSITORY] = True
-    for root, _dirs, files in walk_pose_library(get_library_path()):
+    for root, _dirs, files in walk_pose_library(lib_path):
         for filename in files:
-            if not filename.endswith(".json") or filename in RESERVED_LIBRARY_JSON:
+            if not filename.endswith(".json") or (filename in RESERVED_LIBRARY_JSON and (root == lib_path or os.path.dirname(root) == lib_path)):
                 continue
             name = sanitize_pose_name(filename[:-5])
             if not name:
@@ -1285,7 +1286,7 @@ def save_pose(data):
             if os.path.exists(pose_path) and (not old_pose_path or os.path.abspath(old_pose_path) != os.path.abspath(pose_path)):
                 return ({"error": "A library item with this name already exists"}, 409)
 
-            fd, pose_tmp_path = tempfile.mkstemp(prefix="vnccs_pose_", suffix=".json", dir=pose_dir)
+            fd, pose_tmp_path = tempfile.mkstemp(prefix="vnccs_pose_", suffix=".tmp", dir=pose_dir)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(pose, f, indent=2)
 

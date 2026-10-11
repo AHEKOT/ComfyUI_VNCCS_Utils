@@ -467,6 +467,48 @@ test("category color affects cards and prompt chips and custom category survives
     widget.setStatus("Disk full", true); assert.equal(widget.status.hidden, false); assert.equal(widget.status.textContent, "Disk full");
 });
 
+test("category color changes retain explicit card colors until Use category color is selected", t => {
+    const { widget } = setup(t);
+    widget.state.categories.push({ name: "People", color: "#112233" });
+    widget.state.blocks.find(block => block.id === "hair").category = "People";
+    Object.assign(widget.state.blocks.find(block => block.id === "pose"), { category: "People", color: "#445566" });
+    widget.render(); widget.commit(null, false);
+    widget.openBlock("hair");
+    const inherited = widget.chip("hair"), explicit = widget.chip("pose");
+    widget.editor.append(inherited, explicit);
+    widget.categoryColor.value = "#bb2233"; widget.setCategoryColor();
+    assert.equal(inherited.style["--pd-chip-color"], "#bb2233");
+    assert.equal(explicit.style["--pd-chip-color"], "#445566");
+    const saved = normalizeState(JSON.parse(widget.node.widgets[0].value));
+    assert.equal(saved.blocks.find(block => block.id === "pose").color, "#445566");
+    widget.openBlock("pose"); widget.setBlockPreference("color", undefined);
+    assert.equal(widget.cardColor(widget.activeBlock()), "#bb2233");
+    assert.equal(widget.activeBlock().color, undefined);
+});
+
+test("long color gestures update continuously and produce one undo command per gesture", t => {
+    const { widget } = setup(t);
+    widget.state.blocks.find(block => block.id === "hair").category = "Hair";
+    widget.render(); widget.commit(null, false); widget.openBlock("hair");
+    let time = 0;
+    t.mock.method(Date, "now", () => time);
+    for (const control of [widget.blockColor, widget.categoryColor, widget.promptColor]) {
+        const before = widget.history.undoStack.length;
+        emit(control, "focus"); emit(control, "pointerdown");
+        for (const color of ["#123456", "#abcdef"]) {
+            time += 2000; control.value = color; emit(control, "input");
+            const saved = normalizeState(JSON.parse(widget.node.widgets[0].value));
+            if (control === widget.blockColor) assert.equal(saved.blocks.find(block => block.id === "hair").color, color);
+            else if (control === widget.categoryColor) assert.equal(saved.categories.find(category => category.name === "Hair").color, color);
+            else assert.equal(saved.promptTabs.find(tab => tab.id === saved.activePrompt).details.color, color);
+        }
+        assert.equal(widget.history.undoStack.length, before + 1);
+        emit(control, "change");
+        control.value = "#654321"; emit(control, "input"); emit(control, "change");
+        assert.equal(widget.history.undoStack.length, before + 2);
+    }
+});
+
 test("source parsing preserves top-level row boundaries and excludes variable braces from sampling changes", () => {
     const source = " {~2$$ and $$2::ink|{~red|blue} coat| pencil } ";
     const parsed = blockRows(source);

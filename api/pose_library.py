@@ -15,7 +15,7 @@ def expected_content_length(request, max_chars):
         length = int(raw_length)
     except Exception:
         return False
-    return length <= int(max_chars or 0)
+    return 0 <= length <= int(max_chars or 0)
 
 
 async def list_pose_repositories(request):
@@ -37,6 +37,8 @@ async def add_pose_repository(request):
         if not expected_content_length(request, 1024 * 1024):
             return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
+        if not isinstance(data, dict):
+            return web.json_response({"error": "Request must be an object"}, status=400)
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
     repo_id = library.normalize_repo_id(data.get("repo_id"))
@@ -88,6 +90,8 @@ async def toggle_pose_repository(request):
         if not expected_content_length(request, 1024 * 1024):
             return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
+        if not isinstance(data, dict):
+            return web.json_response({"error": "Request must be an object"}, status=400)
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
     repo_id = library.normalize_repo_id(data.get("repo_id"))
@@ -147,8 +151,10 @@ async def auto_refresh_enabled_pose_repositories(request):
         if not expected_content_length(request, 1024 * 1024):
             return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
+        if not isinstance(data, dict):
+            return web.json_response({"error": "Request must be an object"}, status=400)
     except Exception:
-        data = {}
+        return web.json_response({"error": "Invalid JSON"}, status=400)
     force = bool(data.get("force"))
     with library._BACKGROUND_REFRESH_LOCK:
         if library._BACKGROUND_REFRESH_STATE["running"]:
@@ -191,8 +197,10 @@ async def refresh_pose_repositories(request):
         if not expected_content_length(request, 1024 * 1024):
             return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
+        if not isinstance(data, dict):
+            return web.json_response({"error": "Request must be an object"}, status=400)
     except Exception:
-        data = {}
+        return web.json_response({"error": "Invalid JSON"}, status=400)
     repo_id = library.normalize_repo_id(data.get("repo_id"))
     task_id = str(data.get("task_id") or uuid.uuid4())
     repos = library.load_pose_repositories()

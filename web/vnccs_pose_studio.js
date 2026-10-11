@@ -4313,7 +4313,6 @@ class PoseStudioWidget {
         this.charactersContent = null;
         this._characterSwitchToken = 0;
         this._switchingCharacter = false;
-        this._suspendCharacterSync = false;
         this._characterSyncTimer = null;
         this._sectionIdCounter = 0;
         this._sceneModelHydrationPromise = null;
@@ -6722,15 +6721,19 @@ class PoseStudioWidget {
         const previous = this.getActiveCharacter();
         if (!target || !previous || target.id === previous.id || this._switchingCharacter) return false;
         this._finishPoseGesture?.();
-        this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
+        if (rebuildScene) this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
         const token = ++this._characterSwitchToken;
-        const previousSuspendCharacterSync = this._suspendCharacterSync;
+        const restoreToken = this._poseDataRestoreToken;
+        const isCurrent = () => !this._disposed && token === this._characterSwitchToken
+            && restoreToken === this._poseDataRestoreToken && this.characters.includes(target);
         this._switchingCharacter = true;
         this.setCharactersBusy(true);
         this.animationTimeline?.stopPlayback?.();
         try {
             if (this._modelLoadPromise) await this._modelLoadPromise;
+            if (!isCurrent()) return false;
             await this.waitForMorphIdle();
+            if (!isCurrent()) return false;
             this.captureActiveCharacterRuntime();
             this.syncSharedTimelineFromActive();
             if (this.viewer?.isInitialized?.()) {
@@ -6771,11 +6774,10 @@ class PoseStudioWidget {
             this.viewer?.removePassiveCharacter?.(target.id);
 
             const meshChanged = JSON.stringify(previous.mesh || {}) !== JSON.stringify(target.mesh || {});
-            this._suspendCharacterSync = true;
             if (meshChanged && this.viewer?.isInitialized?.()) {
                 await this.loadModel(false, false, { updateScene: rebuildScene });
             }
-            if (token !== this._characterSwitchToken) return false;
+            if (!isCurrent()) return false;
 
             const pose = this.characterPoseForScene(target);
             this.viewer?.setPose?.(pose, true);
@@ -6796,10 +6798,11 @@ class PoseStudioWidget {
             if (sync) this.syncToNode(false, { skipCapture: true, skipAnimationHistory: true });
             return true;
         } finally {
-            this._suspendCharacterSync = previousSuspendCharacterSync;
             this._switchingCharacter = false;
-            this.setCharactersBusy(false);
-            this.renderCharactersUI();
+            if (!this._disposed) {
+                this.setCharactersBusy(false);
+                this.renderCharactersUI();
+            }
         }
     }
 
@@ -6815,8 +6818,6 @@ class PoseStudioWidget {
         this._sceneModelHydrationToken = restoreToken;
         const preferredActiveId = this.activeCharacterId;
         const run = async () => {
-            const previousSuspendCharacterSync = this._suspendCharacterSync;
-            this._suspendCharacterSync = true;
             this._hydratingCharacterScene = true;
             this.setCharactersBusy(true);
             if (showOverlay && this.loadingOverlay) this.loadingOverlay.style.display = "flex";
@@ -6847,7 +6848,6 @@ class PoseStudioWidget {
                 await this.viewer?.waitForCaptureReady?.();
                 return true;
             } finally {
-                this._suspendCharacterSync = previousSuspendCharacterSync;
                 this._hydratingCharacterScene = false;
                 this.setCharactersBusy(false);
                 if (this.loadingOverlay) this.loadingOverlay.style.display = "none";
@@ -13059,7 +13059,10 @@ class PoseStudioWidget {
         if (!asset || !Array.isArray(asset.characters) || !asset.characters.length) {
             throw new Error("Library scene does not contain characters.");
         }
+        const token = this._libraryLoadToken;
+        const restoreToken = this._poseDataRestoreToken;
         if (this._sceneModelHydrationPromise) await this._sceneModelHydrationPromise;
+        if (this._disposed || token !== this._libraryLoadToken || restoreToken !== this._poseDataRestoreToken) return;
         this.clearAnimationCacheReference();
         this._pendingMorphSolve = null;
         ++this._morphSeq;
@@ -13115,7 +13118,9 @@ class PoseStudioWidget {
         this.ensurePoseCameraParams();
         this.restoreActivePoseCameraParams({ updateViewer: false });
 
+        const characters = this.characters;
         await this.hydrateCharacterSceneModels({ showOverlay: true, recenterViewport: false });
+        if (this._disposed || token !== this._libraryLoadToken || characters !== this.characters || restoreToken !== this._poseDataRestoreToken) return;
         this.animationTimeline?.setState(this.animationState);
         this.resetAnimationHistory();
         // Loading a pose is not an interface navigation action. Pose Manager
@@ -13234,7 +13239,7 @@ class PoseStudioWidget {
             this.clearSAMCameraMode();
             const res = await fetch(`/vnccs/pose_library/get/${encodeURIComponent(name)}${this.getLibraryPoseQuery(poseOrName)}`);
             const data = await res.json();
-            if (token !== this._libraryLoadToken || characterId !== this.activeCharacterId || tab !== this.activeTab) return;
+            if (this._disposed || token !== this._libraryLoadToken || characterId !== this.activeCharacterId || tab !== this.activeTab) return;
             if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
             if (!this.isAnimationMode()) this.viewer?.recordState?.();
 
@@ -13306,6 +13311,7 @@ class PoseStudioWidget {
                 }
             }
         } catch (err) {
+            if (this._disposed || token !== this._libraryLoadToken) return;
             console.error("Failed to load pose:", err);
             this.showMessage(`Failed to load pose: ${err?.message || err}`, true);
         }
@@ -13848,7 +13854,7 @@ class PoseStudioWidget {
             area.style.fontFamily = "monospace";
             area.value = this.exportParams[key] || "";
 
-            area.onchange = () => {
+            area.oninput = () => {
                 this.exportParams[key] = area.value;
                 this.syncToNode(false);
             };
@@ -14158,7 +14164,7 @@ class PoseStudioWidget {
                     }
 
                     // Full recapture needed because mesh changed
-                    if (!this._suspendCharacterSync) this.syncToNode(true);
+                    if (!this._switchingCharacter && !this._hydratingCharacterScene) this.syncToNode(true);
                     // Static worker responses resolve through the load-request
                     // path and do not visit handleMorphWorkerMessage's live
                     // preview branch. Trigger the manager refresh explicitly.

@@ -20,7 +20,7 @@ def expected_content_length(request, max_chars):
         length = int(raw_length)
     except Exception:
         return False
-    return length <= int(max_chars or 0)
+    return 0 <= length <= int(max_chars or 0)
 
 
 def sanitize_node_id(value):
@@ -33,8 +33,16 @@ async def upload_pose_sync(request):
     try:
         if not expected_content_length(request, MAX_SYNC_CAPTURE_CHARS):
             return web.json_response({"error": "capture payload is too large"}, status=413)
-        data = await request.json()
-        node_id = sanitize_node_id(data.get("node_id"))
+        try:
+            data = await request.json()
+        except (ValueError, TypeError):
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "Request must be an object"}, status=400)
+        raw_node_id = data.get("node_id")
+        if not isinstance(raw_node_id, (str, int)) or isinstance(raw_node_id, bool):
+            return web.json_response({"error": "Invalid node_id"}, status=400)
+        node_id = sanitize_node_id(raw_node_id)
         if not node_id:
             return web.json_response({"error": "No node_id"}, status=400)
         if len(json.dumps(data, separators=(",", ":"))) > MAX_SYNC_CAPTURE_CHARS:

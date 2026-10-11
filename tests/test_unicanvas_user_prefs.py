@@ -75,3 +75,31 @@ def test_only_the_newest_entries_are_kept(prefs):
         user_prefs.remember_model_choice(f"k{index}", {"clip_name": "c", "at": index})
     entries = user_prefs.load_model_memory()["entries"]
     assert len(entries) == user_prefs.MAX_ENTRIES and "k0" not in entries and f"k{user_prefs.MAX_ENTRIES + 4}" in entries
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+def test_nonfinite_preferences_remain_valid_json(prefs, value):
+    saved = user_prefs.remember_model_choice("diffusion|anima", {
+        "clip_name": "c", "at": value, "lora_stack": [{"name": "l", "strength": value}],
+    })
+    entry = saved["entries"]["diffusion|anima"]
+    assert entry["lora_stack"][0]["strength"] == 1
+    assert entry["at"] == 0
+    json.dumps(saved, allow_nan=False)
+    assert json.loads(prefs.read_text()) == saved
+
+
+@pytest.mark.parametrize("invalid", [
+    {"schema": -1, "entries": {"old": ENTRY}},
+    {"schema": "1", "entries": {"old": ENTRY}},
+    {"schema": True, "entries": {"old": ENTRY}},
+    {"schema": 1, "entries": [ENTRY]},
+])
+def test_invalid_schema_preserves_original_preferences_before_any_write(prefs, invalid):
+    prefs.parent.mkdir(parents=True)
+    original = json.dumps(invalid)
+    prefs.write_text(original, encoding="utf-8")
+    for action in (user_prefs.load_model_memory, lambda: user_prefs.remember_model_choice("new", ENTRY)):
+        with pytest.raises(ValueError, match="original file preserved"):
+            action()
+        assert prefs.read_text(encoding="utf-8") == original

@@ -1552,8 +1552,9 @@ class UniCanvasWidget {
         const layer = this.layers[index]; layer.canvas = views[index]; layer.hiresCanvas = null; layer.hiresRect = null;
         if (layer.pose) {
           const r = layer.pose.rect;
-          layer.pose.rect = { x: (r.x - oldBbox.x) * side / oldBbox.width, y: (r.y - oldBbox.y) * side / oldBbox.height,
-            width: r.width * side / oldBbox.width, height: r.height * side / oldBbox.height };
+          layer.pose.rect = { x: destination.x + (r.x - oldBbox.x) * destination.width / oldBbox.width,
+            y: destination.y + (r.y - oldBbox.y) * destination.height / oldBbox.height,
+            width: r.width * destination.width / oldBbox.width, height: r.height * destination.height / oldBbox.height };
           const { yaw, pitch, roll, fov } = next.settings;
           layer.pose.panoramaCamera = { yaw, pitch, roll, fov };
         }
@@ -2709,6 +2710,7 @@ class UniCanvasWidget {
     try {
       const res = await fetch("/vnccs/unicanvas/assets");
       const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       this.assets = {
         checkpoints: data.checkpoints || [],
         diffusion_models: data.diffusion_models || [],
@@ -2721,6 +2723,7 @@ class UniCanvasWidget {
         samplers: data.samplers || [],
         schedulers: data.schedulers || [],
       };
+      this._assetsLoaded = true;
       this.modelDescriptors = indexModelDescriptors(data.model_modules);
       this.checkpoints = this.assets.checkpoints;
       for (const loader of Object.values(UNICANVAS_MODEL_LOADERS)) {
@@ -2817,7 +2820,7 @@ class UniCanvasWidget {
   // (restoring a saved canvas); otherwise the last used files win (switching Mode / Loader / tab).
   recallModelChoice({ onlyEmpty = false } = {}) {
     if (this.settings.model_selection_mode !== "custom") return false;
-    const patch = sharedModelMemory().recall(this.settings, this.assets);
+    const patch = sharedModelMemory().recall(this.settings, this._assetsLoaded ? this.assets : null);
     let changed = false;
     for (const [key, value] of Object.entries(patch)) {
       if (key === "lora_rows") continue;

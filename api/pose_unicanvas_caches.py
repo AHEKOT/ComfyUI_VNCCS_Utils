@@ -11,7 +11,7 @@ def _vnccs_content_length_ok(request, max_bytes):
         length = int(raw_length)
     except Exception:
         return False
-    return length <= int(max_bytes or 0)
+    return 0 <= length <= int(max_bytes or 0)
 
 
 def _vnccs_register_capture_cache():
@@ -26,9 +26,14 @@ def _vnccs_register_capture_cache():
         try:
             if not _vnccs_content_length_ok(request, pose_cache._CAPTURE_CACHE_MAX_TOTAL_CHARS + 1024 * 1024):
                 return web.json_response({"error": "captured_images payload is too large"}, status=413)
-            data = await request.json()
+            try:
+                data = await request.json()
+            except (ValueError, TypeError) as exc:
+                return web.json_response({"error": str(exc)}, status=400)
+            if not isinstance(data, dict):
+                return web.json_response({"error": "request body must be an object"}, status=400)
             capture_id = data.get("capture_id")
-            if not capture_id:
+            if not isinstance(capture_id, str) or not capture_id:
                 return web.json_response({"error": "missing capture_id"}, status=400)
             capture_id = _vnccs_safe_id(capture_id, "capture")
             try:
@@ -72,9 +77,14 @@ def _vnccs_register_pose_animation_cache():
         try:
             if not _vnccs_content_length_ok(request, pose_cache._POSE_ANIMATION_CACHE_MAX_TOTAL_CHARS + 1024 * 1024):
                 return web.json_response({"error": "animation payload is too large"}, status=413)
-            data = await request.json()
+            try:
+                data = await request.json()
+            except (ValueError, TypeError) as exc:
+                return web.json_response({"error": str(exc)}, status=400)
+            if not isinstance(data, dict):
+                return web.json_response({"error": "request body must be an object"}, status=400)
             animation_id = data.get("animation_id")
-            if not animation_id:
+            if not isinstance(animation_id, str) or not animation_id:
                 return web.json_response({"error": "missing animation_id"}, status=400)
             animation_id = _vnccs_safe_id(animation_id, "pose_animation")
             try:
@@ -136,8 +146,10 @@ def _vnccs_register_unicanvas_state_cache():
             if not _vnccs_content_length_ok(request, canvas_cache._UNICANVAS_STATE_CACHE_MAX_TOTAL_CHARS + 1024 * 1024):
                 return web.json_response({"error": "unicanvas state payload is too large"}, status=413)
             data = await request.json()
+            if not isinstance(data, dict):
+                return web.json_response({"error": "request body must be an object"}, status=400)
             state_id = data.get("state_id")
-            if not state_id:
+            if not isinstance(state_id, str) or not state_id:
                 return web.json_response({"error": "missing state_id"}, status=400)
             state_id = _vnccs_safe_id(state_id, "unicanvas")
             try:
@@ -213,7 +225,10 @@ def _vnccs_register_unicanvas_state_cache():
         try:
             if not _vnccs_content_length_ok(request, 1024):
                 return web.json_response({"error": "cache deletion payload is too large"}, status=413)
-            data = await request.json()
+            try:
+                data = await request.json()
+            except (ValueError, TypeError) as exc:
+                return web.json_response({"error": str(exc)}, status=400)
             if not isinstance(data, dict) or not isinstance(data.get("state_id"), str) or not data["state_id"]:
                 return web.json_response({"error": "missing state_id"}, status=400)
             revision = data.get("revision")

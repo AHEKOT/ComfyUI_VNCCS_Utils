@@ -13,6 +13,62 @@ from helpers.unicanvas_package import load_unicanvas_package
 
 
 class RuntimeCacheTests(unittest.TestCase):
+    def test_cache_routes_reject_invalid_json_and_ids_without_writes(self):
+        class Request:
+            headers = {"Content-Length": "100"}
+            payload = None
+
+            async def json(self):
+                if isinstance(self.payload, Exception):
+                    raise self.payload
+                return self.payload
+
+        request = Request()
+        for route, id_key in (("pose_captures_upload", "capture_id"),
+                              ("pose_animation_upload", "animation_id"),
+                              ("unicanvas_state_upload", "state_id"),
+                              ("unicanvas_state_delete", "state_id")):
+            handler = self.cache["routes"][f"/vnccs/{route}"]
+            for payload in (None, [], "invalid", {id_key: ["saved"], "revision": 1},
+                            json.JSONDecodeError("Invalid JSON", "{", 1)):
+                with self.subTest(route=route, payload=payload):
+                    request.payload = payload
+                    self.assertEqual(asyncio.run(handler(request)).status, 400)
+        for name in ("VNCCS_CAPTURE_CACHE", "VNCCS_POSE_ANIMATION_CACHE", "VNCCS_UNICANVAS_STATE_CACHE"):
+            self.assertEqual(self.cache[name], {})
+        for directory in ("_POSE_ANIMATION_CACHE_DIR", "_UNICANVAS_STATE_CACHE_DIR"):
+            self.assertEqual(list(Path(self.cache[directory]).glob("*.json")), [])
+
+    def test_content_length_rejects_negative_and_unbounded_bodies(self):
+        validate = self.cache["_vnccs_content_length_ok"]
+        for raw in ("-1", "101", "invalid"):
+            self.assertFalse(validate(mock.Mock(headers={"Content-Length": raw}), 100))
+        self.assertTrue(validate(mock.Mock(headers={"Content-Length": "100"}), 100))
+        self.assertFalse(validate(mock.Mock(headers={}, can_read_body=True), 100))
+        self.assertTrue(validate(mock.Mock(headers={}, can_read_body=False), 100))
+
+    def test_corrupt_saved_cache_remains_a_server_failure_and_is_preserved(self):
+        class Request:
+            headers = {"Content-Length": "100"}
+            payload = {}
+
+            async def json(self):
+                return self.payload
+
+        request = Request()
+        for kind, route, payload in (
+            ("pose_animation", "pose_animation_upload", {"animation_id": "saved", "animation": {"tracks": {}}, "revision": 1}),
+            ("unicanvas_state", "unicanvas_state_delete", {"state_id": "saved", "revision": 1}),
+        ):
+            with self.subTest(kind=kind):
+                self.cache[f"_vnccs_write_{kind}_cache_file"]("saved", {})
+                path = Path(self.cache[f"_vnccs_{kind}_cache_path"]("saved"))
+                path.write_bytes(b"{damaged cache")
+                request.payload = payload
+                response = asyncio.run(self.cache["routes"][f"/vnccs/{route}"](request))
+                self.assertEqual(response.status, 500)
+                self.assertEqual(path.read_bytes(), b"{damaged cache")
+
     def test_standalone_upload_checks_the_revision_read_by_each_tab(self):
         upload = self.cache["routes"]["/vnccs/unicanvas_state_upload"]
         state_id = "vnccs_unicanvas_standalone_tab"

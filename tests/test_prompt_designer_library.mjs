@@ -148,6 +148,45 @@ test("failed template updates retain the confirmed card, original disk data and 
     assert.equal(records.get(entry.id).state.savedPrompt.name, "Edited name");
 });
 
+test("undo and redo after saving keep the acknowledged template revision", async t => {
+    const { widget, records } = setup(t);
+    const entry = template(records, "a".repeat(32), "Original");
+    await widget.openSavedPrompt(entry);
+    widget.state.parts = [{ text: "Edited content" }]; widget.render(); widget.commit();
+    assert.equal(await widget.saveLibraryPrompt(), true);
+    assert.equal(records.get(entry.id).revision, 2);
+    widget.moveHistory("undo");
+    assert.deepEqual(widget.state.parts, [{ text: "Original" }]);
+    assert.equal(widget.activePrompt().details.revision, 2);
+    assert.equal(await widget.saveLibraryPrompt(), true);
+    assert.equal(records.get(entry.id).revision, 3);
+    widget.moveHistory("redo");
+    assert.deepEqual(widget.state.parts, [{ text: "Edited content" }]);
+    assert.equal(widget.activePrompt().details.revision, 3);
+    assert.equal(await widget.saveLibraryPrompt(), true);
+    assert.equal(records.get(entry.id).revision, 4);
+});
+
+test("undo after Save as new or deletion cannot restore overwrite permission for the original", async t => {
+    for (const action of ["copy", "delete"]) {
+        const { widget, records } = setup(t);
+        const entry = template(records, "a".repeat(32), "Original");
+        await widget.openSavedPrompt(entry);
+        widget.state.parts = [{ text: "Edited content" }]; widget.render(); widget.commit();
+        if (action === "copy") assert.equal(await widget.saveLibraryPrompt(true), true);
+        else assert.equal(await widget.deleteLibraryPrompt(entry), true);
+        const identity = { id: widget.activePrompt().details.id, revision: widget.activePrompt().details.revision };
+        const original = structuredClone(records.get(entry.id));
+        widget.moveHistory("undo");
+        assert.equal(widget.activePrompt().templateId, undefined);
+        assert.deepEqual({ id: widget.activePrompt().details.id, revision: widget.activePrompt().details.revision }, identity);
+        assert.deepEqual(widget.state.parts, [{ text: "Original" }]);
+        assert.equal(await widget.saveLibraryPrompt(), true);
+        assert.deepEqual(records.get(entry.id), original);
+        assert.notEqual(widget.activePrompt().details.id, entry.id);
+    }
+});
+
 test("same-content cards keep separate categories and colors through filtering, import and deletion", t => {
     const { widget } = setup(t);
     const cards = [

@@ -32,22 +32,23 @@ export function entryFromSettings(settings) {
 }
 
 // The remembered picks for this loader + Mode as a settings patch. A file that is no longer in
-// `assets` is dropped (assets omitted or an empty list = not loaded yet, everything is kept).
+// `assets` is dropped (assets omitted = not loaded yet, everything is kept).
 export function patchFromEntry(entry, assets = null) {
     if (!entry || typeof entry !== "object") return {};
     const patch = {};
     for (const [key, assetList] of Object.entries(MODEL_MEMORY_ASSET_FIELDS)) {
         if (typeof entry[key] !== "string" || !entry[key]) continue;
         const known = assets?.[assetList];
-        if (Array.isArray(known) && known.length && !known.includes(entry[key])) continue;
+        if (Array.isArray(known) && !known.includes(entry[key])) continue;
         patch[key] = entry[key];
     }
     for (const key of PLAIN_FIELDS) if (typeof entry[key] === "string" && entry[key]) patch[key] = entry[key];
     const loras = loraRows(entry.lora_stack);
-    if (loras.length) {
+    if (Array.isArray(entry.lora_stack)) {
         const known = assets?.loras;
-        const usable = Array.isArray(known) && known.length ? loras.filter((item) => known.includes(item.name)) : loras;
-        if (usable.length) { patch.lora_stack = usable; patch.lora_rows = usable.length; }
+        const usable = Array.isArray(known) ? loras.filter((item) => known.includes(item.name)) : loras;
+        patch.lora_stack = usable;
+        patch.lora_rows = Math.max(1, usable.length);
     }
     return patch;
 }

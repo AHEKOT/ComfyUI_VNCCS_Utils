@@ -53,6 +53,27 @@ class FakeRouter:
 
 
 class PoseSyncTests(unittest.TestCase):
+    def test_invalid_json_objects_and_node_ids_are_rejected_before_disk_access(self):
+        invalid_payloads = [None, [], "text", {"node_id": []}, {"node_id": {}}, {"node_id": True}]
+        mock_temp = unittest.mock.Mock(side_effect=AssertionError("No disk access"))
+        with patch.dict(sys.modules, {"folder_paths": types.SimpleNamespace(
+                get_temp_directory=mock_temp)}):
+            for payload in invalid_payloads:
+                with self.subTest(payload=payload):
+                    response = asyncio.run(POSE_SYNC.upload_pose_sync(FakeRequest(payload)))
+                    self.assertEqual(response.status, 400)
+            mock_temp.assert_not_called()
+
+    def test_invalid_json_and_negative_content_length_do_not_write_captures(self):
+        invalid_json = FakeRequest({"node_id": "42"})
+        invalid_json.json = unittest.mock.AsyncMock(side_effect=ValueError("Invalid JSON"))
+        self.assertEqual(asyncio.run(POSE_SYNC.upload_pose_sync(invalid_json)).status, 400)
+        negative = FakeRequest({"node_id": "42"})
+        negative.headers["Content-Length"] = "-1"
+        negative.json = unittest.mock.AsyncMock()
+        self.assertEqual(asyncio.run(POSE_SYNC.upload_pose_sync(negative)).status, 413)
+        negative.json.assert_not_called()
+
     def test_failed_write_preserves_previous_capture_and_cleans_temporary_file(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "vnccs_debug_42.json"
