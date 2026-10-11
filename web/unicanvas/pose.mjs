@@ -96,13 +96,15 @@ export class UniCanvasPoseEditor {
         }
     }
 
-    async activate(layer, { show = true } = {}) {
-        if (this.layer === layer && this.studio) {
+    async activate(layer, { show = true, preparation } = {}) {
+        if (this.layer === layer && this.studio && !this.activationPreparation?.cancelled) {
+            if (preparation && !this.initialized) this.activationPreparation = preparation;
             this.setVisible(show);
             await this.ready;
             return;
         }
         this.release();
+        this.activationPreparation = preparation;
         const token = ++this.token;
         this.layer = layer;
         const value = { name: "pose_data", value: JSON.stringify(layer.pose.studio || {}) };
@@ -111,7 +113,7 @@ export class UniCanvasPoseEditor {
         this.studio = new PoseStudioWidget(node, {
             embedded: true,
             onStateChange: data => {
-                if (this.host.editingBlocked) return;
+                if (this.host.editingBlocked || this.activationPreparation?.cancelled) return;
                 if (this.token !== token || !this.host.layers.includes(layer)) return;
                 if (this.initialized) this.applyDimensions(data.export);
                 const meshKey = JSON.stringify(data?.characters?.map?.(item => item?.mesh) ?? data?.mesh ?? null);
@@ -128,7 +130,7 @@ export class UniCanvasPoseEditor {
                 this.scheduleCommit();
             },
             onViewportRender: () => {
-                if (this.host.editingBlocked) return;
+                if (this.host.editingBlocked || this.activationPreparation?.cancelled) return;
                 if (this.token !== token || !this.initialized || this.capturing || !this.visible) return;
                 this.syncSessionViewOffset();
                 this.syncGizmoSize();
@@ -148,7 +150,7 @@ export class UniCanvasPoseEditor {
         const applyCameraToViewer = studio.applyCameraToViewer;
         studio.applyCameraToViewer = (...args) => {
             applyCameraToViewer.apply(studio, args);
-            if (this.initialized && !this.keepingCamera) this.saveCaptureFraming();
+            if (this.token === token && this.initialized && !this.keepingCamera && !this.activationPreparation?.cancelled) this.saveCaptureFraming();
         };
         studio.container.classList.add("vnccs-uc-pose-root");
         // Loading and camera restoration render intermediate frames; reveal only the aligned view.
@@ -159,14 +161,14 @@ export class UniCanvasPoseEditor {
         this.setVisible(show);
         this.ready = (async () => {
             await studio._viewerInitPromise;
-            if (this.token !== token) return;
+            if (this.token !== token || this.activationPreparation?.cancelled) return;
             studio.loadFromNode();
             studio.exportParams.view_width = Math.round(layer.pose.rect.width);
             studio.exportParams.view_height = Math.round(layer.pose.rect.height);
             await studio.loadModel(true, false);
-            if (this.token !== token) return;
+            if (this.token !== token || this.activationPreparation?.cancelled) return;
             await studio.awaitReadyForCompositeCapture();
-            if (this.token !== token || this.host._disposed) return;
+            if (this.token !== token || this.host._disposed || this.activationPreparation?.cancelled) return;
             studio.viewer.scene.background = null;
             if (studio.viewer.gridHelper) studio.viewer.gridHelper.visible = false;
             if (studio.viewer.captureFrame) studio.viewer.captureFrame.visible = false;
@@ -209,10 +211,11 @@ export class UniCanvasPoseEditor {
             studio.canvasContainer.style.visibility = "";
             studio.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
             void studio.refreshLibrary(false);
+            this.activationPreparation = null;
         })();
         try { await this.ready; }
         catch (error) {
-            if (this.token === token) {
+            if (this.token === token && !this.activationPreparation?.cancelled) {
                 this.host.setStatus(`Pose Studio: ${error.message || error}`, true);
                 this.release();
                 this.host.setTool?.("move");
@@ -909,24 +912,25 @@ export class UniCanvasPoseEditor {
         this.studio?.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
     }
 
-    async flush() {
+    async flush(preparation) {
         const token = this.token, studio = this.studio;
         await this.ready;
-        if (token !== this.token) throw new Error("The pose layer changed while preparing the image.");
+        if (token !== this.token || preparation?.cancelled) throw new Error("The pose layer changed while preparing the image.");
         if (!this.initialized) return;
         await studio.awaitReadyForCompositeCapture();
-        if (token !== this.token) throw new Error("The pose layer changed while preparing the image.");
+        if (token !== this.token || preparation?.cancelled) throw new Error("The pose layer changed while preparing the image.");
         this.commit();
         await this.studio.flushAnimationCacheUpload();
     }
 
-    async generation(layer, size, prompt = this.host.settings.positive) {
+    async generation(layer, size, prompt = this.host.settings.positive, preparation) {
         // A rotated spherical layer already contains the correctly warped pose.
         // Reopening its original camera here would change the generation view.
         const projected = !poseAtPanoramaCamera(layer, this.host.panorama);
         if (!projected) {
-            await this.activate(layer, { show: this.host.tool === "pose" });
-            await this.flush();
+            await this.activate(layer, { show: this.host.tool === "pose", preparation });
+            if (preparation?.cancelled) throw new Error("Generation stopped");
+            await this.flush(preparation);
             if (this.layer !== layer) throw new Error("The pose layer changed. Generate again.");
         }
         if (!this.host.layers.includes(layer)) throw new Error("The pose layer changed. Generate again.");
@@ -941,7 +945,7 @@ export class UniCanvasPoseEditor {
         this.host.drawRasterLayerToWorldRect(ctx, layer, this.host.bbox,
             { x: 0, y: 0, width: image1.width, height: image1.height });
         const image2 = await composePoseReference(this.host, layer, size);
-        if (token !== this.token || !this.host.layers.includes(layer)) throw new Error("The pose layer changed. Generate again.");
+        if (token !== this.token || !this.host.layers.includes(layer) || preparation?.cancelled) throw new Error("The pose layer changed. Generate again.");
         const index = state.activeTab || 0;
         const posePrompt = state.pose_prompts?.[index] ?? state.poses?.[index]?.prompt ?? params.user_prompt ?? "";
         const userPrompt = [posePrompt, prompt].filter(Boolean).join("\n");

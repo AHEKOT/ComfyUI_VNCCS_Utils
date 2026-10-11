@@ -207,6 +207,11 @@ def _hydrate_cached_pose_animation(data):
     cache_id = reference.get("cacheId", reference.get("cache_id"))
     if not cache_id:
         return data
+    pending_animation = reference.get("pendingAnimation")
+    if isinstance(pending_animation, dict):
+        hydrated = dict(data)
+        hydrated["animation"] = pending_animation
+        return hydrated
     try:
         from .posestudio.caches import vnccs_get_pose_animation_cache
         entry = vnccs_get_pose_animation_cache(cache_id)

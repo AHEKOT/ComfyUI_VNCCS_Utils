@@ -122,3 +122,29 @@ test("duration input updates timing continuously and ignores incomplete numbers"
     timeline.durationInput.emit("blur");
     assert.equal(timeline.durationInput.value, "3.25");
 });
+
+for (const control of ["frameInput", "fpsInput", "durationInput"]) {
+    test(`${control} stops playback before applying the visible user value`, t => {
+        const { timeline } = editor(t);
+        const previousCancel = globalThis.cancelAnimationFrame;
+        const cancelled = [];
+        globalThis.cancelAnimationFrame = frame => cancelled.push(frame);
+        t.after(() => { globalThis.cancelAnimationFrame = previousCancel; });
+        timeline._playing = true;
+        timeline._raf = 77;
+        timeline[control].value = control === "frameInput" ? "5" : "24";
+        timeline[control].emit("input");
+        assert.equal(timeline._playing, false, "Playback must not overwrite the pointer's new value on the next frame");
+        assert.equal(timeline._raf, null);
+        assert.deepEqual(cancelled, [77]);
+    });
+}
+
+test("automatic playback frames keep playback running", t => {
+    const { timeline } = editor(t);
+    timeline._playing = true;
+    timeline._raf = 77;
+    timeline.setFrame(5, { playback: true });
+    assert.equal(timeline._playing, true);
+    assert.equal(timeline._raf, 77);
+});

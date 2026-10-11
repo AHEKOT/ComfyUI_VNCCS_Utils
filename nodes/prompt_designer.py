@@ -203,6 +203,11 @@ def bounded_sampling_context(seed=0, method=None):
             return super().process_variable_assignment(command)
 
         def generator_from_command(self, command):
+            from dynamicprompts.commands import VariantCommand
+            if (isinstance(command, VariantCommand)
+                    and (command.sampling_method or self.default_sampling_method) == SamplingMethod.CYCLICAL
+                    and min(command.min_bound, len(command.values)) > len(set(map(repr, command.values)))):
+                raise ValueError("Cycle choices require enough distinct options for the requested count.")
             # Bound intermediate work before the library builds a large final string.
             budget[0] += 1
             if budget[0] > MAX_EXPANSION_STEPS:
@@ -284,18 +289,44 @@ def resolve_prompt(node_state):
         library = {block["id"]: block["text"] for block in state.get("blocks", [])}
         modes = {block["id"]: block["mode"] for block in state.get("blocks", []) if "mode" in block}
         selected = [{} for _ in range(count)]
-        values, occurrences = {}, {}
+        contexts = [context] * count
+        values, scopes, random_states, reservations, offsets, occurrences = {}, {}, {}, {}, {}, {}
 
-        def block_value(block_id, key, output=None):
+        def sample_once(text, key, method=None, offset=0):
+            nonlocal context
             if key not in values:
+                before = context.variables
+                random_state = context.rand.getstate() if count > 1 and key[1] is not None else None
+                replaying = random_state is not None and key[0] in random_states
+                # Resolve shared variable-dependent text with the same draws in each output's scope.
+                if random_state is not None:
+                    context.rand.setstate(random_states.setdefault(key[0], random_state))
+                try:
+                    values[key] = sample(text, method, offset)
+                    scopes[key] = before, context.variables
+                finally:
+                    if replaying:
+                        context.rand.setstate(random_state)
+            else:
+                before, after = scopes[key]
+                context = replace(context, variables=after) if context.variables is before else context.with_variables(
+                    {name: value for name, value in after.items() if before.get(name) != value})
+            return values[key]
+
+        def block_value(block_id, key, output):
+            cache = reservations.setdefault((key, output), (key, id(context.variables) if "${" in library[block_id] else None))
+            if cache not in values:
                 mode = modes.get(block_id)
                 method = None if mode is None else SamplingMethod.CYCLICAL if mode == "cycle" else SamplingMethod.RANDOM
-                offset = occurrences.get(block_id, 0)
-                values[key] = sample(block_command(parse(library[block_id])), method, offset)
-                occurrences[block_id] = offset + 1
-            for index in range(count) if output is None else [output]:
-                selected[index][block_id] = values[key]
-            return values[key]
+                if key not in offsets:
+                    offsets[key] = occurrences.get(block_id, 0)
+                    occurrences[block_id] = offsets[key] + 1
+                offset = offsets[key]
+                value = sample_once(block_command(parse(library[block_id])), cache, method, offset)
+            else:
+                value = sample_once(None, cache)
+            selected[output][block_id] = value
+            return value
 
         def checked_value(block_id, key, output):
             if block_id in selected[output]:
@@ -312,11 +343,9 @@ def resolve_prompt(node_state):
                             return block_value(block_id, (position, output, index), output)
             return block_value(block_id, (*key, "check", block_id), output)
 
-        def fragment(part, key, output=None):
+        def fragment(part, key, output):
             if "text" in part:
-                if key not in values:
-                    values[key] = sample(part["text"])
-                return values[key]
+                return sample_once(part["text"], (key, id(context.variables) if "${" in part["text"] else None))
             if "blockId" in part:
                 return block_value(part["blockId"], key, output)
             condition = part["condition"]
@@ -347,21 +376,23 @@ def resolve_prompt(node_state):
         segments = []
         lengths = [0] * count
         for position, part in enumerate(parts):
-            if "multiPrompt" in part:
-                segment = [join_bounded(fragment(item, (position, output, index), output)
-                                        for index, item in enumerate(variant))
-                           for output, variant in enumerate(part["multiPrompt"]["variants"])]
-            elif "condition" in part:
-                segment = [fragment(part, (position,), output) for output in range(count)]
-            else:
-                segment = fragment(part, (position,))
+            segment = []
+            for output in range(count):
+                # Outputs share random draws, but each retains its own variable assignments.
+                context = contexts[output]
+                if "multiPrompt" in part:
+                    variants = part["multiPrompt"]["variants"]
+                    segment.append(join_bounded(fragment(item, (position, output, index), output)
+                                                for index, item in enumerate(variants[output] if output < len(variants) else [])))
+                else:
+                    segment.append(fragment(part, (position,), output))
+                contexts[output] = context
             for index in range(count):
-                lengths[index] += len(segment if isinstance(segment, str) else segment[index] if index < len(segment) else "")
+                lengths[index] += len(segment[index])
                 if lengths[index] > MAX_PROMPT_CHARS:
                     raise ValueError("The resolved prompt exceeds 64 KiB.")
             segments.append(segment)
-        prompts = ["".join(segment if isinstance(segment, str) else segment[index] if index < len(segment) else ""
-                           for segment in segments) for index in range(count)]
+        prompts = ["".join(segment[index] for segment in segments) for index in range(count)]
         if multi_prompt:
             return {"template": template, "prompt": prompts[0], "prompts": prompts}
         prompt = prompts[0]
@@ -403,14 +434,17 @@ def cycle_period(command, context, position):
             command = value.adjust_range()
             length = lcm(*(period(item, variables, method, visiting) for item in command.values))
             if method == SamplingMethod.CYCLICAL:
+                multiplicities = Counter(map(repr, command.values))
+                if command.min_bound > len(multiplicities):
+                    raise ValueError("Cycle choices require enough distinct options for the requested count.")
                 coefficients = [1] + [0] * command.max_bound
-                for multiplicity in Counter(map(repr, command.values)).values():
+                for multiplicity in multiplicities.values():
                     steps += command.max_bound
                     if steps > MAX_EXPANSION_STEPS:
                         raise ValueError("Dynamic Prompts expansion is too complex.")
                     for size in range(command.max_bound, 0, -1):
                         coefficients[size] = min(position + 1, coefficients[size] + coefficients[size - 1] * multiplicity)
-                length *= sum(factorial(size) * coefficients[size] for size in range(command.min_bound, command.max_bound + 1))
+                length *= sum(factorial(size) * coefficients[size] for size in range(command.min_bound, command.max_bound + 1) if coefficients[size])
             return max(1, min(position + 1, length))
         return 1
 

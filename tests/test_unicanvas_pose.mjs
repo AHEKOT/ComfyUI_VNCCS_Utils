@@ -879,6 +879,58 @@ test("queue synchronization rejects a pose changed during asynchronous capture r
     await assert.rejects(flush, /changed while preparing/);
 });
 
+test("stopped pose preparation cannot commit when capture readiness finally resolves", async () => {
+    const controlled = controlledStudio();
+    const { editor, layer } = harness(controlled.Studio);
+    await editor.activate(layer);
+    let finish, commits = 0;
+    editor.commit = () => commits++;
+    editor.studio.awaitReadyForCompositeCapture = () => new Promise(resolve => { finish = resolve; });
+    const preparation = { cancelled: false };
+    const pending = editor.flush(preparation); await Promise.resolve();
+    preparation.cancelled = true; finish();
+    await assert.rejects(pending, /changed while preparing/);
+    assert.equal(commits, 0, "the old preparation cannot bake pixels into an unlocked document");
+    editor.release();
+});
+
+for (const reuse of [false, true]) test(`stopped ${reuse ? "reused" : "new"} pose initialization ignores late state callbacks and can restart the same layer`, async () => {
+    let finish;
+    const controlled = controlledStudio(() => new Promise(resolve => { finish = resolve; }));
+    const { editor, host, layer } = harness(controlled.Studio);
+    const preparation = { cancelled: false };
+    const loading = editor.activate(layer, { preparation: reuse ? undefined : preparation });
+    await new Promise(setImmediate);
+    const reused = reuse ? editor.activate(layer, { preparation }) : null;
+    const oldStudio = controlled.instances[0], original = JSON.stringify(layer.pose);
+    preparation.cancelled = true;
+    oldStudio.host.onStateChange({ export: { view_width: 99 }, poses: [{}] });
+    assert.equal(JSON.stringify(layer.pose), original, "late model state cannot replace the stopped document state");
+    finish(); await loading; await reused;
+    assert.equal(editor.initialized, false);
+    const restart = editor.activate(layer);
+    await new Promise(setImmediate);
+    assert.equal(controlled.instances.length, 2, "a cancelled partial studio must not be reused");
+    assert.equal(oldStudio.disposed, true);
+    finish(); await restart;
+    assert.equal(editor.initialized, true);
+    editor.release();
+});
+
+test("Stop after pose initialization leaves the ready editor responsive to subsequent edits", async () => {
+    for (const initiallyPrepared of [false, true]) {
+        const controlled = controlledStudio();
+        const { editor, layer } = harness(controlled.Studio);
+        const preparation = { cancelled: false };
+        await editor.activate(layer, { preparation: initiallyPrepared ? preparation : undefined });
+        if (!initiallyPrepared) await editor.activate(layer, { preparation });
+        preparation.cancelled = true;
+        editor.studio.host.onStateChange({ export: { view_width: 400, view_height: 600 }, poses: [{}], edit: "after Stop" });
+        assert.equal(layer.pose.studio.edit, "after Stop", "a completed scene must accept the next user gesture");
+        editor.release();
+    }
+});
+
 test("panorama cache hydration restores only the matching uploaded character pixels", () => {
     const cached = { rect: {x: 10}, character: { source: "upload", name: "A", dataURL: "pixels" } };
     const live = { rect: {x: 20}, character: { source: "upload", name: "A" } };

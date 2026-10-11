@@ -5831,7 +5831,7 @@ class PoseStudioWidget {
                 console.warn("[VNCCS PoseStudio] Animation cache upload failed:", error);
                 if (!this._animationCacheUploadWarned) {
                     this._animationCacheUploadWarned = true;
-                    this.showMessage?.("Animation cache upload failed. Restart ComfyUI before saving this workflow.", true);
+                    this.showMessage?.("Animation cache upload failed. Pending tracks are preserved in the workflow.", true);
                 }
                 return false;
             }
@@ -5879,12 +5879,17 @@ class PoseStudioWidget {
         const token = ++this._animationCacheRestoreToken;
         this._animationCacheRestorePending = true;
         try {
-            const response = await fetch(
-                `/vnccs/pose_animation/${encodeURIComponent(sourceCacheId)}`,
-                { cache: "no-store" },
-            );
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const payload = await response.json();
+            let payload;
+            if (reference.pendingAnimation && typeof reference.pendingAnimation === "object") {
+                payload = { animation: reference.pendingAnimation, revision: reference.revision };
+            } else {
+                const response = await fetch(
+                    `/vnccs/pose_animation/${encodeURIComponent(sourceCacheId)}`,
+                    { cache: "no-store" },
+                );
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                payload = await response.json();
+            }
             if (token !== this._animationCacheRestoreToken || this._disposed) return false;
             if (!payload?.animation || typeof payload.animation !== "object") {
                 throw new Error("Animation cache response is empty.");
@@ -5931,8 +5936,8 @@ class PoseStudioWidget {
                 Math.floor(Number(reference.revision) || 0),
                 Math.floor(Number(payload.revision) || 0),
             );
-            this._lastUploadedAnimationCacheId = cacheBelongsToNode ? sourceCacheId : null;
-            this._lastUploadedAnimationCacheRevision = cacheBelongsToNode
+            this._lastUploadedAnimationCacheId = cacheBelongsToNode && !reference.pendingAnimation ? sourceCacheId : null;
+            this._lastUploadedAnimationCacheRevision = cacheBelongsToNode && !reference.pendingAnimation
                 ? Math.floor(Number(payload.revision) || this._animationCacheRevision)
                 : -1;
             this.animationState = restored;
@@ -6674,6 +6679,7 @@ class PoseStudioWidget {
         if (this._morphSolveInFlight || this._pendingMorphSolve || this._morphLoadTasks?.size) {
             throw new Error("Pose Studio model morph is still in progress.");
         }
+        if (this._morphWorkerFailed) throw new Error("Pose Studio body update failed. Reload ComfyUI to retry.");
     }
 
     async awaitReadyForCompositeCapture(timeoutMs = 120000) {
@@ -9837,15 +9843,36 @@ class PoseStudioWidget {
     }
 
     exportPose(type, customName) {
+        if (type === "animation" && (this._animationCacheRestorePending || this._deferredAnimationReference)) {
+            this.showMessage("Animation tracks are not loaded. Restore the animation before exporting it.", true);
+            return false;
+        }
         let data, filename;
         const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
         const name = (customName && customName.trim()) ? customName.trim().replace(/[^a-z0-9_\-\.]/gi, '_') : timestamp;
 
         if (type === 'animation') {
+            this.captureActiveCharacterRuntime();
+            this.syncSharedTimelineFromActive();
             data = {
                 type: "pose_animation",
                 version: "1.0",
                 animation: this.animationState,
+                schema_version: 3,
+                active_character_id: this.activeCharacterId,
+                activeTab: this.activeTab,
+                timeline: { ...this.sharedTimeline },
+                pose_prompts: [...this.posePrompts],
+                camera: {
+                    yaw_deg: this.exportParams.cam_yaw_deg || 0,
+                    pitch_deg: this.exportParams.cam_pitch_deg || 0,
+                },
+                characters: this.characters.map(character => {
+                    this.ensureCharacterRuntime(character);
+                    return serializePoseStudioCharacter(character, JSON.parse(
+                        serializeAnimationStateSnapshot(character.animationState),
+                    ));
+                }),
             };
             filename = `pose_animation_${name}.json`;
         } else if (type === 'set') {
@@ -11297,7 +11324,10 @@ class PoseStudioWidget {
                 const data = JSON.parse(event.target.result);
 
                 if (data?.type === "pose_animation" && data.animation && typeof data.animation === "object") {
-                    this.loadAnimationLibraryAsset(data);
+                    if (Array.isArray(data.characters) && data.characters.length) {
+                        await this.loadCharacterSceneLibraryAsset(data, { animation: true });
+                        if (this._disposed || token !== this._libraryLoadToken) return;
+                    } else this.loadAnimationLibraryAsset(data);
                     this.showMessage(`Animation imported: ${this.animationState.frameCount} frames.`);
                     input.value = '';
                     return;
@@ -12868,6 +12898,9 @@ class PoseStudioWidget {
         let preview = null;
 
         try {
+            if (animationMode && (this._animationCacheRestorePending || this._deferredAnimationReference)) {
+                throw new Error("Animation tracks are not loaded. Restore the animation before saving it.");
+            }
             this.captureActiveCharacterRuntime();
             this.syncSharedTimelineFromActive();
             const savedSAMProjection = (
@@ -13090,6 +13123,7 @@ class PoseStudioWidget {
         const restoreToken = this._poseDataRestoreToken;
         if (this._sceneModelHydrationPromise) await this._sceneModelHydrationPromise;
         if (this._disposed || token !== this._libraryLoadToken || restoreToken !== this._poseDataRestoreToken) return;
+        this._poseDataRestoreError = null;
         this.clearAnimationCacheReference();
         this._pendingMorphSolve = null;
         ++this._morphSeq;
@@ -14219,7 +14253,8 @@ class PoseStudioWidget {
     }
 
     ensureMorphWorker() {
-        if (this._morphWorker || this._morphWorkerFailed) return this._morphWorker;
+        if (this._morphWorkerFailed) return null;
+        if (this._morphWorker) return this._morphWorker;
         const worker = getVNCCSSharedMorphWorker();
         if (!worker) {
             this._morphWorkerFailed = true;
@@ -14243,16 +14278,13 @@ class PoseStudioWidget {
             this._morphWorkerFailed = true;
             this._morphSolveInFlight = false;
             this._pendingMorphSolve = null;
-            const failedRequests = message.seq == null
-                ? [...this._morphLoadTasks.entries()]
-                : [[message.seq, this._morphLoadTasks.get(message.seq)]];
-            for (const [seq, request] of failedRequests) {
-                if (!request) continue;
+            this._morphSeqCharacterIds.clear();
+            for (const [seq, request] of this._morphLoadTasks) {
                 clearTimeout(request.timeout);
                 this._morphLoadTasks.delete(seq);
-                this._morphSeqCharacterIds.delete(seq);
                 request.reject(new Error(message.message || "Pose Studio MakeHuman worker failed."));
             }
+            this.showMessage?.(`Pose Studio body update failed: ${message.message || "MakeHuman worker unavailable"}. Reload ComfyUI to retry.`, true);
             return;
         }
         if (message.type !== "result" || message.seq == null) return;
@@ -14682,6 +14714,7 @@ class PoseStudioWidget {
         }
 
         this.syncToNode(false, { skipCapture: true });
+        if (this._morphWorkerFailed) return;
         this.queueFullMeshUpdate(changedKey);
     }
 
@@ -15495,6 +15528,11 @@ class PoseStudioWidget {
                 cacheId: animationCacheId,
                 revision: this._animationCacheRevision,
             });
+            // A workflow saved before disk acknowledgement must retain its authored tracks.
+            if (this._lastUploadedAnimationCacheId !== animationCacheId
+                || this._lastUploadedAnimationCacheRevision < this._animationCacheRevision) {
+                animationToSave.pendingAnimation = JSON.parse(animationSnapshot);
+            }
             if (animationToSave.basePose) this.stripSceneCameraFromPose(animationToSave.basePose);
         }
 
@@ -15778,7 +15816,10 @@ class PoseStudioWidget {
             this._pendingAnimationCacheJSON = null;
             this._pendingAnimationCacheId = null;
             if (isAnimationCacheReference(restoredAnimationSource)) {
-                cachedAnimationReference = restoredAnimationSource;
+                cachedAnimationReference = data.animation?.cacheId === restoredAnimationSource.cacheId
+                    && data.animation.pendingAnimation
+                    ? { ...restoredAnimationSource, pendingAnimation: data.animation.pendingAnimation }
+                    : restoredAnimationSource;
                 this._animationCacheId = this.animationCacheIdBelongsToNode(restoredAnimationSource.cacheId)
                     ? restoredAnimationSource.cacheId
                     : null;

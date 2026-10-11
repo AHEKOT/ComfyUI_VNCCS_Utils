@@ -253,8 +253,10 @@ test("a linked VNCSS Config hides model, family, turbo and LoRA controls and dri
     assert.ok(family.includes("forcedMode"), "a checkpoint config stays SDXL");
     const capture = source.slice(source.indexOf("  captureGenerationSettings() {"), source.indexOf("  async draw() {"));
     assert.match(capture, /this\.syncConfigFamily\(\)/, "GENERATE captures the config family before asynchronous preparation");
-    assert.match(source, /const request = this\.captureGenerationSettings\(\);\s*await this\.stateUploadPromise/, "the request settings are captured before awaiting saves");
-    assert.match(source, /this\.drawInProgress = true;\s*this\.drawBtn\.disabled = true;\s*try \{\s*const refs = await loadConfigReferences/, "GENERATE locks the button before loading references");
+    const draw = source.slice(source.indexOf("  async draw() {"), source.indexOf("  async runGeneration("));
+    assert.ok(draw.indexOf("const request = this.captureGenerationSettings();") < draw.indexOf("await Promise.race"), "the request settings are captured before awaiting saves and assets");
+    assert.match(draw, /Promise\.all\(\[this\.stateUploadPromise, this\._assetsReady\]\)/, "preparation still waits for both saves and assets");
+    assert.match(source, /this\.drawInProgress = true;\s*this\.drawBtn\.disabled = true;\s*try \{\s*const refs = await prepare\(loadConfigReferences/, "GENERATE locks the button before loading references");
 });
 
 test("family detection reads the file name only, prefers the most specific pattern and keeps the loader", async () => {

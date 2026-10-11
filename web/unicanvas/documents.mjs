@@ -103,6 +103,7 @@ export async function applyCanvasDocument(widget, metadata) {
     widget._frozenStateJSON = JSON.stringify({ ...state, canvas_id: metadata.canvas_id });
     widget._capturedStateJSON = null;
     widget._stateRestoreFailed = false;
+    widget._stateSaveFailed = false;
     widget.stagingItems = [];
     widget.activeStagingIndex = -1;
     widget.clearSamPrompt?.();

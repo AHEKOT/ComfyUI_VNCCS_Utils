@@ -57,6 +57,36 @@ def test_common_random_text_blocks_and_conditions_are_identical_across_outputs()
     assert len(outputs) > 5
 
 
+@pytest.mark.parametrize("branch", ["text", "block", "condition"])
+def test_output_variable_assignments_do_not_leak_into_other_outputs_or_the_shared_suffix(branch):
+    blocks = [{"id": "who", "name": "Who", "text": "${who}"}]
+    reference = {"text": "${who}"} if branch == "text" else {"blockId": "who"}
+    if branch == "condition":
+        reference = {"condition": {"blockId": "who", "operator": "contains", "value": "girl",
+            "then": {"text": "${who}"}, "else": {"text": "${who}"}}}
+    raw = state([{"text": "${who=!other}${common=!prefix} ${common}: "},
+                 multi([{"text": "${who=!girl}${who}"}], [{"text": "${who=!boy}${who}"}], []),
+                 {"text": " / "}, reference], blocks)
+    # A third output retains the original common scope, rather than inheriting the second row's assignment.
+    result = resolve_prompt(raw)
+    assert result["prompts"] == [" prefix: girl / girl", " prefix: boy / boy", " prefix:  / other"]
+    assert resolve_prompt(raw) == result
+    assert list(VNCCS_PromptDesigner().execute(raw)["result"][:3]) == result["prompts"]
+
+
+@pytest.mark.parametrize("suffix", ["{~red|blue}", "${who} {~red|blue}", "${color=!{~red|blue}}${who} ${color}"])
+def test_common_random_draws_remain_shared_when_output_variables_differ(suffix):
+    for seed in range(20):
+        raw = state([multi([{"text": "${who=!girl}first "}], [{"text": "${who=!boy}second "}]),
+                     {"text": suffix}, {"text": " {~studio|outdoors}"}], seed=seed)
+        result = resolve_prompt(raw)
+        first, second = result["prompts"]
+        assert first.startswith("first " + ("girl " if "${who}" in suffix else ""))
+        assert second.startswith("second " + ("boy " if "${who}" in suffix else ""))
+        assert first.split()[-2:] == second.split()[-2:]
+        assert resolve_prompt(raw) == result
+
+
 def test_multiple_fragments_align_output_numbers_without_cartesian_products():
     raw = state([{"text": "start "}, multi([{"text": "A1"}], [{"text": "A2"}]), {"text": " / "},
                  multi([{"text": "B1"}], [{"text": "B2"}], [{"text": "B3"}]), {"text": " end"}])

@@ -46,6 +46,13 @@ POSE_STUDIO = _load_pose_studio_module()
 
 
 class PoseOutputLimitTests(unittest.TestCase):
+    def test_pending_animation_tracks_are_available_before_cache_acknowledgement(self):
+        animation = {"fps": 24, "tracks": {"head": {"keys": [{"frame": 0, "value": [0, 0, 0, 1]}]}}}
+        data = {"animation": {"storage": "server_cache", "cacheId": "pending", "pendingAnimation": animation}}
+        hydrated = POSE_STUDIO._hydrate_cached_pose_animation(data)
+        self.assertIs(hydrated["animation"], animation)
+        self.assertIn("pendingAnimation", data["animation"])
+
     def test_workflow_json_is_not_rewritten_as_dynamic_prompt_text(self):
         settings = POSE_STUDIO.VNCCS_PoseStudio.INPUT_TYPES()["required"]["pose_data"][1]
         self.assertIs(settings["dynamicPrompts"], False)

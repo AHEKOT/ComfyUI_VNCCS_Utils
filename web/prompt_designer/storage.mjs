@@ -51,6 +51,8 @@ export class DocumentStorage {
         let state;
         for (const value of [draft?.state, metadata?.state, raw]) {
             if (value === undefined) continue;
+            // An empty constructor placeholder cannot recover damaged authored metadata.
+            if (value === raw && this.restoreError && /^\s*\{\s*\}\s*$/.test(value)) continue;
             try { state = normalizeState(JSON.parse(value)); break; }
             catch (error) { this.restoreError = error; }
         }

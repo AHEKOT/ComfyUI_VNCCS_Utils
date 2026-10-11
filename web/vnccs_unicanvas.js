@@ -2557,7 +2557,22 @@ class UniCanvasWidget {
     window.addEventListener("pointermove", (e) => this.onPointerMove(e), { signal: eventSignal });
     window.addEventListener("pointerup", (e) => this.onPointerUp(e), { signal: eventSignal });
     this.canvas.addEventListener("pointercancel", (e) => this.onPointerUp(e), { signal: eventSignal });
-    this._flushStateBeforeUnload = () => this.flushStateUpload(true);
+    this._flushStateBeforeUnload = (event) => {
+      let unsaved = Boolean(this.pendingStateUpload || this.stateUploadsPending || this.settingsSyncTimer || this.fullSyncTimer
+        || this._pendingStateCacheId || this._stateSaveFailed || this.isPointerDown || this.transformDraft || this.poseEditor?.isGestureActive?.());
+      if (unsaved && this._protectedStateJSON && !this._isRestoring && !this._stateRestoreFailed) {
+        try {
+          const state = this.buildSerializedState(true);
+          unsaved = JSON.stringify({ state_id: state.state_id, state }) !== this._protectedStateJSON;
+        }
+        catch (_) { /* A failed capture must keep the exit warning. */ }
+      }
+      if (event?.type === "beforeunload" && unsaved && !this._isRestoring && !this._stateRestoreFailed && !this._disposed) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+      void this.flushStateUpload(true);
+    };
     window.addEventListener("pagehide", this._flushStateBeforeUnload, { signal: eventSignal });
     window.addEventListener("beforeunload", this._flushStateBeforeUnload, { signal: eventSignal });
     this.container.addEventListener("keydown", (e) => {
@@ -7251,7 +7266,7 @@ class UniCanvasWidget {
     return out;
   }
 
-  makeOutpaintMaskCanvas(userMaskCanvas, inferenceSize = this.getInferenceSize()) {
+  makeOutpaintMaskCanvas(userMaskCanvas, inferenceSize = this.getInferenceSize(), settings = this.settings) {
     const out = document.createElement("canvas");
     out.width = Math.max(64, Math.round(inferenceSize.width));
     out.height = Math.max(64, Math.round(inferenceSize.height));
@@ -7275,8 +7290,8 @@ class UniCanvasWidget {
 
     const overlap = Math.max(
       32,
-      Math.round((Number(this.settings.mask_blur) || 0) * 2),
-      Math.round((Number(this.settings.canvas_coherence_edge_size) || 0) * 2)
+      Math.round((Number(settings.mask_blur) || 0) * 2),
+      Math.round((Number(settings.canvas_coherence_edge_size) || 0) * 2)
     );
     if (overlap > 0) {
       const transparent = new Uint8Array(out.width * out.height);
@@ -7377,16 +7392,20 @@ class UniCanvasWidget {
     this.syncInteractionLock();
     try {
       const request = this.captureGenerationSettings();
-      await this.stateUploadPromise;
-      await this._assetsReady;
+      const preparation = { cancelled: false };
+      preparation.stopped = new Promise(resolve => {
+        this._cancelGenerationPreparation = () => { preparation.cancelled = true; resolve(); };
+      });
+      await Promise.race([Promise.all([this.stateUploadPromise, this._assetsReady]), preparation.stopped]);
       if (!this._disposed && !this._stopRequested) {
         this._generationLocked = true;
         this._generationPreparing = false;
-        await this.runGeneration(request);
+        await this.runGeneration({ ...request, preparation });
       }
     } catch (error) {
       this.setStatus(`Generation failed: ${error.message || error}`, true);
     } finally {
+      this._cancelGenerationPreparation = null;
       this._generationPreparing = false;
       this._generationLocked = false;
       this.drawInProgress = false;
@@ -7395,8 +7414,9 @@ class UniCanvasWidget {
     }
   }
 
-  async runGeneration({ settings: requestSettings, loader, modelBase, inferenceSize, config } = this.captureGenerationSettings()) {
+  async runGeneration({ settings: requestSettings, loader, modelBase, inferenceSize, config, preparation } = this.captureGenerationSettings()) {
     if (this.drawInProgress) return;
+    const prepare = work => preparation ? Promise.race([work, preparation.stopped]) : work;
     const requestDocumentRevision = this._documentRevision || 0;
     const poseLayer = poseGenerationLayer(this);
     let poseRequest = null;
@@ -7423,7 +7443,8 @@ class UniCanvasWidget {
       this.drawBtn.disabled = true;
       try {
         this.poseEditor ||= new UniCanvasPoseEditor(this);
-        poseRequest = await this.poseEditor.generation(poseLayer, inferenceSize, requestSettings.positive);
+        poseRequest = await prepare(this.poseEditor.generation(poseLayer, inferenceSize, requestSettings.positive, preparation));
+        if (preparation?.cancelled || this._stopRequested) return;
         if (this._disposed || preparationDocument !== this.panorama || requestDocumentRevision !== (this._documentRevision || 0) || preparationKey() !== beforePreparation) throw new Error("The canvas changed while preparing the pose. Generate again.");
       } catch (error) { this.setStatus(`Pose generation: ${error.message || error}`, true); return; }
       finally { this.drawInProgress = false; this.drawBtn.disabled = false; }
@@ -7442,7 +7463,8 @@ class UniCanvasWidget {
         this.drawInProgress = true;
         this.drawBtn.disabled = true;
         try {
-          const refs = await loadConfigReferences(resolved.references);
+          const refs = await prepare(loadConfigReferences(resolved.references));
+          if (preparation?.cancelled || this._stopRequested) return;
           configOverrides = { ...resolved.settings, edit_reference_images: refs, edit_use_layers_as_reference: true };
         } catch (err) {
           this.setStatus(`VNCSS Config references: ${err.message || err} - queueing the workflow for this draw.`);
@@ -7484,7 +7506,7 @@ class UniCanvasWidget {
       forceOpaqueContentAlpha: mode === "outpaint" && modelBase !== "qwen_image21",
     });
     const userMaskCanvas = this.makeExportCanvas("mask", inferenceSize);
-    const maskCanvas = mode === "outpaint" ? this.makeOutpaintMaskCanvas(userMaskCanvas, inferenceSize) : userMaskCanvas;
+    const maskCanvas = mode === "outpaint" ? this.makeOutpaintMaskCanvas(userMaskCanvas, inferenceSize, requestSettings) : userMaskCanvas;
     const batchSize = Math.max(1, Math.min(99, Math.round(Number(requestSettings.batch_size) || 1)));
     requestSettings.batch_size = batchSize;
     this.setStatus(`Generating ${mode} ${inferenceSize.width}×${inferenceSize.height}${batchSize > 1 ? ` ×${batchSize}` : ""}...`);
@@ -7580,7 +7602,12 @@ class UniCanvasWidget {
   // Stop only this draw; queued graph prompts are removed by their own prompt id.
   async stopDraw() {
     if ((!this.drawInProgress && !this._generationLocked && !this._generationPreparing) || this._stopRequested) return;
-    if (!this._drawDebugId) { this._stopRequested = true; this.setStatus("Stopping request preparation…"); return; }
+    if (!this._drawDebugId) {
+      this._stopRequested = true;
+      this._cancelGenerationPreparation?.();
+      this.setStatus("Stopping request preparation…");
+      return;
+    }
     this._stopRequested = true;
     this.stopBtn.disabled = true;
     this.setStatus("Stopping...");
@@ -7706,7 +7733,7 @@ class UniCanvasWidget {
         this.downloadBlob(new Blob([buffer], { type: "application/octet-stream" }), "unicanvas-panorama.psd");
         this.setStatus(`Panorama PSD exported: ${width} × ${height}`); return;
       }
-      const rasterLayers = this.layers.filter((layer) => isImageLayer(layer) && this.getCanvasAlphaBounds(layer.canvas));
+      const rasterLayers = this.layers.filter((layer) => isImageLayer(layer) && this.getLayerWorldBounds(layer));
       if (!rasterLayers.length) {
         this.setStatus("No raster layers to export", true);
         return;
@@ -7720,19 +7747,18 @@ class UniCanvasWidget {
       }
       const psdLayers = [...rasterLayers].reverse();
       const children = psdLayers.map((layer, index) => {
-        const crop = this.getCanvasAlphaBounds(layer.canvas);
+        const rect = this.getLayerWorldBounds(layer);
         const canvas = document.createElement("canvas");
-        canvas.width = crop.width;
-        canvas.height = crop.height;
-        this.configureImageContext(canvas.getContext("2d")).drawImage(layer.canvas, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
-        const worldX = this.origin.x + crop.x;
-        const worldY = this.origin.y + crop.y;
+        canvas.width = rect.width;
+        canvas.height = rect.height;
+        this.drawRasterLayerToWorldRect(this.configureImageContext(canvas.getContext("2d")), layer, rect,
+          { x: 0, y: 0, width: canvas.width, height: canvas.height });
         return {
           name: layer.name || `Layer ${index + 1}`,
-          left: Math.floor(worldX - visibleRect.x),
-          top: Math.floor(worldY - visibleRect.y),
-          right: Math.floor(worldX - visibleRect.x + canvas.width),
-          bottom: Math.floor(worldY - visibleRect.y + canvas.height),
+          left: Math.floor(rect.x - visibleRect.x),
+          top: Math.floor(rect.y - visibleRect.y),
+          right: Math.floor(rect.x - visibleRect.x + canvas.width),
+          bottom: Math.floor(rect.y - visibleRect.y + canvas.height),
           opacity: Math.max(0, Math.min(1, layer.opacity)),
           hidden: layer.visible === false,
           blendMode: compositeBlendModeToPsd(layer.blendMode),
@@ -7757,15 +7783,7 @@ class UniCanvasWidget {
   }
 
   getLayersVisibleWorldRect(layers) {
-    const rects = layers.map((layer) => {
-      const crop = this.getCanvasAlphaBounds(layer.canvas);
-      return {
-        x: this.origin.x + crop.x,
-        y: this.origin.y + crop.y,
-        width: crop.width,
-        height: crop.height,
-      };
-    });
+    const rects = layers.map((layer) => this.getLayerWorldBounds(layer));
     const left = Math.floor(Math.min(...rects.map((rect) => rect.x)));
     const top = Math.floor(Math.min(...rects.map((rect) => rect.y)));
     const right = Math.ceil(Math.max(...rects.map((rect) => rect.x + rect.width)));
@@ -7812,14 +7830,21 @@ class UniCanvasWidget {
   startDrawProgressPolling(drawId) {
     if (this._disposed) return;
     this.stopDrawProgressPolling();
+    const revision = this._drawProgressRevision;
+    let pending = false;
     const poll = async () => {
+      if (pending || this._disposed || revision !== this._drawProgressRevision) return;
+      pending = true;
       try {
         const res = await fetch(`/vnccs/unicanvas/progress/${encodeURIComponent(drawId)}?t=${Date.now()}`);
         if (!res.ok) return;
         const progress = await res.json();
+        if (this._disposed || revision !== this._drawProgressRevision) return;
         this.updateGenerationProgress(progress, true);
       } catch (_err) {
         // Keep the draw running; progress polling is best-effort.
+      } finally {
+        pending = false;
       }
     };
     poll();
@@ -7827,6 +7852,7 @@ class UniCanvasWidget {
   }
 
   stopDrawProgressPolling() {
+    this._drawProgressRevision = (this._drawProgressRevision || 0) + 1;
     if (this.drawProgressTimer) {
       window.clearInterval(this.drawProgressTimer);
       this.drawProgressTimer = null;
@@ -8655,6 +8681,8 @@ class UniCanvasWidget {
     if (deduplicate && payload === this.lastUploadedStateJSON) return true;
     const backup = this.saveLocalStateBackup(state);
     if (revision === null) revision = this.stateUploadRevision = Math.max(Date.now(), (this.stateUploadRevision || 0) + 1);
+    const loadRevision = this._stateLoadRevision;
+    if (backup && revision === this.stateUploadRevision) this._protectedStateJSON = payload;
     const body = JSON.stringify({ state_id: stateId, state, revision,
       ...(this.standalone || state.canvas_id ? { base_revision: this.stateCacheRevision ?? -1 } : {}),
       ...(state.canvas_id ? { canvas_base_state_id: this._canvasPublishedStateId || stateId } : {}) });
@@ -8669,6 +8697,7 @@ class UniCanvasWidget {
       if (!res.ok) {
         if (res.status === 409 && (this.standalone || state.canvas_id)) {
           this._stateUploadConflict = revision;
+          if (revision === this.stateUploadRevision && loadRevision === this._stateLoadRevision) this._stateSaveFailed = !backup;
           return false;
         }
         const data = await res.json().catch(() => ({}));
@@ -8678,11 +8707,16 @@ class UniCanvasWidget {
       if (stateId === this.getStateCacheId()) this.stateCacheRevision = revision;
       if (state.canvas_id && state.canvas_id === this.canvasId) this._canvasPublishedStateId = stateId;
       this.confirmLocalStateBackup(backup);
-      if (revision === this.stateUploadRevision) this.lastUploadedStateJSON = payload;
+      if (revision === this.stateUploadRevision && loadRevision === this._stateLoadRevision) {
+        this.lastUploadedStateJSON = payload;
+        this._stateSaveFailed = false;
+        this._protectedStateJSON = payload;
+      }
       return true;
     } catch (err) {
       console.warn("[VNCCS UniCanvas] State cache upload failed", err);
-      if (revision === this.stateUploadRevision) {
+      if (revision === this.stateUploadRevision && loadRevision === this._stateLoadRevision) {
+        this._stateSaveFailed = !backup;
         this.setStatus(`State cache failed: ${err.message || err}`, true);
       }
       return false;
@@ -8902,6 +8936,7 @@ class UniCanvasWidget {
       if (this._disposed || loadRevision !== this._stateLoadRevision) return;
       if (restored) {
         this._stateRestoreFailed = false;
+        this._stateSaveFailed = false;
         clearTimeout(this.deferredCanvasCommitTimer);
         this.deferredCanvasCommitTimer = null;
         this.undoStack = []; this.redoStack = [];

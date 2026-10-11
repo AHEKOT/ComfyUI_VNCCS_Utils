@@ -204,6 +204,48 @@ test("failed restoration never fabricates or persists defaults over saved data",
     assert.equal(local.values.size, 0);
 });
 
+test("a constructor placeholder cannot replace damaged authored metadata when disk recovery is unavailable", async t => {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    t.after(() => { if (previous) Object.defineProperty(globalThis, "localStorage", previous); else delete globalThis.localStorage; });
+    for (const raw of ["{}", " {\n } "]) {
+        const local = memory(), properties = documentNode(editedState()).properties;
+        const damaged = '{"parts":[{"text":"Latest authored work"}]';
+        properties.promptDesigner.state = damaged; properties.promptDesigner.dirty = true;
+        const original = JSON.stringify(properties), hidden = { name: "node_state", value: raw };
+        Object.defineProperty(globalThis, "localStorage", { configurable: true, value: local });
+        let writes = 0;
+        const widget = Object.create(PromptDesignerWidget.prototype);
+        Object.assign(widget, {
+            node: { properties, widgets: [hidden] }, api: { fetchApi: async (_, options) => {
+                if (options?.method === "PUT") writes++;
+                return reply({ error: "Disk unavailable" }, 500);
+            } },
+            copy: {}, container: {}, revision: 0, setStatus(message) { this.message = message; }, render() {},
+        });
+        await widget.loadFromNode();
+        assert.equal(widget.container.inert, true);
+        assert.ok(widget.restoreError);
+        assert.match(widget.message, /Could not restore state.*Existing data was retained/);
+        assert.equal(widget.persist(), undefined);
+        assert.throws(() => widget.prepareForQueue(), /restoration is not complete/);
+        assert.equal(JSON.stringify(properties), original);
+        assert.equal(hidden.value, raw);
+        assert.equal(local.values.size, 0);
+        assert.equal(writes, 0);
+        widget.documentStorage.dispose();
+    }
+});
+
+test("damaged metadata still restores an authored workflow copy or a validated disk snapshot", async () => {
+    const changed = editedState(), node = documentNode(changed);
+    node.properties.promptDesigner.state = "damaged authored metadata";
+    const offline = new DocumentStorage(node, { fetchApi: async () => reply({ error: "offline" }, 500) }, () => {}, memory());
+    assert.deepEqual(await offline.restore(JSON.stringify(changed)), changed);
+    const recovered = new DocumentStorage(node, { fetchApi: async () => reply({ revision: 2, state: changed }) }, () => {}, memory());
+    assert.deepEqual(await recovered.restore("{}"), changed);
+    assert.equal(recovered.revision, 2);
+});
+
 test("concurrent edits fork the document and preserve both recovery keys", async t => {
     const local = memory(), statuses = [], requests = [];
     let conflict = true;

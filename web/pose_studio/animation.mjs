@@ -1747,6 +1747,7 @@ export class PoseAnimationTimeline {
                     const value = Number(input.value);
                     const valid = input.value !== "" && Number.isFinite(value) && value > 0;
                     if (!valid && (type === "input" || !this._timingBaseline)) return;
+                    this.stopPlayback();
                     if (valid) {
                         if (!this._timingBaseline) {
                             this._timingBaseline = cloneJSON(this.state);
@@ -2348,6 +2349,7 @@ export class PoseAnimationTimeline {
     }
 
     setFrame(frameValue, options = {}) {
+        if (!options.playback) this.stopPlayback();
         const frame = clamp(Math.round(finiteNumber(frameValue)), 0, this.state.frameCount - 1);
         if (frame === this.state.currentFrame && !options.force) return;
         this.state.currentFrame = frame;

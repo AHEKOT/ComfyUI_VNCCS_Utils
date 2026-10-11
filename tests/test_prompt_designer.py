@@ -100,6 +100,39 @@ def test_cycle_replay_work_is_bounded():
         resolve_prompt(state("{@6$$|a|b|c|d|e|f|g|h|i|j|k|l}", cycleIndex=100_000))
 
 
+@pytest.mark.parametrize("index", [-1, 0, 1, 2**53 - 1])
+@pytest.mark.parametrize("location", ["main", "block", "variable"])
+def test_impossible_cyclic_duplicate_choices_fail_before_entering_the_library_sampler(index, location, monkeypatch):
+    from dynamicprompts.samplers.cycle import CyclicalSampler
+    def unexpected_sampler(*args):
+        pytest.fail("An impossible cyclic choice must be rejected before its non-yielding sampler runs.")
+    monkeypatch.setattr(CyclicalSampler, "_get_variant", unexpected_sampler)
+    source = "{@2$$a|a}"
+    if location == "block":
+        raw = state(blocks=[{"id": "a", "name": "Duplicate choices", "text": "{~2$$a|a}", "mode": "cycle"}],
+                    parts=[{"blockId": "a"}], cycleIndex=index)
+    else:
+        raw = state(source if location == "main" else "${value=!" + source + "}${value}", cycleIndex=index)
+    with pytest.raises(ValueError, match="distinct options"):
+        resolve_prompt(raw)
+    assert resolve_prompt(state("{2$$a|a}", cycleIndex=index))["prompt"] == "a,a"
+
+
+def test_cycle_period_never_computes_factorials_for_impossible_duplicate_combinations(monkeypatch):
+    import math
+    from dynamicprompts.parser.parse import parse
+    from nodes.prompt_designer import bounded_sampling_context, cycle_period
+    original, sizes = math.factorial, []
+    def factorial(size):
+        sizes.append(size)
+        assert size <= 1, "Only one distinct option can be selected from this duplicate-only range."
+        return original(size)
+    monkeypatch.setattr(math, "factorial", factorial)
+    command = parse("{@1-128$$" + "|".join(["a"] * 128) + "}")
+    assert cycle_period(command, bounded_sampling_context(), 1) == 2
+    assert sizes == [1]
+
+
 @pytest.mark.parametrize("newline", ["\n", "\r\n"])
 def test_line_breaks_survive_linked_blocks_preview_and_execution(newline):
     raw = state(parts=[{"text": f"first,{newline}{newline}"}, {"blockId": "a"},
