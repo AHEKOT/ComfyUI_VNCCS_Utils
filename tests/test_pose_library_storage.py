@@ -36,6 +36,39 @@ def test_repository_counts_do_not_read_preview_contents(store, monkeypatch):
     assert (info["asset_count"], info["pose_count"], info["animation_count"]) == (1, 0, 1)
 
 
+@pytest.mark.parametrize("tags", [42, True, {"broken": "metadata"}])
+def test_malformed_asset_tags_do_not_hide_the_entire_library(store, tags):
+    target = Path(library.get_pose_path(library.LOCAL_USER_REPOSITORY, "Standing", "Walk"))
+    target.parent.mkdir(parents=True)
+    raw = json.dumps({"bones": {}, "_library": {"tags": tags}})
+    target.write_text(raw)
+    records = library.scan_poses()
+    assert [record["name"] for record in records] == ["Walk"]
+    assert records[0]["tags"] == []
+    assert target.read_text() == raw
+
+
+@pytest.mark.parametrize("tags", [42, True, {"broken": "metadata"}])
+def test_save_rejects_invalid_tags_before_creating_library_files(store, tags):
+    result = library.save_pose({"name": "Walk", "pose": {"bones": {}}, "tags": tags})
+    assert result[1] == 400
+    assert "tags" in result[0]["error"]
+    assert not list(store.iterdir())
+
+
+def test_preview_updates_within_one_second_get_distinct_cache_versions(store):
+    target = Path(library.get_pose_path(library.LOCAL_USER_REPOSITORY, "Standing", "Walk"))
+    target.parent.mkdir(parents=True)
+    target.write_text('{}')
+    preview = target.with_suffix(".png")
+    preview.write_bytes(b"first preview")
+    library.os.utime(preview, ns=(1_700_000_000_100_000_000,) * 2)
+    first = library.scan_poses()[0]["preview_mtime"]
+    preview.write_bytes(b"updated preview")
+    library.os.utime(preview, ns=(1_700_000_000_200_000_000,) * 2)
+    assert library.scan_poses()[0]["preview_mtime"] != first
+
+
 def test_repository_counts_run_off_the_http_event_loop(store, monkeypatch):
     threads = []
     main_thread = threading.get_ident()

@@ -44,7 +44,9 @@ export async function ensureCanvasDocument(widget) {
     }
     widget.syncToNode();
   }
-  return (await canvasRequest(`/${widget.canvasId}`)).document;
+  const { document } = await canvasRequest(`/${widget.canvasId}`);
+  if (widget._disposed || loadRevision !== widget._stateLoadRevision) throw new Error("The canvas editor changed while saving.");
+  return document;
 }
 
 async function leaveStaging(widget) {
@@ -123,7 +125,10 @@ export async function applyCanvasDocument(widget, metadata) {
     widget.syncActiveLayerControls?.();
     widget.requestRender?.();
   } catch (error) {
-    if (!widget._disposed && restoreRevision === widget._stateLoadRevision) Object.assign(widget, identity);
+    if (!widget._disposed && restoreRevision === widget._stateLoadRevision) {
+      Object.assign(widget, identity);
+      widget.setStatus(`Canvas manager: ${error.message || error}`, true);
+    }
     throw error;
   } finally {
     if (restoreRevision === widget._stateLoadRevision) widget._isRestoring = false;
@@ -132,28 +137,39 @@ export async function applyCanvasDocument(widget, metadata) {
   widget.persistCanvasPointer?.();
   if (widget.standalone) {
     try { await canvasRequest("/active", "POST", { canvas_id: metadata.canvas_id }); }
-    catch (error) { widget.setStatus(`Opened canvas: ${metadata.name}. Server selection could not be remembered: ${error.message}`, true); return true; }
+    catch (error) {
+      if (widget._disposed || restoreRevision !== widget._stateLoadRevision) return false;
+      widget.setStatus(`Opened canvas: ${metadata.name}. Server selection could not be remembered: ${error.message}`, true);
+      return true;
+    }
   }
+  if (widget._disposed || restoreRevision !== widget._stateLoadRevision) return false;
   widget.setStatus(`Opened canvas: ${metadata.name}`);
   return true;
 }
 
 async function operation(widget, action) {
   if (!available(widget)) return false;
+  const loadRevision = widget._stateLoadRevision;
   widget._canvasOperation = true;
   widget.syncInteractionLock?.();
   try { return await action(); }
-  catch (error) { widget.setStatus(`Canvas manager: ${error.message || error}`, true); return false; }
+  catch (error) {
+    if (!widget._disposed && loadRevision === widget._stateLoadRevision) widget.setStatus(`Canvas manager: ${error.message || error}`, true);
+    return false;
+  }
   finally { widget._canvasOperation = false; widget.syncInteractionLock?.(); }
 }
 
 export async function openCanvasDocument(widget, metadata) {
   if (!available(widget) || (metadata.canvas_id === widget.canvasId && metadata.state_id === widget.getStateCacheId())) return false;
-  if (!await leaveStaging(widget) || !available(widget)) return false;
+  const loadRevision = widget._stateLoadRevision;
+  if (!await leaveStaging(widget) || !available(widget) || loadRevision !== widget._stateLoadRevision) return false;
   return operation(widget, async () => {
     widget.finishPoseEdit?.(true);
     if (!widget._stateRestoreFailed) await ensureCanvasDocument(widget);
     const latest = (await canvasRequest(`/${metadata.canvas_id}`)).document;
+    if (widget._disposed || loadRevision !== widget._stateLoadRevision) return false;
     return applyCanvasDocument(widget, latest);
   });
 }
@@ -171,29 +187,36 @@ async function createSavedCanvas(widget, name) {
 
 export async function createCanvasDocument(widget) {
   if (!available(widget)) return false;
+  const loadRevision = widget._stateLoadRevision;
   const name = await widget.promptInWidget("New canvas", "Canvas name", "Untitled canvas");
-  if (name === null || !available(widget) || !await leaveStaging(widget) || !available(widget)) return false;
+  if (name === null || !available(widget) || loadRevision !== widget._stateLoadRevision
+      || !await leaveStaging(widget) || !available(widget) || loadRevision !== widget._stateLoadRevision) return false;
   return operation(widget, async () => {
     widget.finishPoseEdit?.(true);
     if (!widget._stateRestoreFailed) await ensureCanvasDocument(widget);
-    return applyCanvasDocument(widget, await createSavedCanvas(widget, name));
+    const created = await createSavedCanvas(widget, name);
+    if (widget._disposed || loadRevision !== widget._stateLoadRevision) return false;
+    return applyCanvasDocument(widget, created);
   });
 }
 
 export async function deleteCanvasDocument(widget, metadata) {
   if (!available(widget)) return false;
+  const loadRevision = widget._stateLoadRevision;
   const confirmed = await widget.confirmInWidget("Delete canvas?",
     "Remove this canvas from the manager? Saved workflow snapshots remain available.", "Delete canvas");
-  if (!confirmed || !available(widget)) return false;
-  if (metadata.canvas_id === widget.canvasId && (!await leaveStaging(widget) || !available(widget))) return false;
+  if (!confirmed || !available(widget) || loadRevision !== widget._stateLoadRevision) return false;
+  if (metadata.canvas_id === widget.canvasId && (!await leaveStaging(widget) || !available(widget) || loadRevision !== widget._stateLoadRevision)) return false;
   return operation(widget, async () => {
     if (metadata.canvas_id === widget.canvasId) widget.finishPoseEdit?.(true);
     const current = await ensureCanvasDocument(widget);
     const target = metadata.canvas_id === widget.canvasId ? current : metadata;
     if (target.canvas_id === widget.canvasId) {
       const { documents } = await canvasRequest();
+      if (widget._disposed || loadRevision !== widget._stateLoadRevision) return false;
       const replacement = documents.find(item => item.canvas_id !== target.canvas_id)
         || await createSavedCanvas(widget, "Untitled canvas");
+      if (widget._disposed || loadRevision !== widget._stateLoadRevision) return false;
       if (!await applyCanvasDocument(widget, replacement)) return false;
     }
     await canvasRequest(`/${target.canvas_id}`, "DELETE", { expected_state_id: target.state_id });
@@ -260,9 +283,11 @@ export async function openCanvasManager(widget) {
         });
         open.disabled = current;
         const rename = widget._button("Rename", "vnccs-uc-btn", async () => {
+          const loadRevision = widget._stateLoadRevision;
           const name = await widget.promptInWidget("Rename canvas", "Canvas name", item.name);
-          if (name === null || !available(widget)) return;
+          if (name === null || !available(widget) || loadRevision !== widget._stateLoadRevision) return;
           await operation(widget, async () => canvasRequest(`/${item.canvas_id}`, "PATCH", { name, expected_state_id: item.state_id }));
+          if (widget._disposed || loadRevision !== widget._stateLoadRevision) return;
           await reload();
         });
         const remove = widget._button("Delete", "vnccs-uc-btn danger", async () => {

@@ -399,7 +399,7 @@ test("Pose Manager RUN uploads the visible cards without rendering again", () =>
     const uploadStart = poseStudioSource.indexOf("const uploadPoseStudioSync = async");
     const uploadEnd = poseStudioSource.indexOf("\n        const reportPoseStudioSyncFailure", uploadStart);
     const uploadMethod = poseStudioSource.slice(uploadStart, uploadEnd);
-    assert.match(uploadMethod, /const capturedImages = node\.studioWidget\._executionCaptureSnapshot/);
+    assert.match(uploadMethod, /const capturedImages = \(widget\._executionCaptureSnapshot/);
     assert.match(uploadMethod, /captured_images: capturedImages/);
     assert.match(uploadMethod, /lighting_prompts: capturedLightingPrompts/);
 });

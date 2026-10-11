@@ -6647,11 +6647,13 @@ class PoseStudioWidget {
 
     async deleteCharacter(id) {
         if (this.characters.length <= 1 || this._switchingCharacter) return false;
+        const characters = this.characters;
         const index = this.characters.findIndex(character => character.id === id);
         if (index < 0) return false;
         const deletingActive = this.activeCharacterId === id;
         const fallback = this.characters[index === 0 ? 1 : index - 1];
-        if (deletingActive && fallback) await this.selectCharacter(fallback.id);
+        if (deletingActive && fallback && !await this.selectCharacter(fallback.id)) return false;
+        if (this._disposed || characters !== this.characters) return false;
         const currentIndex = this.characters.findIndex(character => character.id === id);
         if (currentIndex >= 0) this.characters.splice(currentIndex, 1);
         this.viewer?.removePassiveCharacter?.(id);
@@ -10136,7 +10138,12 @@ class PoseStudioWidget {
             return false;
         }
 
+        const token = this._libraryLoadToken;
+        const characterId = this.activeCharacterId;
+        const tab = this.activeTab;
         const fitData = await this.prepareSAM3DRenderFit(poseData);
+        if (this._disposed || token !== this._libraryLoadToken
+            || characterId !== this.activeCharacterId || tab !== this.activeTab) return false;
         const poseForAnalysis = fitData?.poseData || poseData;
         const originalPose = this.viewer.getPose();
         const restoredPose = JSON.parse(JSON.stringify(originalPose || {}));
@@ -11626,15 +11633,23 @@ class PoseStudioWidget {
     }
 
     async refreshLibrary(forceFull = false) {
+        if (this._disposed) return;
+        const token = this._libraryRefreshToken = (this._libraryRefreshToken || 0) + 1;
         try {
             const res = await fetch(`/vnccs/pose_library/list?full=${forceFull === true}`);
             const data = await res.json();
-            this.libraryPoses = data.poses || []; // Cache for random selection
+            if (this._disposed || token !== this._libraryRefreshToken) return;
+            if (!res.ok || !Array.isArray(data?.poses)) {
+                throw new Error(data?.error || "Library items could not be loaded.");
+            }
+            this.libraryPoses = data.poses; // Cache for random selection
             this.renderLibrary();
         } catch (err) {
+            if (this._disposed || token !== this._libraryRefreshToken) return;
             console.error("Failed to load library:", err);
             if (this.libraryGrid) {
-                this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">Failed to load library.</div>';
+                if (this.libraryPoses?.length) this.showMessage(`Failed to load library: ${err?.message || err}`, true);
+                else this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">Failed to load library.</div>';
             }
         }
     }
@@ -11705,18 +11720,25 @@ class PoseStudioWidget {
     }
 
     async refreshPoseRepositories(forceRepoId = "") {
-        if (!this.librarySettingsEl) return;
-        this.librarySettingsEl.innerHTML = '<div class="vnccs-ps-library-empty">Loading repositories...</div>';
+        if (this._disposed || !this.librarySettingsEl) return;
+        const panel = this.librarySettingsEl;
+        const token = this._repositoryRefreshToken = (this._repositoryRefreshToken || 0) + 1;
+        const isCurrent = () => !this._disposed && panel === this.librarySettingsEl && token === this._repositoryRefreshToken;
+        panel.innerHTML = '<div class="vnccs-ps-library-empty">Loading repositories...</div>';
         try {
             const url = '/vnccs/pose_library/repositories';
             const res = await fetch(url);
             const data = await res.json();
+            if (!isCurrent()) return;
+            if (!res.ok || !Array.isArray(data?.repositories)) {
+                throw new Error(data?.error || "Repositories could not be loaded.");
+            }
             this.localPoseRepository = data.local_repository || null;
             this.poseRepositories = data.repositories || [];
             this.renderPoseRepositorySettings();
             if (forceRepoId) await this.refreshSinglePoseRepository(forceRepoId);
         } catch (err) {
-            this.librarySettingsEl.innerHTML = `<div class="vnccs-ps-library-empty">Failed to load repositories.<br>${this.escapeHtml(err?.message || err)}</div>`;
+            if (isCurrent()) panel.innerHTML = `<div class="vnccs-ps-library-empty">Failed to load repositories.<br>${this.escapeHtml(err?.message || err)}</div>`;
         }
     }
 
@@ -16011,20 +16033,38 @@ app.registerExtension({
             }
         };
 
+        const poseStudioSyncGuard = (node) => {
+            const widget = node.studioWidget;
+            const restoreToken = widget._poseDataRestoreToken;
+            const loadToken = widget._libraryLoadToken;
+            const characterId = widget.activeCharacterId;
+            const tab = widget.activeTab;
+            return () => {
+                if (widget._disposed || node.studioWidget !== widget
+                    || restoreToken !== widget._poseDataRestoreToken || loadToken !== widget._libraryLoadToken
+                    || characterId !== widget.activeCharacterId || tab !== widget.activeTab) {
+                    throw new Error("Pose Studio scene changed while execution was preparing. Run the workflow again.");
+                }
+            };
+        };
+
         const uploadPoseStudioSync = async (node, nodeId, syncToken = "") => {
             const poseWidget = node.widgets.find(w => w.name === "pose_data");
             if (!poseWidget) return;
+            const widget = node.studioWidget;
+            const assertCurrent = poseStudioSyncGuard(node);
             const widgetData = JSON.parse(poseWidget.value);
-            const animationCacheReady = await node.studioWidget.flushAnimationCacheUpload();
             const syncFileId = syncToken ? `${nodeId}_${syncToken}` : nodeId;
-            const capturedImages = node.studioWidget._executionCaptureSnapshot
-                || node.studioWidget.poseCaptures
-                || [];
-            const capturedLightingPrompts = node.studioWidget._executionLightingPromptSnapshot
-                || node.studioWidget.lightingPrompts
-                || [];
-            node.studioWidget._executionCaptureSnapshot = null;
-            node.studioWidget._executionLightingPromptSnapshot = null;
+            const capturedImages = (widget._executionCaptureSnapshot
+                || widget.poseCaptures
+                || []).slice();
+            const capturedLightingPrompts = (widget._executionLightingPromptSnapshot
+                || widget.lightingPrompts
+                || []).slice();
+            widget._executionCaptureSnapshot = null;
+            widget._executionLightingPromptSnapshot = null;
+            const animationCacheReady = await widget.flushAnimationCacheUpload();
+            assertCurrent();
             const payload = {
                 ...widgetData,
                 node_id: syncFileId,
@@ -16034,7 +16074,7 @@ app.registerExtension({
                 // state once so execution still cannot lose the animation.
                 animation: animationCacheReady
                     ? widgetData.animation
-                    : node.studioWidget.buildSceneAnimationCachePayload(),
+                    : widget.buildSceneAnimationCachePayload(),
                 captured_images: capturedImages,
                 lighting_prompts: capturedLightingPrompts
             };
@@ -16079,27 +16119,33 @@ app.registerExtension({
             const node = app.graph.getNodeById(nodeId);
             if (node && node.studioWidget) {
                 try {
-                    if (node.studioWidget._animationCacheRestorePending) {
-                        const restored = await node.studioWidget._animationCacheRestorePromise;
+                    const widget = node.studioWidget;
+                    const assertCurrent = poseStudioSyncGuard(node);
+                    if (widget._animationCacheRestorePending) {
+                        const restored = await widget._animationCacheRestorePromise;
+                        assertCurrent();
                         if (!restored) throw new Error("Animation cache could not be restored before execution.");
                     }
                     // Safe mode: ensure viewer is initialized
-                    if (!node.studioWidget.viewer || !node.studioWidget.viewer.isInitialized()) {
-                        await node.studioWidget.loadModel();
+                    if (!widget.viewer || !widget.viewer.isInitialized()) {
+                        await widget.loadModel();
+                        assertCurrent();
                     }
-                    await node.studioWidget.ensureDebugLibraryReady();
+                    await widget.ensureDebugLibraryReady();
+                    assertCurrent();
 
                     // Update lights and state before capture
-                    if (node.studioWidget.viewer) {
-                        node.studioWidget.viewer.updateLights(
-                            node.studioWidget.exportParams.keepOriginalLighting
+                    if (widget.viewer) {
+                        widget.viewer.updateLights(
+                            widget.exportParams.keepOriginalLighting
                                 ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
-                                : node.studioWidget.lightParams,
+                                : widget.lightParams,
                         );
                     }
-                    await waitForPoseStudioSyncIdle(node.studioWidget);
-                    node.studioWidget.applyEditorMode();
-                    node.studioWidget.syncToNode(true, {
+                    await waitForPoseStudioSyncIdle(widget);
+                    assertCurrent();
+                    widget.applyEditorMode();
+                    widget.syncToNode(true, {
                         cameraPrompt,
                         executionCapture: true,
                     });
@@ -16126,20 +16172,24 @@ app.registerExtension({
 
             try {
                 const widget = node.studioWidget;
+                const assertCurrent = poseStudioSyncGuard(node);
                 widget.applyCapturedImageSize(
                     Number(event.detail.image_width),
                     Number(event.detail.image_height),
                 );
                 if (!widget.viewer || !widget.viewer.isInitialized()) {
                     await widget.loadModel();
+                    assertCurrent();
                 }
 
                 if (applyMode === "manager_proportions") {
                     await widget.applySAM3DProportionsToPoseManager(poseData);
+                    assertCurrent();
                     widget.setSkydomeFromCameraPrompt(cameraPrompt, { force: true });
                     // Committing fitted character state can invalidate the
                     // first card refresh. Wait for the current scene's cards.
                     await waitForPoseStudioSyncIdle(widget);
+                    assertCurrent();
                     widget.syncToNode(true, {
                         cameraPrompt,
                         executionCapture: true,
@@ -16150,6 +16200,7 @@ app.registerExtension({
                 }
 
                 const fitData = await widget.prepareSAM3DRenderFit(poseData);
+                assertCurrent();
                 const poseForImport = fitData?.poseData || poseData;
 
                 const ok = widget.viewer.applySAM3DImport(
@@ -16165,6 +16216,7 @@ app.registerExtension({
                     widget.applySAM3DMeshOverlayFit(fitData.meshData, poseForImport);
                 } else {
                     await widget.refreshSAMMeshOverlay(poseForImport);
+                    assertCurrent();
                 }
                 widget.syncMeshProportionSlidersFromViewer();
                 widget.applySAM3DFrameCameraParams(poseForImport, fitData?.meshData || null);
@@ -16172,7 +16224,9 @@ app.registerExtension({
 
                 widget.updateTabs();
                 await widget.ensureDebugLibraryReady();
+                assertCurrent();
                 await waitForPoseStudioSyncIdle(widget);
+                assertCurrent();
                 widget.commitViewerPoseToCurrentEditor({
                     fullCapture: true,
                     syncOptions: {
@@ -16392,7 +16446,9 @@ app.registerExtension({
             }, 800);
         };
 
+        const onResize = nodeType.prototype.onResize;
         nodeType.prototype.onResize = function (size) {
+            const result = onResize?.apply(this, arguments);
             if (this.studioWidget) {
                 // DON'T set container dimensions - let it fill naturally
                 // Coalesce ComfyUI DOM-widget redraws to one per display frame.
@@ -16403,6 +16459,7 @@ app.registerExtension({
                     this.studioWidget.scheduleMainUIScaleCommit({ force: true });
                 }, 50);
             }
+            return result;
         };
 
         // Save state on configure

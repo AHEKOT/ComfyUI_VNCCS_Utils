@@ -2,22 +2,22 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791668982934";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791668982934";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791705240409";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791705240409";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791668982934";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791668982934";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791668982934";
-import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791668982934";
-import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791668982934";
-import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791668982934";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791668982934";
-import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791668982934";
-import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791668982934";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791668982934";
-import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791668982934";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791668982934";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791705240409";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791705240409";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791705240409";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791705240409";
+import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791705240409";
+import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791705240409";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791705240409";
+import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791705240409";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791705240409";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791705240409";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791705240409";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791705240409";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -49,11 +49,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./unicanvas/transform.mjs?v=1791668982934";
+} from "./unicanvas/transform.mjs?v=1791705240409";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./unicanvas/presets.mjs?v=1791668982934";
+} from "./unicanvas/presets.mjs?v=1791705240409";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -61,10 +61,10 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./unicanvas/modes.mjs?v=1791668982934";
-import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791668982934";
-import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791668982934";
-import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791668982934";
+} from "./unicanvas/modes.mjs?v=1791705240409";
+import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791705240409";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791705240409";
+import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791705240409";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -77,7 +77,7 @@ import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencie
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1791668982934";
+const VNCCS_UNICANVAS_VERSION = "1791705240409";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -127,8 +127,8 @@ const VNCCS_UNICANVAS_VERSION = "1791668982934";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791668982934";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791668982934";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791705240409";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791705240409";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -1684,6 +1684,7 @@ class UniCanvasWidget {
   }
 
   isInteractionBlocked(event) {
+    if (this._isRestoring) return true;
     if (!this.editingBlocked) return false;
     if (this._canvasOperation) return true;
     if (this.stopBtn?.contains(event.target)) return false;
@@ -1992,7 +1993,7 @@ class UniCanvasWidget {
   }
 
   isLayerEditStateCurrent(state, allowLocked = false) {
-    return state && !this._disposed && !this.editingBlocked && (allowLocked || !state.layer.locked) && this.layers.includes(state.layer)
+    return state && !this._disposed && !this._isRestoring && !this.editingBlocked && (allowLocked || !state.layer.locked) && this.layers.includes(state.layer)
       && state.canvas === state.layer.canvas && state.revision === state.layer._pixelRevision
       && state.width === state.layer.canvas.width && state.height === state.layer.canvas.height
       && this.transformDraft?.layerId !== state.layer.id && this.dragStart?.layerId !== state.layer.id
@@ -3972,6 +3973,7 @@ class UniCanvasWidget {
   }
 
   onPointerMove(e) {
+    if (this._disposed || this._isRestoring) return;
     if (this.isPointerDown && e.pointerId !== this.dragStart?.pointerId) return;
     if (this._canvasOperation || (this.editingBlocked && !["pan", "zoom-drag"].includes(this.pointerMode))) return;
     if (this.panorama && this.isPointerDown && this.pointerMode === "panorama") {
@@ -4028,6 +4030,7 @@ class UniCanvasWidget {
   }
 
   onPointerUp(e) {
+    if (this._disposed || this._isRestoring) return;
     if (this._canvasOperation || (this.editingBlocked && !["pan", "zoom-drag"].includes(this.pointerMode))) return;
     if (!this.isPointerDown || (e && e.pointerId !== this.dragStart?.pointerId)) return;
     if (this.panorama && this.pointerMode === "panorama") {
@@ -6745,12 +6748,13 @@ class UniCanvasWidget {
       this.setStatus("There is only one layer");
       return;
     }
+    const documentRevision = this._documentRevision;
     const confirmed = await this.confirmInWidget(
       "Flatten Layers",
       "All visible raster layers will be flattened into one master layer. All other layers will be removed and an empty mask layer will be created. Undo (Ctrl+Z) brings them back.",
       "Flatten"
     );
-    if (!confirmed || this.editingBlocked || this._disposed) return;
+    if (!confirmed || this.editingBlocked || this._disposed || this._isRestoring || documentRevision !== this._documentRevision) return;
     this.flattenLayersToMaster();
   }
 
@@ -6806,7 +6810,7 @@ class UniCanvasWidget {
   }
 
   async importFile(file) {
-    if (this.editingBlocked) return;
+    if (this.editingBlocked || this._isRestoring || this._disposed) return;
     if (!file) return;
     const importRevision = this._importRevision = (this._importRevision || 0) + 1;
     this._panoramaImportClose?.();
@@ -6817,12 +6821,15 @@ class UniCanvasWidget {
     const url = URL.createObjectURL(file);
     let img;
     try { img = await this.loadImage(url); }
-    catch (error) { this.setStatus(`Image import failed: ${error.message || error}`, true); return; }
+    catch (error) {
+      if (!this._disposed && !this._isRestoring && importRevision === this._importRevision) this.setStatus(`Image import failed: ${error.message || error}`, true);
+      return;
+    }
     finally { URL.revokeObjectURL(url); this.fileInput.value = ""; }
-    if (this._disposed || this.editingBlocked || importRevision !== this._importRevision) return;
+    if (this._disposed || this._isRestoring || this.editingBlocked || importRevision !== this._importRevision) return;
     if (!this.panorama && isPanoramaCandidate(img.width, img.height)) {
       const choice = await this.choosePanoramaImport(img);
-      if (choice === "cancel" || this._disposed || this.editingBlocked || importRevision !== this._importRevision) return;
+      if (choice === "cancel" || this._disposed || this._isRestoring || this.editingBlocked || importRevision !== this._importRevision) return;
       if (choice === "panorama") {
         if (this.isStagingActive() || this.sam.busy) { this.setStatus("Finish generation and segmentation before entering panorama mode", true); return; }
         try { await this.importPanorama(img, file.name.replace(/\.[^.]+$/, "")); }
@@ -8640,6 +8647,7 @@ class UniCanvasWidget {
   async _loadFromNode() {
     const loadRevision = this._stateLoadRevision = (this._stateLoadRevision || 0) + 1;
     this._stateRestoreRevision = (this._stateRestoreRevision || 0) + 1;
+    this._importRevision = (this._importRevision || 0) + 1;
     this._pendingStateCacheId = null;
     const widget = this.node.widgets?.find((w) => w.name === "unicanvas_state");
     if (!widget?.value || widget.value === "{}") return;
@@ -8662,6 +8670,7 @@ class UniCanvasWidget {
       const sharedCache = state.state_id && this.node.graph?._nodes?.some(node =>
         node !== this.node && !node.uniCanvasWidget?._disposed && node.uniCanvasWidget?.stateCacheId === state.state_id);
       if (state.state_id) this.stateCacheId = state.state_id;
+      this.stateBackupKey = null;
       this.canvasId = state.canvas_id || null;
       this._canvasPublishedStateId = state.state_id;
       this.stateCacheRevision = -1;
@@ -8686,6 +8695,7 @@ class UniCanvasWidget {
             throw new Error("Cached canvas state is invalid.");
           }
         } catch (err) {
+          if (this._disposed || loadRevision !== this._stateLoadRevision) return;
           cacheRestoreFailed = true;
           console.warn("[VNCCS UniCanvas] State cache restore failed", err);
           this.setStatus("State cache missing; trying local backup", true);
@@ -8723,9 +8733,22 @@ class UniCanvasWidget {
         if (sharedCache) { this.canvasId = null; delete state.canvas_id; }
         this.stateCacheRevision = -1;
       }
-      const restored = await this.applySerializedState(state);
+      const restored = await this.applySerializedState(state, { replaceDocument: true });
       if (this._disposed || loadRevision !== this._stateLoadRevision) return;
-      if (restored) this._stateRestoreFailed = false;
+      if (restored) {
+        this._stateRestoreFailed = false;
+        clearTimeout(this.deferredCanvasCommitTimer);
+        this.deferredCanvasCommitTimer = null;
+        this.undoStack = []; this.redoStack = [];
+        this.stagingItems = []; this.activeStagingIndex = -1;
+        this.transformDraft = this.shapeDraft = this.poseEditSession = this.newPoseLayerId = null;
+        this.isPointerDown = false;
+        this.pointerMode = this.lastPoint = this.dragStart = this.zoomDragStart = null;
+        this.lassoPoints = [];
+        this.lastDrawPointByTool = { brush: null, eraser: null, mask: null };
+        if (this.sam) this.clearSamPrompt();
+        if (this.tool === "pose") this.setTool("move", true);
+      }
       if (restored && forkCache && !this._disposed && loadRevision === this._stateLoadRevision) {
         // Copy pixels before changing the workflow reference, so an immediate save can reopen it.
         if (await this.uploadStatePayload(state) && !this._disposed && loadRevision === this._stateLoadRevision) {
@@ -8835,7 +8858,6 @@ class UniCanvasWidget {
         this.activeLayerId = state.activeLayerId && this.layers.some((layer) => layer.id === state.activeLayerId)
           ? state.activeLayerId
           : this.layers.find((layer) => layer.type !== "mask")?.id || this.layers[0]?.id || null;
-        this.saveLocalStateBackup(state);
       }
       this.syncPromptControls();
       this.updateSnapButton();
@@ -8844,10 +8866,12 @@ class UniCanvasWidget {
       previous.panorama?.dispose();
       return true;
     } catch (err) {
-      if (previous) Object.assign(this, previous);
-      if (!this._disposed && restoreRevision === this._stateRestoreRevision) this._stateRestoreFailed = true;
-      this.updatePanoramaControls();
-      this.setStatus(`Canvas restore failed: ${err.message || err}`, true);
+      if (!this._disposed && restoreRevision === this._stateRestoreRevision) {
+        if (previous) Object.assign(this, previous);
+        this._stateRestoreFailed = true;
+        this.updatePanoramaControls();
+        this.setStatus(`Canvas restore failed: ${err.message || err}`, true);
+      }
       console.warn("[VNCCS UniCanvas] Failed to restore state", err);
     } finally {
       if (restoredPanorama && restoredPanorama !== this.panorama) restoredPanorama.dispose();
@@ -9452,6 +9476,12 @@ app.registerExtension({
     nodeType.prototype.onConfigure = function () {
       onConfigure?.apply(this, arguments);
       clearTimeout(this._vnccsUniCanvasConfigureTimer);
+      if (this.uniCanvasWidget) {
+        this.uniCanvasWidget._isRestoring = true;
+        this.uniCanvasWidget._stateLoadRevision = (this.uniCanvasWidget._stateLoadRevision || 0) + 1;
+        this.uniCanvasWidget._stateRestoreRevision = (this.uniCanvasWidget._stateRestoreRevision || 0) + 1;
+        this.uniCanvasWidget._importRevision = (this.uniCanvasWidget._importRevision || 0) + 1;
+      }
       this._vnccsUniCanvasConfigureTimer = setTimeout(async () => {
         if (!this.uniCanvasWidget) return;
         syncUniCanvasDOMWidgetWidth(this);
@@ -9461,6 +9491,7 @@ app.registerExtension({
         await restore;
         if (!this.uniCanvasWidget || this.uniCanvasWidget._disposed || revision !== this.uniCanvasWidget._stateLoadRevision) return;
         this.uniCanvasWidget._isRestoring = false;
+        this.uniCanvasWidget.updateHistoryButtons();
         this.uniCanvasWidget.renderLayerList();
         this.uniCanvasWidget.resize();
         this.uniCanvasWidget.fitInitialView();

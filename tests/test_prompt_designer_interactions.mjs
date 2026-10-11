@@ -518,6 +518,21 @@ test("source parsing preserves top-level row boundaries and excludes variable br
     assert.equal(blockRows("before {~red|blue} after").wrapped, false);
 });
 
+test("editable rows hide only weight prefixes recognized by Dynamic Prompts", () => {
+    for (const literal of ["+1::red", "-1::red", "1 ::red", ".5 ::red", "1e2::red"]) {
+        const source = `{~${literal}|blue}`;
+        const row = blockRows(source).rows[0];
+        assert.equal(row.text, literal);
+        assert.equal(source.slice(row.start, row.end), literal);
+    }
+    for (const prefix of ["2", "0", ".5", "1.", "1.5", "+1.5", "-1.5"]) {
+        const source = `{~${prefix}::red|blue}`;
+        const row = blockRows(source).rows[0];
+        assert.equal(row.text, "red");
+        assert.equal(source.slice(row.start, row.end), "red");
+    }
+});
+
 test("widget forwards middle-button pan and canvas zoom while preserving scrollable editor wheel input", async t => {
     const { widget } = setup(t), canvas = dom("canvas"), eventWindow = dom();
     const forwarded = [];

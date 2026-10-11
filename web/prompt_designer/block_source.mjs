@@ -14,7 +14,7 @@ export function blockRows(source) {
     const rows = [];
     const add = stop => {
         const raw = source.slice(start, stop);
-        const prefix = /^\s*(?:[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*::\s*)?/.exec(raw)[0].length;
+        const prefix = /^\s*(?:(?:[+-]?(?:\d+\.\d*|\.\d+)|\d+)::\s*)?/.exec(raw)[0].length;
         const contentStart = start + prefix;
         const contentEnd = Math.max(contentStart, stop - /\s*$/.exec(raw)[0].length);
         rows.push({ start: contentStart, end: contentEnd, text: source.slice(contentStart, contentEnd), choiceStart: start, choiceEnd: stop });

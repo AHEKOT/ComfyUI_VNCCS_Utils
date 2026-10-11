@@ -132,7 +132,11 @@ export class DocumentStorage {
                 this.status("Concurrent edits preserved as a separate document.");
                 return;
             }
-            if (!response.ok) throw new Error(result.error || "Disk save failed.");
+            if (!response.ok) {
+                const error = new Error(result.error || "Disk save failed.");
+                error.status = response.status;
+                throw error;
+            }
             if (!Number.isSafeInteger(result.revision) || result.revision < 1 || result.revision < this.revision) throw new Error("Invalid disk save acknowledgement.");
             this.revision = result.revision;
             this.error = null;

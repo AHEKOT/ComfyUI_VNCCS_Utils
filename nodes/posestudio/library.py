@@ -855,6 +855,8 @@ def normalize_asset_type(value=None, pose_data=None):
 def normalize_library_tags(tags, asset_type=POSE_ASSET_TYPE):
     if isinstance(tags, str):
         tags = [tag.strip() for tag in tags.split(",")]
+    elif not isinstance(tags, list):
+        tags = []
     normalized = []
     seen = set()
     for raw_tag in tags or []:
@@ -1126,7 +1128,7 @@ def build_pose_record(name, path, pose_data, full_details=False, repository=None
         "is_animation": asset_type == ANIMATION_ASSET_TYPE,
         "has_preview": preview_path is not None,
         "preview_type": preview_type,
-        "preview_mtime": int(os.path.getmtime(preview_path)) if preview_path else 0,
+        "preview_mtime": os.path.getmtime(preview_path) if preview_path else 0,
         "data": pose_data if full_details else None,
     }
 
@@ -1233,6 +1235,9 @@ def save_pose(data):
     old_category = data.get("old_category") or category
     tags = data.get("tags")
     asset_type = normalize_asset_type(data.get("asset_type"), pose)
+
+    if tags is not None and not isinstance(tags, (str, list)):
+        return ({"error": "tags must be a list or comma-separated string"}, 400)
 
     if repository != LOCAL_USER_REPOSITORY:
         return ({"error": "Downloaded library items are read-only. Save a copy in Local User Poses."}, 403)

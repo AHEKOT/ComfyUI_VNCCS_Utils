@@ -229,7 +229,7 @@ test("ordinary library refreshes fetch metadata; Debug explicitly fetches comple
     const s = createScene(), urls = [];
     s.context.fetch = async url => {
         urls.push(url);
-        return { json: async () => ({ poses: url.endsWith("true") ? [{ name: "A", data: { bones: {} } }] : [] }) };
+        return { ok: true, json: async () => ({ poses: url.endsWith("true") ? [{ name: "A", data: { bones: {} } }] : [] }) };
     };
     s.w.renderLibrary = noop;
     await s.w.refreshLibrary(false);

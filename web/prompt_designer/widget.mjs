@@ -938,7 +938,10 @@ export class PromptDesignerWidget {
             const summary = { ...entry, text: snapshot.parts.filter(part => "text" in part).map(part => part.text).join("").slice(0, 160) };
             this.savedPrompts = [...(this.savedPrompts ?? []).filter(prompt => prompt.id !== entry.id), summary];
             this.renderLibrary(); this.setStatus(""); await this.loadSavedPrompts(); return true;
-        } catch (error) { if (!this.disposed) this.setStatus(`Prompt was not saved: ${error.message}. Your current edits are retained.`, true); return false; }
+        } catch (error) {
+            if (!this.disposed && restoreRevision === this.restoreRevision) this.setStatus(`Prompt was not saved: ${error.message}. Your current edits are retained.`, true);
+            return false;
+        }
         finally {
             this.promptSaving = false;
             for (const button of [this.promptSave, this.promptSaveCopy, this.promptDelete]) button.disabled = false;
@@ -998,7 +1001,7 @@ export class PromptDesignerWidget {
             this.persist(); this.renderTabs(); this.renderLibrary(); this.setStatus("");
             return true;
         } catch (error) {
-            if (!this.disposed) this.setStatus(`Template was not ${deleting ? "deleted" : "renamed"}: ${error.message}`, true);
+            if (!this.disposed && restoreRevision === this.restoreRevision) this.setStatus(`Template was not ${deleting ? "deleted" : "renamed"}: ${error.message}`, true);
             return false;
         } finally {
             this.promptSaving = false;

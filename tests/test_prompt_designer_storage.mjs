@@ -89,6 +89,30 @@ test("missing backend routes retain the pending draft and stop the repeated save
     assert.equal(JSON.parse(local.getItem(key)).dirty, false);
 });
 
+test("JSON route errors stop autosave retries while retaining the draft and allowing a later manual retry", async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    for (const status of [404, 405]) {
+        const local = memory(), changed = JSON.stringify(editedState()), statuses = [];
+        let requests = 0, missing = true;
+        const store = new DocumentStorage(documentNode(defaultState()), { fetchApi: async () => {
+            requests++;
+            return missing ? reply({ error: "Route unavailable" }, status) : reply({ revision: 2 });
+        } }, message => statuses.push(message), local);
+        t.after(() => { store.disposed = true; clearTimeout(store.timer); });
+        store.write(changed);
+        await store.flush();
+        t.mock.timers.tick(30_000);
+        assert.equal(requests, 1);
+        assert.equal(store.pending, changed);
+        assert.equal(JSON.parse(local.getItem(key)).dirty, true);
+        assert.match(statuses.at(-1), /Not saved on disk.*Route unavailable.*Your draft is retained/);
+        missing = false;
+        await store.flush();
+        assert.equal(store.pending, null);
+        assert.equal(JSON.parse(local.getItem(key)).dirty, false);
+    }
+});
+
 test("a malformed success response cannot acknowledge or discard an authored draft", async t => {
     for (const data of [{}, { revision: -1 }, { revision: "2" }, { revision: null }]) {
         const local = memory(), changed = JSON.stringify(editedState()), statuses = [];

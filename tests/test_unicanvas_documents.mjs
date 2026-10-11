@@ -262,6 +262,77 @@ test('a stale registration cannot publish into another configured document', asy
     assert.equal(w.canvasId, 'configured');
 });
 
+test('a stale current-document metadata response stops the original canvas operation', async () => {
+    const { w, a } = setup();
+    let finish;
+    globalThis.fetch = () => new Promise(resolve => { finish = resolve; });
+    const pending = ensureCanvasDocument(w);
+    await new Promise(resolve => setImmediate(resolve));
+    w._stateLoadRevision++; w.canvasId = 'configured';
+    finish({ ok: true, json: async () => ({ document: a }) });
+    await assert.rejects(pending, /changed while saving/);
+    assert.equal(w.canvasId, 'configured');
+});
+
+for (const action of ['open', 'create']) {
+    test(`a delayed ${action} preparation cannot replace a newly configured document`, async () => {
+        const { w, b } = setup();
+        let finish;
+        const fetch = globalThis.fetch;
+        globalThis.fetch = async (url, options) => {
+            if (url === (action === 'open' ? `${ROOT}/${b.canvas_id}` : '/vnccs/unicanvas_state_upload')) {
+                await new Promise(resolve => { finish = resolve; });
+            }
+            return fetch(url, options);
+        };
+        const pending = action === 'open' ? openCanvasDocument(w, b) : createCanvasDocument(w);
+        while (!finish) await new Promise(resolve => setImmediate(resolve));
+        w._stateLoadRevision++; w.canvasId = 'configured'; w.stateCacheId = 'configured';
+        const layers = w.layers;
+        finish();
+        assert.equal(await pending, false);
+        assert.equal(w.canvasId, 'configured');
+        assert.equal(w.stateCacheId, 'configured');
+        assert.equal(w.layers, layers);
+    });
+}
+
+for (const action of ['open', 'create', 'delete']) {
+    test(`a delayed ${action} dialog cannot act on a newly configured canvas`, async () => {
+        const { w, b, calls } = setup();
+        let finish, dialogs = 0;
+        w.stagingItems = [{ url: 'staged' }];
+        w.confirmInWidget = w.promptInWidget = () => ++dialogs === 1 ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(true);
+        const pending = action === 'open' ? openCanvasDocument(w, b)
+            : action === 'create' ? createCanvasDocument(w) : deleteCanvasDocument(w, b);
+        w._stateLoadRevision++; w.canvasId = 'configured'; w.stateCacheId = 'configured';
+        finish(action === 'create' ? 'Old dialog name' : true);
+        assert.equal(await pending, false);
+        assert.deepEqual(calls, []);
+        assert.equal(w.canvasId, 'configured');
+    });
+}
+
+for (const response of ['ok', 'error']) {
+    test(`a delayed active-selection ${response} response leaves a replacement's status alone`, async () => {
+        const { w, b } = setup();
+        let finish;
+        const fetch = globalThis.fetch;
+        globalThis.fetch = async (url, options) => {
+            if (url === `${ROOT}/active`) return new Promise(resolve => { finish = resolve; });
+            return fetch(url, options);
+        };
+        const pending = applyCanvasDocument(w, b);
+        while (!finish) await new Promise(resolve => setImmediate(resolve));
+        w._stateLoadRevision++;
+        const statuses = [];
+        w.setStatus = message => statuses.push(message);
+        finish({ ok: response === 'ok', status: 500, json: async () => ({ error: 'old request failed' }) });
+        assert.equal(await pending, false);
+        assert.deepEqual(statuses, []);
+    });
+}
+
 const source = readFileSync(new URL('../web/vnccs_unicanvas.js', import.meta.url), 'utf8');
 let nextLayerId = 0;
 const context = { console, clearTimeout, normalizePanorama, normalizeTransformMode, serializePose,
@@ -522,4 +593,44 @@ test('the manager can reopen the latest snapshot of a canvas changed remotely wh
     assert.equal(w.canvasId, a.canvas_id);
     assert.equal(w.layers[0].dataURL, 'remote pixels');
     assert.deepEqual(w.undoStack, []);
+});
+
+test('a Delete replacement catalog response cannot replace a reconfigured workflow', async () => {
+    const { w, a, calls } = setup();
+    const request = globalThis.fetch;
+    let release, started;
+    const waiting = new Promise(resolve => { started = resolve; });
+    globalThis.fetch = async (url, options) => {
+        if (url === ROOT && options?.method === 'GET') {
+            started();
+            await new Promise(resolve => { release = resolve; });
+        }
+        return request(url, options);
+    };
+    const pending = deleteCanvasDocument(w, a);
+    await waiting;
+    w._stateLoadRevision++;
+    w.stateCacheId = 'replacement-workflow';
+    w.layers = [{ id: 'replacement-layer', dataURL: 'replacement-pixels' }];
+    const layers = w.layers;
+    release();
+    assert.equal(await pending, false);
+    assert.equal(w.stateCacheId, 'replacement-workflow');
+    assert.equal(w.layers, layers);
+    assert.equal(calls.some(call => call.method === 'DELETE'), false);
+});
+
+test('a Rename prompt approved after workflow replacement cannot rename the old canvas', async t => {
+    const { w, a, documents, calls } = setup();
+    const { find } = mountControls(t, w);
+    await openCanvasManager(w);
+    const row = find('vnccs-uc-canvas-card');
+    let release;
+    w.promptInWidget = () => new Promise(resolve => { release = resolve; });
+    const pending = row.children.find(child => child.label === 'Rename').click();
+    w._stateLoadRevision++;
+    release('Stale dialog name');
+    await pending;
+    assert.equal(documents.get(a.canvas_id).name, 'Canvas A');
+    assert.equal(calls.some(call => call.method === 'PATCH'), false);
 });

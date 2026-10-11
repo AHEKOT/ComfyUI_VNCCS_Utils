@@ -389,6 +389,14 @@ def test_block_preview_enumerates_ready_variants_without_changing_source(text, e
     assert json.loads(raw)["blocks"][0]["text"] == text
 
 
+@pytest.mark.parametrize("literal", ["+1::red", "-1::red", "1 ::red", ".5 ::red", "1e2::red"])
+def test_unrecognized_weight_prefixes_remain_literal_in_preview_and_execution(literal):
+    raw = state(blocks=[{"id": "a", "name": "Literal weight", "text": "{~" + literal + "|0::blue}"}],
+                parts=[{"blockId": "a"}])
+    assert preview_block(raw, "a") == {"variants": [literal], "truncated": False}
+    assert resolve_prompt(raw)["prompt"] == literal
+
+
 def test_block_preview_limits_rows_and_total_text():
     text = "{~" + "|".join(f"option {index}" for index in range(MAX_BLOCK_VARIANTS + 1)) + "}"
     result = preview_block(state(blocks=[{"id": "a", "name": "Example", "text": text}]), "a")

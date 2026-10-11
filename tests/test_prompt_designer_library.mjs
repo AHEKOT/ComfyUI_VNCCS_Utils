@@ -59,6 +59,23 @@ function setup(t) {
     return { widget, records };
 }
 
+test("late template save, rename and delete failures cannot replace a reconfigured workflow's status", async t => {
+    for (const operation of ["save", "rename", "delete"]) {
+        const { widget } = setup(t);
+        widget.editPromptDetails(); widget.promptName.value = "Old workflow template";
+        let respond;
+        widget.api.fetchApi = () => new Promise(resolve => { respond = resolve; });
+        const entry = { id: "f".repeat(32), revision: 1, name: "Old workflow template" };
+        const pending = operation === "save" ? widget.saveLibraryPrompt()
+            : widget.changeLibraryPrompt(entry, operation === "delete" ? null : "Renamed template");
+        widget.invalidateRestore();
+        widget.setStatus("Current workflow recovery error", true);
+        respond(Response.json({ error: "Old template request failed" }, { status: 500 }));
+        assert.equal(await pending, false);
+        assert.equal(widget.status.textContent, "Current workflow recovery error");
+    }
+});
+
 test("saving a draft never grants overwrite permission or changes a saved card while typing", async t => {
     const { widget, records } = setup(t);
     widget.editPromptDetails(); widget.promptName.value = "Protected original";
