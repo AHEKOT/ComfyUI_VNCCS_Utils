@@ -88,7 +88,7 @@ defaults - an unknown value is a question, not a guess.
      import custom-node packages at module import time.
 3. **Register** it in `nodes/unicanvas/models/__init__.py`.
 4. **Frontend registry** (still manual): add the family to `UNICANVAS_MODEL_MODULES` in
-   `web/vnccs_unicanvas.js` (or its own `web/vnccs_unicanvas_<key>.mjs`, like Qwen-Image-2.1)
+   `web/vnccs_unicanvas.js` (or its own `web/unicanvas/<key>.mjs`, like Qwen-Image-2.1)
    with `label`, `aliases`, `base`, `isEditModel`, `detect` keywords (file-name matching) and the
    same defaults. Prompt help needs no frontend change - it comes from the backend descriptor.
 5. **Preset** (optional but usual): an entry in `config/unicanvas_presets.json` with pinned

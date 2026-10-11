@@ -14,7 +14,6 @@ from typing import Any
 
 from .debug import _uc_log
 from .generation import _normalize_gen_settings
-from .imaging import _decode_data_url, _pil_to_image_tensor
 from .models.base import UniCanvasModelModule
 from .models.capabilities import STANDARD_TASKS, GenerationTask, task_for_canvas_mode
 from .models.registry import _get_unicanvas_model_module
@@ -59,8 +58,11 @@ class DrawRequest:
             task_for_canvas_mode(mode)  # rejects unknown canvas modes before any work
 
         external = payload.get("external")
-        settings = _normalize_gen_settings(_request_settings(payload, external))
+        settings = _request_settings(payload, external)
         settings.pop("_pose_edit_images", None)
+        settings.pop("_qwen21_pose_edit", None)
+        settings.pop("_qwen21_source_empty", None)
+        settings.pop("_edit_layers_reference", None)
         module = _get_unicanvas_model_module(settings.get("generation_mode"))
         task = _resolve_task(module, task_key, mode)
         if task_key:
@@ -184,11 +186,14 @@ def _request_settings(payload: dict[str, Any], external: Any) -> dict[str, Any]:
         gen_settings["lora_stack"] = []
         gen_settings["turbo_enabled"] = False
         gen_settings.pop("edit_reference_images", None)
+        gen_settings.pop("edit_use_layers_as_reference", None)
+    gen_settings = _normalize_gen_settings(gen_settings)
     # Widget-uploaded Edit model reference images (spec 9): the upload popover is
     # an alternative to the VNCSS Config reference inputs and occupies the same
     # numbered slots (reference_image_N -> <Picture N+1>).
     edit_refs = gen_settings.get("edit_reference_images")
     if isinstance(edit_refs, list) and edit_refs:
+        module = _get_unicanvas_model_module(gen_settings.get("generation_mode"))
         external_block = gen_settings.get("_external")
         if not isinstance(external_block, dict):
             external_block = {}
@@ -197,9 +202,10 @@ def _request_settings(payload: dict[str, Any], external: Any) -> dict[str, Any]:
         if not isinstance(references, dict):
             references = {}
             external_block["references"] = references
-        uploads = [item for item in edit_refs if isinstance(item, str) and item][:MAX_UPLOADED_REFERENCES]
-        for index, value in enumerate(uploads):
+        for index, value in enumerate(edit_refs[:MAX_UPLOADED_REFERENCES]):
+            if not isinstance(value, str) or not value:
+                continue
             name = f"reference_image_{index + 1}"
             if references.get(name) is None:
-                references[name] = _pil_to_image_tensor(_decode_data_url(value, "RGB"))
+                references[name] = module.decode_uploaded_reference(value)
     return gen_settings

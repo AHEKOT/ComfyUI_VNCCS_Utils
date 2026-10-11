@@ -5,12 +5,13 @@ UniCanvas (any node, the standalone tab, any browser) starts from the files used
 
 The file is versioned. ``SCHEMA_VERSION`` is the layout this code writes; ``_MIGRATIONS[n]``
 upgrades a document from version ``n`` to ``n + 1``. A file written by a NEWER version is read
-best-effort, never downgraded, and keeps the keys this version does not know.
+best-effort and never overwritten, preserving the keys this version does not know.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 from typing import Any, Callable
@@ -68,15 +69,15 @@ def sanitize_entry(entry: Any) -> dict[str, Any]:
             continue
         try:
             strength = float(item.get("strength", 1))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             strength = 1.0
-        loras.append({"name": name, "strength": strength if strength == strength else 1.0})
+        loras.append({"name": name, "strength": strength if math.isfinite(strength) else 1.0})
     if not clean and not loras:
         return {}
     clean["lora_stack"] = loras
     try:
         clean["at"] = int(entry.get("at") or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         clean["at"] = 0
     return clean
 
@@ -85,9 +86,13 @@ def migrate(document: Any) -> dict[str, Any]:
     """Bring any stored document to the current envelope ``{"schema", "entries", ...}``."""
     if not isinstance(document, dict):
         return {"schema": SCHEMA_VERSION, "entries": {}}
+    if "schema" in document and (type(document["schema"]) is not int or document["schema"] < 0):
+        raise ValueError("invalid model memory schema")
     version = document.get("schema") if isinstance(document.get("schema"), int) else 0
     if version > SCHEMA_VERSION:
         return document  # written by a newer version: read as is, never downgraded
+    if version == SCHEMA_VERSION and not isinstance(document.get("entries"), dict):
+        raise ValueError("model memory entries must be an object")
     current = document
     while version < SCHEMA_VERSION:
         step = _MIGRATIONS.get(version)
@@ -116,9 +121,14 @@ def load_model_memory() -> dict[str, Any]:
 def _load_locked() -> dict[str, Any]:
     try:
         with open(_prefs_path(), "r", encoding="utf-8") as handle:
-            document = migrate(json.load(handle))
-    except (OSError, ValueError):
+            raw = json.load(handle)
+        if not isinstance(raw, dict):
+            raise ValueError("model memory must be an object")
+        document = migrate(raw)
+    except FileNotFoundError:
         document = {"schema": SCHEMA_VERSION, "entries": {}}
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Cannot read UniCanvas model memory; original file preserved: {exc}") from exc
     document["entries"] = _entries_of(document)
     return document
 
@@ -130,6 +140,8 @@ def remember_model_choice(key: Any, entry: Any) -> dict[str, Any]:
         raise ValueError("[VNCCS UniCanvas] model memory needs a key and a non-empty entry.")
     with _LOCK:
         document = _load_locked()
+        if document.get("schema", 0) > SCHEMA_VERSION:
+            raise ValueError("UniCanvas model memory was written by a newer version; original file preserved")
         entries = document["entries"]
         entries[key.strip()] = clean
         newest = sorted(entries, key=lambda name: entries[name].get("at", 0), reverse=True)[:MAX_ENTRIES]

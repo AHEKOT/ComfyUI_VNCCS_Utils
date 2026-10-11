@@ -335,7 +335,7 @@ def _document_projection(state: dict[str, Any]) -> FlatDocument:
 
 
 def _flat_output_state(unicanvas_state: str) -> dict[str, Any] | None:
-    """The flattened, bbox-cropped output the widget uploads for a panorama (``output_id``), if cached."""
+    """The flattened bbox output the widget uploads before queueing (``output_id``), if cached."""
     try:
         state = json.loads(unicanvas_state or "{}")
     except Exception:

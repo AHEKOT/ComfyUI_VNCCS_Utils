@@ -86,6 +86,17 @@ class AutoEnhanceTests(unittest.TestCase):
             calls = self.run_auto(request, None)
         self.assertEqual(calls[0], ("draw-clip", "a cat", "T2I:", False))
 
+    def test_qi2_uses_uploaded_references_without_a_canvas(self):
+        from PIL import Image
+
+        request = _request()
+        request.settings["generation_mode"] = "qwen_image21"
+        refs = [Image.new("RGB", (8, 8))]
+        with patch.object(ENHANCE, "reference_images", lambda settings: refs):
+            self.assertEqual(ENHANCE.edit_images(None, request.settings), refs)
+            calls = self.run_auto(request, None)
+        self.assertEqual(calls[0], ("draw-clip", "a cat", "EDIT:", True))
+
     def test_automatic_mode_never_loads_an_encoder_of_its_own(self):
         request = _request(settings={"prompt_enhance": {"model": "other.safetensors", "positive_system": "T2I:"}})
 
@@ -291,12 +302,12 @@ class StopTests(unittest.TestCase):
 class DefaultPromptTests(unittest.TestCase):
     def test_shipped_defaults(self):
         entries = {entry["family"]: entry for entry in UNICANVAS.enhance.load_default_prompts()}
-        for family in ("qwen_image21", "qwen_image_edit", "flux_klein", "z_image", "anima", "minimax_h3", "krea2_edit"):
+        for family in ("qwen_image21", "flux_klein", "z_image", "anima", "minimax_h3", "krea2_edit"):
             self.assertIn(family, entries)
             self.assertTrue(entries[family]["positive"] or entries[family]["edit"], family)
         self.assertTrue(entries["qwen_image21"]["positive"].startswith("# Image Prompt Rewriting Expert"))
         self.assertIn("wh_ratio", entries["qwen_image21"]["edit"])
-        for family in ("anima", "qwen_image21", "qwen_image_edit", "z_image"):
+        for family in ("anima", "qwen_image21", "z_image"):
             self.assertTrue(entries[family]["negative"], f"{family} uses the negative prompt, so it needs a negative wand")
 
 

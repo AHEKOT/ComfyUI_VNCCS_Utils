@@ -22,7 +22,7 @@ from typing import Any
 import torch
 from PIL import Image
 
-from .comfy_bridge import _call_loader_node, _safe_filename_list
+from .comfy_bridge import _call_loader_node, _safe_filename_list, _release_generation_state
 from .debug import _uc_log
 from .imaging import _decode_data_url, _pil_to_image_tensor
 from .paths import _safe_get_folder_paths
@@ -53,7 +53,7 @@ _SAMPLING = {
     "repetition_penalty": 1.05,
     "presence_penalty": 0.0,
 }
-# Official rewriters answer in JSON (QI2.1 "rewritten_prompt", Qwen Edit "Rewritten").
+# Official rewriters answer in JSON (QI2.1 "rewritten_prompt").
 _JSON_KEYS = ("rewritten_prompt", "rewritten", "prompt")
 _JSON_FIELD = re.compile(r'"(?:rewritten_prompt|rewritten)"\s*:\s*"((?:[^"\\]|\\.)*)"', re.IGNORECASE)
 
@@ -136,10 +136,11 @@ def reference_images(settings: dict[str, Any]) -> list[Image.Image]:
 def edit_images(canvas: Image.Image | None, settings: dict[str, Any]) -> list[Image.Image] | None:
     """The pictures an edit-style prompt is written for: the canvas first, then the references.
 
-    UniCanvas numbers the canvas as picture 1 and the references from 2 on, so the references only
-    make sense next to a canvas. An empty canvas (which an edit model would draw as a black picture)
-    is ignored: the request is a text-to-image one, with no pictures at all.
+    QI2 packs connected references from picture 1 even without a canvas. Other families
+    keep the canvas in picture 1 unless Use Layers is disabled.
     """
+    if settings.get("edit_use_layers_as_reference") is False or (canvas is None and settings.get("generation_mode") == "qwen_image21"):
+        return reference_images(settings) or None
     if canvas is None:
         return None
     return [canvas, *reference_images(settings)]
@@ -184,53 +185,11 @@ def is_enhance_encoder(settings: dict[str, Any], name: str) -> bool:
 
 
 def load_enhance_clip(name: str) -> Any:
-    """A freshly loaded Qwen3-VL encoder; the caller frees it with ``release_enhance_clip``."""
+    """A native Qwen3-VL encoder whose residency is managed by ComfyUI."""
     clip = _call_loader_node(["CLIPLoader"], ["load_clip"], clip_name=name, model_name=name, type=ENHANCE_CLIP_TYPE)
     if clip is None:
         raise RuntimeError(f"Failed to load the prompt enhance text encoder '{name}'.")
     return clip
-
-
-def release_enhance_clip(clip: Any) -> None:
-    """Unload a dedicated encoder from VRAM and RAM right away (it is not the draw's own CLIP)."""
-    try:
-        import gc
-
-        import comfy.model_management as model_management
-
-        patcher = getattr(clip, "patcher", None)
-        for loaded in list(model_management.current_loaded_models):
-            if loaded.model is patcher:
-                loaded.model_unload()
-                model_management.current_loaded_models.remove(loaded)
-        del clip, patcher
-        model_management.cleanup_models()
-        gc.collect()
-        model_management.soft_empty_cache()
-    except Exception as exc:  # freeing is best effort: ComfyUI still evicts it under memory pressure
-        logging.getLogger(__name__).warning("[VNCCS UniCanvas] Could not release the prompt enhance encoder: %s", exc)
-
-
-def _release_generation_state() -> None:
-    """What ComfyUI's executor does after every node when DynamicVRAM is on.
-
-    A node run outside the executor skips it, and the leftover prefetch queues / cast buffers make the
-    next generation on the same encoder trip a CUDA scatter/gather assert, which aborts the process.
-    """
-    try:
-        import comfy.memory_management
-
-        if not comfy.memory_management.aimdo_enabled:
-            return
-        import comfy.model_management
-        import comfy.model_prefetch
-        import comfy_aimdo.model_vbar
-
-        comfy.model_prefetch.cleanup_prefetch_queues()
-        comfy.model_management.reset_cast_buffers()
-        comfy_aimdo.model_vbar.vbars_reset_watermark_limits()
-    except Exception:
-        pass  # older ComfyUI without DynamicVRAM: nothing to release
 
 
 def enhance_text(clip: Any, text: str, system_prompt: str, images: list[Image.Image] | None = None) -> str:

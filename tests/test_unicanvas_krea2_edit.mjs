@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
-import { forceUniCanvasPresetModelSettings } from "../web/vnccs_unicanvas_presets.mjs";
-import { UNICANVAS_QWEN21_MODULE } from "../web/vnccs_unicanvas_qwen21.mjs";
+import { forceUniCanvasPresetModelSettings } from "../web/unicanvas/presets.mjs";
+import { UNICANVAS_QWEN21_MODULE } from "../web/unicanvas/qwen21.mjs";
 
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const presets = JSON.parse(readFileSync(new URL("../config/unicanvas_presets.json", import.meta.url), "utf8")).presets;
@@ -68,6 +68,25 @@ test("switching model restores denoise and ControlNet ranges and keeps likeness"
     assert.equal(label.textContent, mode === "krea2_edit" ? "Likeness" : mode === "sdxl" ? "Denoise" : "ControlNet strength");
   }
   assert.equal(slider.value, "7");
+});
+
+test("QI2 pins both denoise controls to one and unlocks them for another family", () => {
+  const { w, slider, number } = widget();
+  w.settings.generation_mode = "qwen_image21";
+  w.settings.denoise = 0.3;
+  w.syncDenoiseControls();
+  assert.equal(w.settings.denoise, 1);
+  assert.equal(slider.value, "1");
+  assert.equal(number.value, "1");
+  assert.equal(slider.disabled, true);
+  assert.equal(number.disabled, true);
+  assert.match(number.title, /empty latent at full denoise/);
+  w.settings.generation_mode = "sdxl";
+  w.settings.denoise = 0.45;
+  w.syncDenoiseControls();
+  assert.equal(slider.disabled, false);
+  assert.equal(number.disabled, false);
+  assert.equal(number.value, "0.45");
 });
 
 test("preset switches and serialized settings preserve likeness while pinning mandatory LoRA", () => {

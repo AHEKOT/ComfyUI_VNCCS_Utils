@@ -13,12 +13,11 @@ registry), so family modules may subclass the pipeline without import cycles.
 from __future__ import annotations
 
 import contextlib
-import gc
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import torch
-from PIL import Image
+from PIL import Image, ImageChops
 
 from .constants import _MAX_PIXELS
 from .crop_stitch import CROP_SETTING, crop_image, plan_crop, stitch_image, stitch_mask
@@ -27,6 +26,7 @@ from .imaging import (
     _decode_data_url,
     _image_tensor_to_pil_list,
     _pil_to_image_tensor,
+    _pil_rgba_to_image_tensor,
     _pil_to_mask_image,
     _pil_to_mask_tensor,
 )
@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
 MASKED_MODES = frozenset({"inpaint", "outpaint"})
 # Settings every draw may carry that are only needed until sampling finishes.
-COMMON_SCRATCH_KEYS = ("_pose_edit_images",)
+COMMON_SCRATCH_KEYS = ("_pose_edit_images", "_edit_layers_reference")
 
 
 def _save_temp_image(image: Image.Image, prefix: str = "VNCCS_UniCanvas") -> dict[str, str]:
@@ -154,28 +154,17 @@ class ImageDrawPipeline:
             raise
 
     def free_after_interrupt(self) -> None:
-        """Stop pressed: drop every tensor the draw held and unload the models it put on the GPU."""
+        """Stop pressed: drop this draw's tensors and clean up unused models."""
         ctx = self.ctx
         ctx.model = ctx.clip = ctx.vae = ctx.positive = ctx.negative = ctx.latent = ctx.decoded = None
         ctx.image_tensor = ctx.reference_image_tensor = ctx.mask = None
         ctx.result_images = []
         with contextlib.suppress(Exception):
             _release_generation_sampling_refs(ctx.settings, ctx.draw_id, COMMON_SCRATCH_KEYS + tuple(self.module.sampling_scratch_keys))
-        set_interrupt(False)
         with _COMFY_MODEL_OP_LOCK, contextlib.suppress(Exception):
+            set_interrupt(False)
             _release_generation_state()
-            import comfy.model_management as model_management
-
-            model_management.unload_all_models()
-            model_management.cleanup_models()
-        gc.collect()
-        with contextlib.suppress(Exception):
-            import comfy.model_management as model_management
-
-            model_management.soft_empty_cache(True)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        _set_draw_progress(ctx.draw_id, "cancelled", 1.0, 0, 0, "Stopped - VRAM freed")
+        _set_draw_progress(ctx.draw_id, "cancelled", 1.0, 0, 0, "Stopped")
 
     def _run(self) -> dict[str, Any]:
         self.prepare_source()
@@ -232,10 +221,12 @@ class ImageDrawPipeline:
         ctx.output_size = (output_width, output_height)
 
     def crop_to_mask(self) -> None:
-        """Inpaint: generate only the area around the mask (plus context) at full resolution."""
+        """Optional mask crop for non-edit models; edit references keep the full bbox geometry."""
         ctx, payload = self.ctx, self.request.payload
-        enabled = ctx.settings.get(CROP_SETTING, True)
-        if ctx.mode != "inpaint" or ctx.pose_images or enabled is False or str(enabled).lower() in {"false", "0", "off"}:
+        if ctx.mode != "inpaint" or ctx.pose_images or self.module.is_edit_model:
+            return
+        enabled = ctx.settings.get(CROP_SETTING, False)
+        if enabled is False or str(enabled).lower() in {"false", "0", "off"}:
             return
         mask = _decode_data_url(str(payload.get("mask") or ""), "RGBA")
         if mask.size != ctx.source.size:
@@ -258,7 +249,6 @@ class ImageDrawPipeline:
         ctx.model, ctx.clip = self.module.clone_assets(model, clip)
         ctx.settings["_draw_id"] = ctx.draw_id
         self.module.prepare_draw_assets(ctx)
-        self.module.preload_vae(ctx)
         self.module.bind_draw_assets(ctx)
 
     def apply_loras(self) -> None:
@@ -346,6 +336,8 @@ class ImageDrawPipeline:
             _uc_log(ctx.draw_id, "edit-model txt2img source replaced with black reference image", {"size": ctx.source.size})
         ctx.image_tensor = _pil_to_image_tensor(ctx.source)
         ctx.reference_image_tensor = _pil_to_image_tensor(ctx.reference_source)
+        if self.module.is_edit_model and ctx.settings.get("edit_use_layers_as_reference") is True and ctx.full_source_rgba is not None:
+            ctx.settings["_edit_layers_reference"] = _pil_to_image_tensor(ctx.full_source_rgba.convert("RGB"))
         if ctx.pose_images:
             ctx.settings["_pose_edit_images"] = [_pil_to_image_tensor(image) for image in ctx.pose_images]
         _uc_log(
@@ -421,7 +413,6 @@ class ImageDrawPipeline:
         ctx.decoded = self.module.decode_samples(ctx.vae, ctx.latent, ctx.settings)
         _uc_log(ctx.draw_id, "decoded image tensor", _tensor_debug(ctx.decoded))
         ctx.result_images = _image_tensor_to_pil_list(ctx.decoded)
-        self.module.release_vae(ctx)
 
     def fit_to_output(self) -> None:
         ctx = self.ctx
@@ -492,5 +483,17 @@ class ImageDrawPipeline:
             "performance": ctx.settings.get("_performance", ""),
         }
         if request.payload.get("return_tensor"):
-            result["tensor"] = ctx.decoded.detach().cpu()
+            tensor_images = ctx.result_images
+            if saved_mask is not None:
+                source = ctx.full_source_rgba if ctx.crop_plan is not None else ctx.source_rgba
+                source = source.convert("RGBA").resize(ctx.output_size, Image.Resampling.LANCZOS)
+                tensor_images = []
+                for image in ctx.result_images:
+                    patch = image.convert("RGBA")
+                    patch.putalpha(ImageChops.multiply(patch.getchannel("A"), mask_to_save.convert("L")))
+                    tensor_images.append(Image.alpha_composite(source, patch))
+            result["tensor"] = torch.cat([
+                (_pil_rgba_to_image_tensor(image) if image.mode == "RGBA" else _pil_to_image_tensor(image))
+                for image in tensor_images
+            ])
         return result

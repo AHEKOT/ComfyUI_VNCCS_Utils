@@ -76,37 +76,6 @@
       ]
     },
     {
-      "id": 814,
-      "type": "VNCCS_ModelManager",
-      "pos": [
-        5200,
-        1810
-      ],
-      "size": [
-        510,
-        270
-      ],
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "repo_id",
-          "type": "STRING",
-          "links": null
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "VNCCS_ModelManager"
-      },
-      "widgets_values": [
-        "MIUProject/VNCCS_PoseStudio_Klein",
-        null,
-        ""
-      ]
-    },
-    {
       "id": 841,
       "type": "6778560b-6df6-4834-b4fd-d35ce5a8bdb9",
       "pos": [
@@ -141,14 +110,6 @@
             "name": "value"
           },
           "link": 2348
-        },
-        {
-          "name": "lora_name",
-          "type": "COMBO",
-          "widget": {
-            "name": "lora_name"
-          },
-          "link": 2349
         },
         {
           "name": "model",
@@ -323,43 +284,6 @@
       ]
     },
     {
-      "id": 31,
-      "type": "VNCCS_ModelSelector",
-      "pos": [
-        6850,
-        1940
-      ],
-      "size": [
-        470,
-        170
-      ],
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "model_path",
-          "type": "*",
-          "links": [
-            2349
-          ]
-        }
-      ],
-      "properties": {
-        "aux_id": "AHEKOT/ComfyUI_VNCCS_Utils",
-        "Node name for S&R": "VNCCS_ModelSelector",
-        "cnr_id": "vnccs-utils",
-        "ver": "6dd35c423d5fdc4f3044a842dbf760066154b652"
-      },
-      "widgets_values": [
-        "MIUProject/VNCCS_PoseStudio_Klein",
-        "VNCCS Pose Studio Klein9b",
-        "1.0.0",
-        ""
-      ]
-    },
-    {
       "id": 842,
       "type": "2060e905-e5cd-4604-b046-35e95717bce1",
       "pos": [
@@ -461,14 +385,6 @@
       "STRING"
     ],
     [
-      2349,
-      31,
-      0,
-      841,
-      3,
-      "COMBO"
-    ],
-    [
       2350,
       841,
       0,
@@ -481,7 +397,7 @@
       842,
       0,
       841,
-      4,
+      3,
       "MODEL"
     ],
     [
@@ -489,7 +405,7 @@
       842,
       1,
       841,
-      5,
+      4,
       "CLIP"
     ],
     [
@@ -497,7 +413,7 @@
       842,
       2,
       841,
-      6,
+      5,
       "VAE"
     ]
   ],
@@ -588,19 +504,6 @@
             "pos": [
               5534,
               614
-            ]
-          },
-          {
-            "id": "45f690ac-fa10-4e05-8ddb-63e59498e0f6",
-            "name": "lora_name",
-            "type": "COMBO",
-            "linkIds": [
-              2341
-            ],
-            "localized_name": "lora_name",
-            "pos": [
-              5534,
-              634
             ]
           },
           {
@@ -1654,15 +1557,6 @@
                 "name": "model",
                 "type": "MODEL",
                 "link": 2352
-              },
-              {
-                "localized_name": "lora_name",
-                "name": "lora_name",
-                "type": "COMBO",
-                "widget": {
-                  "name": "lora_name"
-                },
-                "link": 2341
               }
             ],
             "outputs": [
@@ -2117,14 +2011,6 @@
             "type": "STRING"
           },
           {
-            "id": 2341,
-            "origin_id": -10,
-            "origin_slot": 3,
-            "target_id": 836,
-            "target_slot": 1,
-            "type": "COMBO"
-          },
-          {
             "id": 2336,
             "origin_id": 833,
             "origin_slot": 0,
@@ -2135,7 +2021,7 @@
           {
             "id": 2352,
             "origin_id": -10,
-            "origin_slot": 4,
+            "origin_slot": 3,
             "target_id": 836,
             "target_slot": 0,
             "type": "MODEL"
@@ -2143,7 +2029,7 @@
           {
             "id": 2353,
             "origin_id": -10,
-            "origin_slot": 5,
+            "origin_slot": 4,
             "target_id": 823,
             "target_slot": 0,
             "type": "CLIP"
@@ -2151,7 +2037,7 @@
           {
             "id": 2354,
             "origin_id": -10,
-            "origin_slot": 5,
+            "origin_slot": 4,
             "target_id": 824,
             "target_slot": 0,
             "type": "CLIP"
@@ -2159,7 +2045,7 @@
           {
             "id": 2355,
             "origin_id": -10,
-            "origin_slot": 6,
+            "origin_slot": 5,
             "target_id": 826,
             "target_slot": 1,
             "type": "VAE"
@@ -2167,7 +2053,7 @@
           {
             "id": 2356,
             "origin_id": -10,
-            "origin_slot": 6,
+            "origin_slot": 5,
             "target_id": 833,
             "target_slot": 1,
             "type": "VAE"
@@ -2175,7 +2061,7 @@
           {
             "id": 2357,
             "origin_id": -10,
-            "origin_slot": 6,
+            "origin_slot": 5,
             "target_id": 829,
             "target_slot": 1,
             "type": "VAE"

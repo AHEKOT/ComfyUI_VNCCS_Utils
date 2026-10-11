@@ -25,11 +25,11 @@ def module_from(path, name):
 class ConditioningTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.service = module_from("api/factory3d_conditioning.py", "conditioning_service_test")
+        cls.service = module_from("nodes/factory3d/conditioning.py", "conditioning_service_test")
         torch = types.ModuleType("torch")
         torch.from_numpy = lambda array: array
         with mock.patch.dict(sys.modules, {"torch": torch}):
-            cls.nodes = module_from("nodes/factory3d_render.py", "conditioning_nodes_test")
+            cls.nodes = module_from("nodes/factory3d/render.py", "conditioning_nodes_test")
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

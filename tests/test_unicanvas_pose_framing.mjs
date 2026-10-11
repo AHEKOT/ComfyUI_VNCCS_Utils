@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyTorsoFraming, computeTorsoAnchor } from "../web/vnccs_unicanvas_pose_framing.mjs";
+import { applyTorsoFraming, computeTorsoAnchor } from "../web/unicanvas/pose_framing.mjs";
 
 const bone = (x, y, z) => ({ getWorldPosition: v => { v.x = x; v.y = y; v.z = z; return v; } });
 

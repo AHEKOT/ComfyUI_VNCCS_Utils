@@ -47,7 +47,7 @@ import {
     timelineGroupIdForTrack,
     timelineViewportToContentPoint,
     validatedAnimationCharacterTransform,
-} from "../web/vnccs_pose_animation.mjs";
+} from "../web/pose_studio/animation.mjs";
 
 const angleDistance = (a, b) => Math.abs(((b - a + 540) % 360) - 180);
 

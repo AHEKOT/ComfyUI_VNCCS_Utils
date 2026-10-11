@@ -10,6 +10,10 @@ if "__init__" not in sys.modules:
 
 import pytest
 
+from helpers.unicanvas_package import load_unicanvas_package
+
+load_unicanvas_package("nodes")
+
 from nodes.unicanvas import user_prefs
 
 
@@ -43,16 +47,24 @@ def test_legacy_unversioned_file_is_migrated(prefs):
 
 def test_newer_schema_is_read_but_not_downgraded(prefs):
     prefs.parent.mkdir(parents=True)
-    prefs.write_text(json.dumps({"schema": 9, "entries": {"k": {"clip_name": "c"}}, "future": True}), encoding="utf-8")
+    raw = json.dumps({"schema": 9, "entries": {"k": {"clip_name": "c", "future_entry": True},
+                                             "future_only": {"unknown": [1, 2]}}, "future": True})
+    prefs.write_text(raw, encoding="utf-8")
     assert user_prefs.load_model_memory()["future"] is True
-    saved = user_prefs.remember_model_choice("k2", {"clip_name": "d"})
-    assert saved["schema"] == 9 and saved["future"] is True and set(saved["entries"]) == {"k", "k2"}
+    with pytest.raises(ValueError, match="newer version.*original file preserved"):
+        user_prefs.remember_model_choice("k2", {"clip_name": "d"})
+    assert prefs.read_text(encoding="utf-8") == raw
+    assert not prefs.with_suffix(".json.tmp").exists()
 
 
 def test_corrupt_file_and_bad_input(prefs):
     prefs.parent.mkdir(parents=True)
     prefs.write_text("{not json", encoding="utf-8")
-    assert user_prefs.load_model_memory()["entries"] == {}
+    with pytest.raises(ValueError, match="original file preserved"):
+        user_prefs.load_model_memory()
+    with pytest.raises(ValueError, match="original file preserved"):
+        user_prefs.remember_model_choice("valid", ENTRY)
+    assert prefs.read_text(encoding="utf-8") == "{not json"
     for key, entry in [("", ENTRY), ("k", {}), ("k", "x"), (None, ENTRY)]:
         with pytest.raises(ValueError):
             user_prefs.remember_model_choice(key, entry)
@@ -63,3 +75,31 @@ def test_only_the_newest_entries_are_kept(prefs):
         user_prefs.remember_model_choice(f"k{index}", {"clip_name": "c", "at": index})
     entries = user_prefs.load_model_memory()["entries"]
     assert len(entries) == user_prefs.MAX_ENTRIES and "k0" not in entries and f"k{user_prefs.MAX_ENTRIES + 4}" in entries
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+def test_nonfinite_preferences_remain_valid_json(prefs, value):
+    saved = user_prefs.remember_model_choice("diffusion|anima", {
+        "clip_name": "c", "at": value, "lora_stack": [{"name": "l", "strength": value}],
+    })
+    entry = saved["entries"]["diffusion|anima"]
+    assert entry["lora_stack"][0]["strength"] == 1
+    assert entry["at"] == 0
+    json.dumps(saved, allow_nan=False)
+    assert json.loads(prefs.read_text()) == saved
+
+
+@pytest.mark.parametrize("invalid", [
+    {"schema": -1, "entries": {"old": ENTRY}},
+    {"schema": "1", "entries": {"old": ENTRY}},
+    {"schema": True, "entries": {"old": ENTRY}},
+    {"schema": 1, "entries": [ENTRY]},
+])
+def test_invalid_schema_preserves_original_preferences_before_any_write(prefs, invalid):
+    prefs.parent.mkdir(parents=True)
+    original = json.dumps(invalid)
+    prefs.write_text(original, encoding="utf-8")
+    for action in (user_prefs.load_model_memory, lambda: user_prefs.remember_model_choice("new", ENTRY)):
+        with pytest.raises(ValueError, match="original file preserved"):
+            action()
+        assert prefs.read_text(encoding="utf-8") == original

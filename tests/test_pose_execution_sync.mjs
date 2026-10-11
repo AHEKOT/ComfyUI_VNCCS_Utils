@@ -24,7 +24,7 @@ function harness() {
     };
     const Widget = vm.runInNewContext(widgetSource + "\nPoseStudioWidget", context);
     vm.runInNewContext(syncSource, context);
-    return { Widget, node, uploads, handlers };
+    return { Widget, node, uploads, handlers, context };
 }
 
 test("SAM manager execution waits for cards invalidated by current character state", async () => {
@@ -68,3 +68,29 @@ test("SAM manager execution waits for cards invalidated by current character sta
     assert.deepEqual(uploads[0].captured_images, ["updated-card"]);
     assert.equal(uploads[0].node_id, "703_current-run");
 });
+
+for (const failure of ["apply", "upload"]) {
+    test(`ordinary SAM pose reports ${failure} failure to its execution token`, async () => {
+        const { node, uploads, handlers, context } = harness();
+        node.studioWidget = {
+            viewer: { isInitialized: () => true, applySAM3DImport: () => failure !== "apply" },
+            applyCapturedImageSize() {}, prepareSAM3DRenderFit: async () => null,
+            refreshSAMMeshOverlay: async () => {}, syncMeshProportionSlidersFromViewer() {},
+            applySAM3DFrameCameraParams() {}, setSkydomeFromCameraPrompt() {}, updateTabs() {},
+            ensureDebugLibraryReady: async () => {}, commitViewerPoseToCurrentEditor() {},
+            flushAnimationCacheUpload: async () => true, poseCaptures: ["capture"],
+        };
+        context.fetch = async (_url, options) => {
+            const body = JSON.parse(options.body); uploads.push(body);
+            return body.sync_error ? { ok: true } : {
+                ok: false, status: 413, json: async () => ({ error: "capture payload is too large" }),
+            };
+        };
+        await handlers.get("vnccs_apply_sam3d_pose")({ detail: {
+            node_id: "703", sync_token: "ordinary", pose_data: {},
+        } });
+        const last = uploads.at(-1);
+        assert.equal(last.node_id, "703_ordinary");
+        assert.match(last.sync_error, failure === "apply" ? /Failed to apply/ : /payload is too large/);
+    });
+}

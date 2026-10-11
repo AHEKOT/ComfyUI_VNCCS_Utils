@@ -8,8 +8,77 @@ import types
 import pytest
 from PIL import Image
 
+from helpers.unicanvas_package import load_unicanvas_package
+
+load_unicanvas_package("nodes")
+
 from nodes.unicanvas import gguf_compat, segment
 from nodes.unicanvas.describe_layers import clean_layer_name, layer_thumbnail
+
+
+@pytest.mark.parametrize("channels", [3, 4])
+def test_anima_uses_native_managed_lllite_without_moving_its_weights(monkeypatch, channels, tmp_path):
+    from nodes.unicanvas.models import anima
+    from nodes.unicanvas.models.registry import _get_unicanvas_model_module
+
+    weights = tmp_path / "existing controlnet" / anima.ANIMA_LLLITE_INPAINT_FILENAME
+    weights.parent.mkdir()
+    weights.write_bytes(b"existing")
+    model_patch = types.SimpleNamespace(model=types.SimpleNamespace(cond_in_channels=channels))
+    model, image, mask, patched = object(), object(), object(), object()
+    calls, folders = [], []
+
+    class Loader:
+        FUNCTION = "load_model_patch"
+        def load_model_patch(self, name):
+            calls.append(("load", name))
+            return (model_patch,)
+
+    class Apply:
+        FUNCTION = "apply_patch"
+        def apply_patch(self, **kwargs):
+            calls.append(("apply", kwargs))
+            return (patched,)
+
+    monkeypatch.setattr(sys.modules["nodes"], "NODE_CLASS_MAPPINGS", {"ModelPatchLoader": Loader, "AnimaLLLiteApply": Apply}, raising=False)
+    monkeypatch.setattr(sys.modules["folder_paths"], "add_model_folder_path", lambda *args, **kwargs: folders.append((args, kwargs)), raising=False)
+    monkeypatch.setattr(anima, "_ensure_anima_lllite_model", lambda *args: str(weights))
+    module = _get_unicanvas_model_module("anima")
+    if channels != 4:
+        with pytest.raises(ValueError, match="4-channel"):
+            module._apply_inpaint_lllite(model, image, mask, {}, "test")
+        assert calls == [("load", weights.name)]
+    else:
+        assert module._apply_inpaint_lllite(model, image, mask, {"anima_lllite_strength": .7}, "test") is patched
+        assert calls == [("load", weights.name), ("apply", dict(model=model, model_patch=model_patch, image=image,
+                                                               mask=mask, strength=.7, start_percent=0., end_percent=1.))]
+    assert folders == [(("model_patches", str(weights.parent)), {"is_default": True})]
+    assert weights.read_bytes() == b"existing"
+    assert list(tmp_path.rglob("*.safetensors")) == [weights]
+
+
+@pytest.mark.parametrize("key", ["sam1_huge", "sam2_large"])
+def test_sam_public_downloads_disable_implicit_credentials(monkeypatch, key):
+    calls = []
+    model = types.SimpleNamespace(to=lambda _device: None, eval=lambda: None)
+
+    def model_load(model_id, **kwargs):
+        calls.append((model_id, kwargs))
+        return model
+
+    def processor_load(model_id, **kwargs):
+        calls.append((model_id, kwargs))
+        return object()
+
+    for family, model_name, processor_name in (("sam", "SamModel", "SamProcessor"), ("sam2", "Sam2Model", "Sam2Processor")):
+        monkeypatch.setitem(sys.modules, f"transformers.models.{family}", types.SimpleNamespace(
+            **{model_name: types.SimpleNamespace(from_pretrained=model_load)}))
+        monkeypatch.setitem(sys.modules, f"transformers.models.{family}.processing_{family}", types.SimpleNamespace(
+            **{processor_name: types.SimpleNamespace(from_pretrained=processor_load)}))
+    monkeypatch.setattr(segment, "_SAM_CACHE", {})
+    monkeypatch.setattr(segment, "_torch_device", lambda: "cpu")
+    assert segment._load_sam_model(key)[0] is model
+    assert calls == [(segment.SAM_MODEL_IDS[key], {"token": False})] * 2
 
 
 def _fake_gguf(monkeypatch):
@@ -84,7 +153,7 @@ def test_sam3_falls_back_to_sam2_without_the_sam3_code(monkeypatch):
 
 
 def test_sam3_keeps_the_union_of_grounded_instances(monkeypatch):
-    import torch
+    torch = pytest.importorskip("torch")
 
     class _Processor:
         def set_image(self, image):
@@ -154,3 +223,93 @@ def test_v3_node_outputs_come_back_as_result_tuples(monkeypatch):
 
     monkeypatch.setattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {"V3": _V3Node}, raising=False)
     assert _call_comfy_node("V3", clip="c") == ("POS", "NEG", {"samples": 1})
+
+
+@pytest.mark.parametrize("helper", ["_call_comfy_node", "_call_node_method", "_call_loader_node"])
+def test_direct_node_call_reports_lifecycle_failures(monkeypatch, helper):
+    import nodes as comfy_nodes
+    from nodes.unicanvas import comfy_bridge
+
+    class Node:
+        FUNCTION = "execute"
+        def execute(self):
+            return (1,)
+
+    monkeypatch.setattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {"Node": Node}, raising=False)
+    def fail():
+        raise RuntimeError("node lifecycle failed")
+    monkeypatch.setattr(comfy_bridge, "_release_generation_state", fail)
+    with pytest.raises(RuntimeError, match="node lifecycle failed"):
+        if helper == "_call_comfy_node":
+            comfy_bridge._call_comfy_node("Node")
+        else:
+            getattr(comfy_bridge, helper)(["Node"], [])
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_naming_model_offloads_after_batch_even_on_failure(monkeypatch, fail):
+    from nodes.unicanvas import describe_layers
+    from nodes.unicanvas.imaging import _encode_png_data_url
+
+    moves = []
+    model = types.SimpleNamespace(to=moves.append)
+    monkeypatch.setattr(describe_layers, "_MODEL", {describe_layers.DEFAULT_NAMING_MODEL: (model, None, "cuda")})
+    def describe(image, key):
+        if fail:
+            raise RuntimeError("inference failed")
+        return "Subject"
+    monkeypatch.setattr(describe_layers, "_describe", describe)
+    payload = {"layers": [{"id": "A", "image": _encode_png_data_url(Image.new("RGBA", (2, 2)))}]}
+    if fail:
+        with pytest.raises(RuntimeError, match="inference failed"):
+            describe_layers._run_unicanvas_describe_layers(payload)
+    else:
+        assert describe_layers._run_unicanvas_describe_layers(payload)["names"] == [{"id": "A", "name": "Subject"}]
+    assert moves == ["cpu"]
+
+
+@pytest.mark.parametrize("key", ["sam1_huge", "sam2_large", "sam3"])
+def test_sam_offloads_cached_weights_after_inference_error(monkeypatch, key):
+    from nodes.unicanvas.imaging import _encode_png_data_url
+
+    moves = []
+    model = types.SimpleNamespace(to=moves.append)
+    processor = types.SimpleNamespace(device="cuda")
+    device = types.SimpleNamespace(type="cuda")
+    monkeypatch.setattr(segment, "_SAM_CACHE", {key: (model, processor, device)})
+    monkeypatch.setattr(segment, "_sam3_code", lambda: object())
+    def fail(*args):
+        raise RuntimeError("inference failed")
+    monkeypatch.setattr(segment, "_load_sam_model", fail)
+    monkeypatch.setattr(segment, "_sam3_mask", fail)
+    with pytest.raises(RuntimeError, match="inference failed"):
+        segment._run_unicanvas_segment({"model": key, "image": _encode_png_data_url(Image.new("RGBA", (2, 2))),
+                                       "points": [{"x": 1, "y": 1}]})
+    assert moves == ["cpu"]
+    if key == "sam3":
+        assert processor.device == "cpu"
+
+@pytest.mark.parametrize("key", ["sam1_huge", "sam2_large", "sam3"])
+def test_cached_sam_model_reactivates_for_next_request(monkeypatch, key):
+    moves = []
+    model = types.SimpleNamespace(to=moves.append)
+    processor = types.SimpleNamespace(device="cpu")
+    device = types.SimpleNamespace(type="cuda")
+    monkeypatch.setattr(segment, "_SAM_CACHE", {key: (model, processor, device)})
+    loaded = segment._load_sam3_model() if key == "sam3" else segment._load_sam_model(key)
+    assert loaded[0] is model
+    assert moves == [device]
+    if key == "sam3":
+        assert processor.device == "cuda"
+
+
+def test_successful_sam3_operation_offloads_after_returning_mask(monkeypatch):
+    from nodes.unicanvas.imaging import _encode_png_data_url
+    moves = []
+    processor = types.SimpleNamespace(device="cuda")
+    monkeypatch.setattr(segment, "_SAM_CACHE", {"sam3": (types.SimpleNamespace(to=moves.append), processor, None)})
+    monkeypatch.setattr(segment, "_sam3_code", lambda: object())
+    monkeypatch.setattr(segment, "_sam3_mask", lambda *args: Image.new("L", (2, 2), 255))
+    result = segment._run_unicanvas_segment({"model": "sam3", "image": _encode_png_data_url(Image.new("RGBA", (2, 2))),
+                                           "points": [{"x": 1, "y": 1}]})
+    assert result["status"] == "ok" and result["mask"].startswith("data:image/png;base64,")
+    assert moves == ["cpu"] and processor.device == "cpu"

@@ -11,10 +11,10 @@ import {
     modelUsesGenitals,
     parseMorphPack,
     solveMorph,
-} from "../web/vnccs_pose_morph_runtime.mjs";
+} from "../web/pose_studio/morph_runtime.mjs";
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
-const ASSET_PATH = path.resolve(TEST_DIR, "../web/assets/pose_studio_makehuman.v2.bin.gz");
+const ASSET_PATH = path.resolve(TEST_DIR, "../web/pose_studio/assets/pose_studio_makehuman.v2.bin.gz");
 let cachedData = null;
 
 function loadData() {

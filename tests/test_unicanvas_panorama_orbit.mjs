@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PanoramaOrbitControl, orbitPoint, orbitDrag, drawPanoramaOrbit } from "../web/vnccs_unicanvas_panorama_orbit.mjs";
-import { normalizePanorama } from "../web/vnccs_unicanvas_panorama.mjs";
+import { PanoramaOrbitControl, orbitPoint, orbitDrag, drawPanoramaOrbit } from "../web/unicanvas/panorama_orbit.mjs";
+import { normalizePanorama } from "../web/unicanvas/panorama.mjs";
 
 const camera = extra => normalizePanorama({ projection: "equirectangular", width: 4096, height: 2048, ...extra });
 class OrbitCanvas {

@@ -2,3 +2,7 @@
 # the Comfy Registry runtime archive.
 tests/
 scripts/
+PoseLibrary/
+.runtime_cache
+ModelLibrary
+docs

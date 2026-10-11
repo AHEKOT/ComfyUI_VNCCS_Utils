@@ -16,7 +16,7 @@ import {
     normalizePoseStudioCharacters,
     normalizeSAMProjectionFrame,
     serializePoseStudioCharacter,
-} from "../web/vnccs_pose_characters.mjs";
+} from "../web/pose_studio/characters.mjs";
 
 
 test("one-character one-pose scene wrappers remain individual library poses", () => {

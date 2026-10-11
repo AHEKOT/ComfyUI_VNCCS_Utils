@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-import torch
+torch = pytest.importorskip("torch")
 from PIL import Image
 
 from helpers.unicanvas_images import decode_png_data_url, png_data_url

@@ -14,7 +14,7 @@ import {
     parseCameraState,
     randomizeCameraState,
     serializeCameraState,
-} from "../web/vnccs_camera_control_utils.mjs";
+} from "../web/camera_control/utils.mjs";
 
 test("camera state parsing is backward compatible and normalized", () => {
     assert.deepEqual(parseCameraState("{broken"), DEFAULT_CAMERA_STATE);

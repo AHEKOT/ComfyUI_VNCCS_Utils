@@ -3,5 +3,5 @@ export function enqueueFactorySceneSave(previous, sceneId, payload, send) {
     const snapshot = globalThis.structuredClone
         ? globalThis.structuredClone(payload)
         : JSON.parse(JSON.stringify(payload));
-    return Promise.resolve(previous).catch(() => null).then(() => send(sceneId, snapshot));
+    return Promise.resolve(previous).catch(() => null).then(result => send(sceneId, snapshot, result));
 }

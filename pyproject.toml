@@ -1,7 +1,7 @@
 [project]
 name = "vnccs-utils"
 description = "VNCCS utility nodes: Pose Studio, UniCanvas, and 3D Factory."
-version = "0.6.9"
+version = "0.7.0"
 license = {file = "LICENSE"} 
 
 dependencies = [
@@ -10,7 +10,6 @@ dependencies = [
     "aiohttp",
     "av",
     "kornia",
-    "requests",
     "torch",
     "torchvision",
     "numpy",
@@ -19,11 +18,13 @@ dependencies = [
     "safetensors",
     "pytorch-lightning",
     "omegaconf",
+    "pyyaml",
     "yacs",
     "timm",
     "einops",
     "roma",
     "tqdm",
+    "dynamicprompts>=0.31,<1",
 ]
 
 classifiers = [
@@ -46,12 +47,10 @@ Icon = "https://github.com/AHEKOT/ComfyUI_VNCCS/blob/main/images/VNCCS_LOGO.png?
 NodeIds = [
     "VNCCS_PositionControl",
     "VNCCS_VisualPositionControl",
-    "VNCCS_QWEN_Detailer",
     "VNCCS_BBox_Extractor",
-    "VNCCS_ModelManager",
-    "VNCCS_ModelSelector",
     "VNCCS_PoseStudio",
     "VNCCS_UniCanvas",
     "VNCCS_3DFactory",
-    "VNCCS_Config"
+    "VNCCS_Config",
+    "VNCCS_PromptDesigner"
 ]

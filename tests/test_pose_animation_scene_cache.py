@@ -1,45 +1,8 @@
-import json
 import unittest
+import tempfile
 from pathlib import Path
 
-
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def _validate_animation_payload(data):
-    animation = data.get("animation")
-    if not isinstance(animation, dict):
-        raise ValueError("animation must be an object")
-    total_keys = 0
-    animations = [animation]
-    character_animations = animation.get("characterAnimations", [])
-    if character_animations is not None:
-        if not isinstance(character_animations, list) or len(character_animations) > 3:
-            raise ValueError("animation.characterAnimations must contain at most three entries")
-        for entry in character_animations:
-            nested = entry.get("animation") if isinstance(entry, dict) else None
-            if not isinstance(nested, dict):
-                raise ValueError("character animation must be an object")
-            animations.append(nested)
-    for clip in animations:
-        tracks = clip.get("tracks", {})
-        if not isinstance(tracks, dict):
-            raise ValueError("animation.tracks must be an object")
-        for track in tracks.values():
-            if not isinstance(track, dict):
-                continue
-            keys = track.get("keys", [])
-            if not isinstance(keys, list):
-                raise ValueError("animation track keys must be a list")
-            total_keys += len(keys)
-            if total_keys > 100:
-                raise ValueError("animation contains too many keyframes")
-    if len(json.dumps(animation, separators=(",", ":"))) > 100_000:
-        raise ValueError("animation payload is too large")
-    return animation, int(data.get("revision") or 0)
-
-
-VALIDATOR = {"_vnccs_validate_pose_animation_payload": _validate_animation_payload}
+from helpers.runtime_caches import load_runtime_caches
 
 
 def _clip(character_marker, key_count=1):
@@ -57,6 +20,13 @@ def _clip(character_marker, key_count=1):
 
 
 class PoseAnimationSceneCacheValidationTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.validator = load_runtime_caches(Path(temporary.name))
+        self.validator["pose_service"]._POSE_ANIMATION_CACHE_MAX_KEYS = 100
+        self.validator["pose_service"]._POSE_ANIMATION_CACHE_MAX_TOTAL_CHARS = 100_000
+
     def test_accepts_primary_clip_plus_three_character_clips(self):
         animation = {
             **_clip("main"),
@@ -67,7 +37,7 @@ class PoseAnimationSceneCacheValidationTests(unittest.TestCase):
             ],
         }
 
-        validated, revision = VALIDATOR["_vnccs_validate_pose_animation_payload"]({
+        validated, revision = self.validator["_vnccs_validate_pose_animation_payload"]({
             "animation": animation,
             "revision": "7",
         })
@@ -86,7 +56,7 @@ class PoseAnimationSceneCacheValidationTests(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(ValueError, "at most three"):
-            VALIDATOR["_vnccs_validate_pose_animation_payload"]({"animation": animation})
+            self.validator["_vnccs_validate_pose_animation_payload"]({"animation": animation})
 
     def test_rejects_malformed_nested_character_clip(self):
         animation = {
@@ -95,7 +65,7 @@ class PoseAnimationSceneCacheValidationTests(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(ValueError, "character animation must be an object"):
-            VALIDATOR["_vnccs_validate_pose_animation_payload"]({"animation": animation})
+            self.validator["_vnccs_validate_pose_animation_payload"]({"animation": animation})
 
     def test_key_limit_is_aggregated_across_every_character_clip(self):
         animation = {
@@ -104,8 +74,18 @@ class PoseAnimationSceneCacheValidationTests(unittest.TestCase):
                 {"id": "character-2", "animation": _clip("second", key_count=41)},
             ],
         }
-        with self.assertRaisesRegex(ValueError, "too many keyframes"):
-            VALIDATOR["_vnccs_validate_pose_animation_payload"]({"animation": animation})
+        with self.assertRaisesRegex(ValueError, "animation key limit"):
+            self.validator["_vnccs_validate_pose_animation_payload"]({"animation": animation})
+
+    def test_distinct_workflow_snapshots_survive_memory_eviction(self):
+        write = self.validator["_vnccs_write_pose_animation_cache_file"]
+        read = self.validator["vnccs_get_pose_animation_cache"]
+        for animation_id, marker in (("node_snapshot_a", "original"), ("node_snapshot_b", "edited")):
+            write(animation_id, {"revision": 1, "animation": _clip(marker)})
+            read(animation_id)
+        self.validator["VNCCS_POSE_ANIMATION_CACHE"].clear()
+        self.assertEqual(read("node_snapshot_a")["animation"]["basePose"]["character"], "original")
+        self.assertEqual(read("node_snapshot_b")["animation"]["basePose"]["character"], "edited")
 
 
 if __name__ == "__main__":

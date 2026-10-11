@@ -88,7 +88,7 @@ test("Terrain creation completes scene merge, inspector rendering and state sync
 });
 
 test("An empty viewport pick clears selection without treating camera motion as a click", async () => {
-    const { Factory3DViewer } = await import("../web/vnccs_3d_factory_viewer.js");
+    const { Factory3DViewer } = await import("../web/factory3d/viewer.js");
     const THREE = await import("../web/vendor/spark/three.module.js");
     const view = Object.create(Factory3DViewer.prototype);
     let cleared = 0;
@@ -104,7 +104,7 @@ test("An empty viewport pick clears selection without treating camera motion as 
     assert.equal(cleared, 1);
     view._pick({ clientX: 200, clientY: 150, shiftKey: true });
     assert.equal(cleared, 1);
-    const viewerSource = fs.readFileSync(new URL("../web/vnccs_3d_factory_viewer.js", import.meta.url), "utf8");
+    const viewerSource = fs.readFileSync(new URL("../web/factory3d/viewer.js", import.meta.url), "utf8");
     assert.match(viewerSource, /if \(look\.moved\) \{[\s\S]*?return;/);
     assert.match(viewerSource, /if \(distance > 4 \|\| event\.button !== 0\) return;\s*this\._pick\(event\)/);
 });

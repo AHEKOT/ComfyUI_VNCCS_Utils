@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import * as THREE from "../web/vendor/spark/three.module.js";
-import { Factory3DViewer, normalizedLighting, applyFactoryPrimitiveMaterial } from "../web/vnccs_3d_factory_viewer.js";
+import { Factory3DViewer, normalizedLighting, applyFactoryPrimitiveMaterial } from "../web/factory3d/viewer.js";
 import { createParametricGeometry } from "../web/factory3d/geometry/parametric_parts.mjs";
 import { allocateLocalLightShadows } from "../web/factory3d/lighting_policy.mjs";
 import { hasRenderableFactoryScene } from "../web/factory3d/scene_content.mjs";

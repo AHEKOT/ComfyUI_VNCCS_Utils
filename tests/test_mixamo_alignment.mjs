@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import * as THREE from "../web/three.module.js";
-import { buildMixamoWorldKeypoints } from "../web/vnccs_mixamo_import.js";
+import * as THREE from "../web/vendor/three/three.module.js";
+import { buildMixamoWorldKeypoints } from "../web/pose_studio/imports/mixamo.js";
 import {
     AnalyticIKSolver,
     clipSAMProjectionFrameToViewport,
@@ -10,7 +10,7 @@ import {
     computeEquivalentPerspectiveZoom,
     computeSAMProjectionFrameFit,
     PoseViewerCore,
-} from "../web/vnccs_pose_studio_core.js";
+} from "../web/pose_studio/core.js";
 
 test("fixed Pose Studio FOV exactly compensates SAM FOV through camera zoom", () => {
     const samFov = 38.942441885311695;

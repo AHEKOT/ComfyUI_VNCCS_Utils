@@ -11,9 +11,8 @@ import torch
 
 from ..comfy_bridge import _call_node_method
 from ..debug import _latent_debug, _tensor_debug, _uc_log
-from ..latents import _unwrap_latent_samples
-from ..loras import LoraRequirement
-from ..paths import _get_full_path_agnostic, _safe_get_folder_paths
+from ..loras import LoraRequirement, _load_model_patch
+from ..paths import _get_full_path_agnostic, _resolve_model_filename, _safe_get_folder_paths
 from .base import UniCanvasModelModule
 from .capabilities import ModelCapabilities, PromptGuide
 
@@ -85,14 +84,6 @@ class AnimaUniCanvasModule(UniCanvasModelModule):
 
     def uses_differential_diffusion(self, mode: str) -> bool:
         return False
-
-    def encode_prompt(self, clip: Any, text: str, _gen_settings: dict[str, Any]):
-        encoded = _call_node_method(["CLIPTextEncode"], ["encode"], clip=clip, text=text or "")
-        if isinstance(encoded, tuple) and encoded:
-            return encoded[0]
-        if encoded is not None:
-            return encoded
-        return super().encode_prompt(clip, text, _gen_settings)
 
     def validate_conditioning(self, positive: Any, negative: Any, gen_settings: dict[str, Any]) -> None:
         _validate_anima_conditioning(positive, negative, str(gen_settings.get("clip_name") or ""))
@@ -169,21 +160,22 @@ class AnimaUniCanvasModule(UniCanvasModelModule):
         gen_settings: dict[str, Any],
         draw_id: str,
     ) -> Any:
-        try:
-            from ...anima_lllite_internal import apply_anima_lllite_inpaint
-        except ImportError:
-            from anima_lllite_internal import apply_anima_lllite_inpaint
+        import folder_paths
 
         lllite_name = str(gen_settings.get("anima_lllite_name") or ANIMA_LLLITE_INPAINT_FILENAME).strip()
         weights_path = _ensure_anima_lllite_model(lllite_name, draw_id)
+        # Keep existing controlnet files available to the native ModelPatchLoader.
+        folder_paths.add_model_folder_path("model_patches", os.path.dirname(weights_path), is_default=True)
+        model_patch = _load_model_patch(os.path.basename(weights_path))
+        if model_patch.model.cond_in_channels != 4:
+            raise ValueError("Anima inpaint LLLite requires a 4-channel model patch.")
         strength = float(gen_settings.get("anima_lllite_strength", 1.0))
-        patched = apply_anima_lllite_inpaint(
-            model=model,
-            weights_path=weights_path,
-            image=image,
-            mask=mask,
-            strength=strength,
+        patched = _call_node_method(
+            ["AnimaLLLiteApply"], ["apply_patch"], model=model, model_patch=model_patch,
+            image=image, mask=mask, strength=strength, start_percent=0.0, end_percent=1.0,
         )
+        if patched is None:
+            raise RuntimeError("Anima LLLite requires ComfyUI's AnimaLLLiteApply node. Update ComfyUI.")
         _uc_log(
             draw_id,
             "Anima LLLite inpaint applied",
@@ -195,28 +187,6 @@ class AnimaUniCanvasModule(UniCanvasModelModule):
             },
         )
         return patched
-
-    def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
-        latent_payload = samples if isinstance(samples, dict) else {"samples": samples}
-        latent_tensor = _unwrap_latent_samples(latent_payload)
-        decode_payload = {"samples": latent_tensor}
-        decoded = _call_node_method(
-            ["VAEDecodeTiled"],
-            ["decode"],
-            samples=decode_payload,
-            vae=vae,
-            tile_size=512,
-            tile_x=512,
-            tile_y=512,
-            overlap=64,
-            temporal_size=64,
-            temporal_overlap=8,
-        )
-        if isinstance(decoded, tuple) and decoded:
-            return decoded[0]
-        if decoded is not None:
-            return decoded
-        return vae.decode_tiled(latent_tensor, tile_x=512, tile_y=512, overlap=64)
 
     # -- draw hooks -----------------------------------------------------------------------
 
@@ -249,7 +219,7 @@ class AnimaUniCanvasModule(UniCanvasModelModule):
             ctx.draw_id,
             "Anima LLLite empty latent returned",
             {
-                "reason": "Anima LLLite inpaint workflow uses an empty latent; structure comes through the bundled LLLite model wrapper",
+                "reason": "Anima LLLite inpaint workflow uses an empty latent; structure comes through the native AnimaLLLiteApply model patch",
                 "latent": _latent_debug(latent),
             },
         )
@@ -267,9 +237,12 @@ def _ensure_anima_lllite_model(lllite_name: str, draw_id: str = "unknown") -> st
             f"Expected {ANIMA_LLLITE_INPAINT_FILENAME} from {ANIMA_LLLITE_REPO_ID}."
         )
 
-    found = _get_full_path_agnostic(folder_paths, "controlnet", requested, require_exists=True)
+    installed = _resolve_model_filename(folder_paths, "controlnet", requested)
+    found = _get_full_path_agnostic(folder_paths, "controlnet", installed, require_exists=True)
     if found:
         return found
+    if "/" in requested:
+        raise ValueError(f"Anima LLLite model not found: {requested}")
     found = _get_full_path_agnostic(folder_paths, "controlnet", basename, require_exists=True)
     if found:
         return found

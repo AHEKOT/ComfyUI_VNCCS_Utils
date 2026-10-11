@@ -1,4 +1,4 @@
-"""LoRA and model-patch loading with a process-wide cache."""
+"""LoRA and model-patch loading."""
 
 from __future__ import annotations
 
@@ -7,15 +7,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .comfy_bridge import _call_node_method
-from .locks import _MODEL_CACHE_LOCK
+from .comfy_bridge import _call_node_method, _call_comfy_node
 from .paths import _get_full_path_agnostic, _resolve_model_filename
 
 
-_LORA_CACHE: dict[str, Any] = {}
-
-
 def _clone_model_clip(model: Any, clip: Any) -> tuple[Any, Any]:
+    if getattr(model, "is_dynamic", lambda: False)():
+        model = model.get_non_dynamic_delegate()
     return (model.clone() if hasattr(model, "clone") else model, clip.clone() if hasattr(clip, "clone") else clip)
 
 
@@ -30,11 +28,21 @@ def _lora_name_matches(value: Any, expected: str) -> bool:
 
 
 def _lora_name_in(value: Any, names: list[str] | tuple[str, ...]) -> bool:
-    return any(_lora_name_matches(value, name) for name in names)
+    key = _lora_file_key(value)
+    return any(key == _lora_file_key(name) for name in names)
+
+
+def _lora_file_key(name: Any) -> str:
+    try:
+        path = _get_lora_full_path(str(name or ""))
+    except ValueError:
+        # Missing files still reach the loader's error; never collapse distinct folders.
+        path = str(name or "").replace("\\", "/").strip()
+    return os.path.normcase(os.path.realpath(path))
 
 
 def _active_lora_names(lora_stack: Any) -> list[str]:
-    """Names a LoRA stack actually applies (enabled, non-zero strength)."""
+    """Names a LoRA stack actually applies to either the model or CLIP."""
     names = []
     for item in lora_stack if isinstance(lora_stack, list) else []:
         if not isinstance(item, dict) or item.get("enabled") is False:
@@ -42,9 +50,11 @@ def _active_lora_names(lora_stack: Any) -> list[str]:
         name = str(item.get("name") or item.get("lora_name") or "")
         try:
             strength = float(item.get("strength", item.get("model_strength", 1.0)))
+            clip_strength = item.get("clip_strength")
+            effective_clip = strength if clip_strength is None else float(clip_strength)
         except (TypeError, ValueError):
             continue
-        if name and strength != 0:
+        if name and (strength != 0 or effective_clip != 0):
             names.append(name)
     return names
 
@@ -54,8 +64,6 @@ def _get_lora_full_path(lora_name: str) -> str:
 
     path = _get_full_path_agnostic(folder_paths, "loras", lora_name, require_exists=True)
     if not path:
-        # Defaults and presets name a subfolder ("Krea2/x.safetensors") the user may not use
-        # ("krea\x.safetensors"): fall back to the installed file with the same name.
         resolved = _resolve_model_filename(folder_paths, "loras", lora_name)
         if resolved != lora_name:
             path = _get_full_path_agnostic(folder_paths, "loras", resolved, require_exists=True)
@@ -65,18 +73,20 @@ def _get_lora_full_path(lora_name: str) -> str:
 
 
 def _apply_lora_cached(model: Any, clip: Any, lora_name: str, strength: float, clip_strength: float | None = None):
-    if not lora_name or float(strength or 0) == 0:
+    effective_clip = strength if clip_strength is None else clip_strength
+    if not lora_name or (float(strength or 0) == 0 and float(effective_clip or 0) == 0):
         return model, clip
-    import comfy.sd
-    import comfy.utils
+    import folder_paths
 
-    with _MODEL_CACHE_LOCK:
-        lora = _LORA_CACHE.get(lora_name)
-    if lora is None:
-        lora = comfy.utils.load_torch_file(_get_lora_full_path(lora_name), safe_load=True)
-        with _MODEL_CACHE_LOCK:
-            _LORA_CACHE[lora_name] = lora
-    return comfy.sd.load_lora_for_models(model, clip, lora, strength, strength if clip_strength is None else clip_strength)
+    lora_name = _resolve_model_filename(folder_paths, "loras", lora_name, allow_subfolder_fallback=True)
+    if effective_clip == 0:
+        return _call_comfy_node(
+            "LoraLoaderModelOnly", model=model, lora_name=lora_name, strength_model=strength,
+        )[0], clip
+    return _call_comfy_node(
+        "LoraLoader", model=model, clip=clip, lora_name=lora_name,
+        strength_model=strength, strength_clip=effective_clip,
+    )
 
 
 def _load_model_patch(patch_name: str):
@@ -142,6 +152,8 @@ class LoraRequirement:
 
     def resolve(self, settings: dict[str, Any]) -> tuple[str, float] | None:
         """Return ``(lora_name, strength)`` when the rule applies to these settings."""
+        if not self.required and (settings.get("_config_model_override") or settings.get("model_loader") == "external"):
+            return None
         name = str(settings.get(self.name_setting) or self.default_name or "")
         if not name:
             return None
@@ -159,6 +171,10 @@ class LoraRequirement:
             return None
         if self.resolver is not None and (self.resolve_match is None or _lora_name_matches(name, self.resolve_match)):
             name = self.resolver()
+        elif name == self.default_name and "/" in name.replace("\\", "/"):
+            import folder_paths
+
+            name = _resolve_model_filename(folder_paths, "loras", name, allow_subfolder_fallback=True)
         return name, strength
 
     def describe(self) -> dict[str, Any]:
@@ -206,15 +222,17 @@ def _apply_lora_stack(model: Any, clip: Any, lora_stack: Any, skip_names: list[s
         return model, clip
     applied = list(skip_names)
     for item in lora_stack:
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or item.get("enabled") is False:
             continue
         lora_name = str(item.get("name") or item.get("lora_name") or "")
         if _lora_name_in(lora_name, applied):
             continue
         strength = float(item.get("strength", item.get("model_strength", 1.0)))
-        if strength != 0:
-            applied.append(lora_name)
         clip_strength = item.get("clip_strength", None)
+        effective_clip = strength if clip_strength is None else float(clip_strength)
+        if strength == 0 and effective_clip == 0:
+            continue
+        applied.append(lora_name)
         model, clip = _apply_lora_cached(
             model,
             clip,

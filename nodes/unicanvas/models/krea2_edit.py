@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from ..comfy_bridge import _call_node_method
-from ..latents import _unwrap_latent_samples
 from ..loras import LoraRequirement
 from .base import UniCanvasModelModule, _reference_image_slots
 from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
@@ -20,7 +19,7 @@ KREA2_EDIT_DEFAULTS = {
     "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
     "vae_name": "qwen_image_vae.safetensors",
     "clip_type": "krea2",
-    # Found by file name in any loras subfolder (krea\, krea2\, Krea2/...): loras._get_lora_full_path.
+    # The family's default LoRA resolves by filename; custom subfolder paths stay exact.
     "krea2_edit_lora_name": "Krea2/krea2_identity_edit_v1_2.safetensors",
     "krea2_likeness": 4.0,
     "sampler_name": "euler",
@@ -34,6 +33,8 @@ KREA2_EDIT_DEFAULTS = {
 @dataclass(frozen=True)
 class Krea2EditUniCanvasModule(UniCanvasModelModule):
     """Identity Edit v1.2: mandatory LoRA, grounded Qwen3-VL and clean source tokens."""
+
+    decode_tiled: ClassVar[bool] = False
 
     sampling_scratch_keys: ClassVar[tuple[str, ...]] = ("_krea2_edit_clip", "_krea2_edit_image", "_krea2_edit_image_b", "_krea2_edit_vae")
 
@@ -91,11 +92,13 @@ class Krea2EditUniCanvasModule(UniCanvasModelModule):
         clip = gen_settings.pop("_krea2_edit_clip")
         encoder = Krea2EditGroundedEncode()
         # image = the working area (background), image_b = the one reference (character).
-        image_b = _reference_image_slots(image_tensor, gen_settings).get(2)
-        positive = encoder.encode(clip, positive, image=image_tensor, image_b=image_b, grounding_px=768)[0]
+        slots = _reference_image_slots(image_tensor, gen_settings)
+        image = slots.get(1)
+        image_b = slots.get(2)
+        positive = encoder.encode(clip, positive, image=image, image_b=image_b, grounding_px=768)[0]
         # Trained unconditional: the SAME images with an empty instruction.
-        negative = encoder.encode(clip, "", image=image_tensor, image_b=image_b, grounding_px=768)[0]
-        gen_settings["_krea2_edit_image"] = image_tensor
+        negative = encoder.encode(clip, "", image=image, image_b=image_b, grounding_px=768)[0]
+        gen_settings["_krea2_edit_image"] = image
         gen_settings["_krea2_edit_image_b"] = image_b
         gen_settings["_krea2_edit_vae"] = vae
         return positive, negative
@@ -117,9 +120,6 @@ class Krea2EditUniCanvasModule(UniCanvasModelModule):
                                 image_b=gen_settings.pop("_krea2_edit_image_b", None))
         return super().sample_latent(model, positive, negative, latent, seed, steps, cfg,
                                      sampler_name, scheduler, 1.0, gen_settings, draw_id, width, height)
-
-    def decode_samples(self, vae, samples, gen_settings):
-        return vae.decode(_unwrap_latent_samples(samples))
 
     # -- settings and draw hooks ------------------------------------------------------------
 

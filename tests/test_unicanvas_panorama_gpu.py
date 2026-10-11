@@ -58,7 +58,7 @@ class NativePanoramaGPU:
             ("glGetError", u, []),
         ]:
             function(name, result, *arguments)
-        source = (Path(__file__).resolve().parents[1] / "web/vnccs_unicanvas_panorama.mjs").read_text()
+        source = (Path(__file__).resolve().parents[1] / "web/unicanvas/panorama.mjs").read_text()
         self.program = self.glCreateProgram()
         for name, kind in [("VERTEX", 0x8B31), ("FRAGMENT", 0x8B30)]:
             shader_source = re.search(rf"const {name} = `([\s\S]*?)`;", source)[1]

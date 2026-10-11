@@ -85,10 +85,15 @@ def normalize_lora_stack(raw: Any) -> list[dict[str, Any]]:
 def apply_lora_stack(model: Any, clip: Any, lora_stack: list[dict[str, Any]], config: Any = None):
     applied: list[str] = []
     for item in lora_stack:
-        if not item.get("enabled") or abs(float(item.get("strength", 1.0))) <= 1e-6:
+        if not item.get("enabled"):
+            continue
+        strength = float(item.get("strength", 1.0))
+        clip_strength = item.get("clip_strength")
+        effective_clip = strength if clip_strength is None else float(clip_strength)
+        if abs(strength) <= 1e-6 and abs(effective_clip) <= 1e-6:
             continue
         # The same file is applied once; later duplicates are dropped silently.
-        key = os.path.basename(str(item["name"]).replace("\\", "/").strip().lower())
+        key = os.path.normcase(os.path.realpath(_resolve_lora_path(item["name"])))
         if key in applied:
             continue
         applied.append(key)

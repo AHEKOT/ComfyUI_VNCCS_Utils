@@ -1,3 +1,174 @@
+# Version 0.7.0
+## New Prompt Designer Node, Multi-Document UniCanvas, and Editor Bug Fixes
+
+### New Node: VNCCS Prompt Designer
+
+* **Added `VNCCS_PromptDesigner`**: A new visual prompt-building node in `VNCCS/prompt`, with STRING outputs that connect to standard ComfyUI text encoders and other prompt consumers.
+* **Tabbed prompt editor**: Work on multiple prompt drafts, combine ordinary multiline text with reusable block cards, and generate from the active prompt tab.
+* **Reusable blocks**: Drag blocks into the prompt, edit their variants, organize cards by category and color, and search the library. Repeated block insertions can sample independently.
+* **Dynamic Prompts syntax**: Supports choices, weighted variants, nested expressions, multiple-choice expressions, and variables without rewriting manually authored separators or line breaks.
+* **Random and cyclic sampling**: Choose random or sequential block variants, keep a reproducible seed or randomize it for each queued generation, and retain the cycle position in saved workflows.
+* **Conditional fragments**: Build If/Else sections using equals, not equals, contains, and not contains checks, including additional AND/OR conditions. Checks use the resolved block insertion rather than sampling it again.
+* **Multiple prompt outputs**: Multi-prompt fragments produce up to 16 separate STRING outputs. The widget exposes the active outputs and preserves existing connections when fragments are edited or removed.
+* **Prompt and variant previews**: Preview the resolved prompt and block choices, with the same seeded rendering used by node execution. Invalid syntax reports an error while retaining authored text and the last valid preview.
+* **Undo/Redo and workflow state**: Prompt text, blocks, conditions, tabs, seeds, and sampling settings survive workflow serialization. Typing groups into undo steps; discrete edits retain their own history entries.
+* **Persistent prompt library**: Automatically save drafts and store reusable blocks and complete prompt templates in `PromptLibrary`. Atomic writes, revision checks, backups, and retained conflict drafts protect authored content.
+* **Bundled starting cards**: Includes background, color, clothing, hairstyle, and Anima style cards, kept separate from user-created library content. `dynamicprompts` is included in the updated requirements.
+
+### UniCanvas: New and Updated Features
+
+* **Named canvas documents**: A canvas manager creates, opens, renames, and deletes independent documents. Each canvas owns its layers, masks, poses, references, generation settings, panorama data, and output cache; model weights remain shared.
+* **New canvas preserves existing work**: Creating a canvas saves the current document instead of deleting its pixels. Switching restores each document's session history and viewport. Manager cards report the disk usage of owned snapshots and outputs.
+* **Transient result staging**: Unaccepted generations are excluded from document JSON, caches, saved workflows, and the catalog. Switching asks before discarding staging; deleting a document preserves immutable snapshots referenced by saved workflows.
+* **Generation edit lock**: Layers, drawing, masks, transforms, generation bounds, panorama camera, pose edits, imports, Undo/Redo, and document management stay locked from request preparation until completion or settled cancellation. Pan, zoom, Fit, scrolling, settings, generation parameters, progress, and Stop remain available.
+* **Complete dependency setup**: Presets and Custom mode list missing models, encoders, VAEs, ControlNets, and required LoRAs. Selected files download with live byte progress; installed files are reused and repeated requests do not create duplicate jobs.
+* **Standalone workspace**: The standalone tab follows ComfyUI's theme, preserves native menus and panels, and adapts sidebar and toolbar sizes to the available space.
+* **Use Layers and references**: Choose whether canvas layers are included as a reference. Uploaded references retain their socket positions, including gaps; image labels follow the selected model's numbering.
+* **Qwen Edit 2.1**: Generation and editing use native ComfyUI nodes and full denoising. The user's prompt remains unchanged, connected images are numbered consecutively, and decoded alpha is preserved without a transparency switch or forced white background.
+* **Qwen Edit 2.1 pose generation**: Generate from Pose Studio's pose and character images using the dedicated `VNCCS_QI2_PoseStudioV1.1.safetensors` model-only LoRA. The setup dialog offers missing copies and reuses installed ones.
+* **Native Viggle Turbo**: Qwen Turbo uses ComfyUI's LoRA loader and the author's registered `ViggleTurboSigmas` node. The author's node must be installed; the supported schedule uses six steps, CFG 1, and full denoising.
+* **Brush and shapes**: Brush paints color on raster layers and white pixels on masks, replacing the separate Mask Brush control. Shape Settings offers Square, Circle, and Triangle with continuous drag previews.
+* **SAM selection controls**: SAM 3 is the default. Add and Subtract modes use green keep points and red remove points; the bottom panel provides guidance, and the pink preview has an exact black-and-white boundary.
+* **Mask availability**: The Masks header has an Add mask layer button. Deleting the last mask creates a blank replacement in the same undo step; legacy restoration and Flatten also retain a mask.
+* **Inference scale**: Standalone controls display megapixels and update expected generation dimensions continuously while dragging or typing.
+
+### UniCanvas: Bug Fixes
+
+#### Saving, Restoration, and Workflow Outputs
+
+* **Immutable workflow pixels**: Later editing and autosaving no longer change the canvas snapshot referenced by an older saved workflow.
+* **Independent duplicated nodes**: A copied node restores the original pixels, then writes to its own cache instead of sharing a mutable document with the source node.
+* **Large standalone documents**: Durable server storage avoids browser storage size limits. Quota failures retain unsaved drafts instead of stopping or silently losing saves.
+* **Failed restoration**: Invalid JSON, unsupported schemas, missing pixels, and failed decoding preserve authored workflow bytes and existing content. They cannot save the constructor's empty canvas over the original document.
+* **Overlapping restoration**: An older constructor, workflow, or image-load callback cannot unlock saving, replace pixels, or overwrite status after a newer document starts restoring.
+* **Workflow metadata and cached pixels**: Current layer geometry, visibility, and explicit clearing take precedence over stale cache metadata. Backups supply only missing matching pixels; deleted layers are not resurrected.
+* **Undo/Redo persistence**: Restored raster pixels are uploaded, so reopening or queueing after Undo/Redo uses the visible result.
+* **Ordered and acknowledged saves**: Rapid edits and closing-page saves keep their own pixel payloads and revisions. An older upload cannot confirm a newer draft, overwrite the final save, or publish into a replacement document.
+* **Concurrent standalone tabs**: Stale writers cannot overwrite another tab's saved pixels. Conflicting edits are retained as durable drafts and remain accessible after reload.
+* **Document recovery and selection**: Failed document saves or loads preserve the current canvas. Validated backups recover damaged manifests without deleting the original bytes; reload follows the current durable document selection.
+* **Queue waits for current output**: Queueing waits for current layer pixels and flattened output, including updated bounds. Failed or stale upload acknowledgements stop queueing rather than exporting an older image.
+* **ComfyUI output invalidation**: Changes to pixel caches invalidate node outputs even when serialized layer metadata is unchanged.
+* **Persistent caches**: Saved canvas pixels and animation snapshots survive temporary-folder cleanup, memory-cache eviction, age, and cache-count limits. Legacy temporary caches migrate when read.
+* **Safe page exit**: Closing the page warns about work that has neither an acknowledged save nor a usable backup. Successful retries clear the warning.
+
+#### Interaction, Tools, and Image Files
+
+* **Continuous movement**: Layer and generation-box gestures render during pointer movement at different zoom levels, including when a drag enters the viewport. Release commits one history entry without a final position jump.
+* **Pointer ownership**: A gesture stays with the pointer that started it; another pointer or a cancelled capture cannot continue or hijack it. Panorama rotation uses the same ownership rule.
+* **Layer controls**: Opacity and other layer controls show every input value and record one undo command per completed gesture.
+* **High-resolution transforms**: Moving high-resolution layers retains their original pixel offset. Transforming masks preserves their opacity in both the preview and applied result.
+* **History memory**: Flat canvases use the same bounded history budget as panoramas, including masks retained by generation staging.
+* **SAM response ownership**: Results cannot apply after their target layer changes, after points are cleared, or after the document is replaced. Editing pixels after segmentation invalidates Apply.
+* **SAM history**: Undo/Redo restores selection points and previews. After Apply, Undo restores layer pixels immediately; obsolete preview redo cannot mask changed content.
+* **Background removal**: Delayed results cannot overwrite changed layers or another document. Undo is recorded when a valid result is applied, preserving unrelated edits.
+* **Color Match**: Strength previews update continuously where supported, commit once, and discard older asynchronous previews. Cancel preserves unrelated edits, and reference composites exclude mask layers.
+* **PSD export**: Exports use native high-resolution layer pixels and the same world bounds as the viewport, preserving fractional opacity, blend modes, visibility, and stacking order.
+* **PSD import**: Hidden parent groups keep their children hidden. Unsupported group appearance is reported; failed canvas expansion does not add an empty layer, and stale imports cannot enter a replacement document.
+* **Layer clipboard copy**: Copying starts within the click gesture and preserves native RGBA pixels. Unsupported, denied, or insecure clipboard access opens an image preview for copying through the browser's native menu.
+* **Layer image downloads**: Save image downloads the selected layer as a PNG at its native raster, high-resolution, or panorama size. Filenames are sanitized and encoding errors are visible.
+* **Embedded pose workspace**: Entering, saving, or cancelling pose edits preserves standalone pan and zoom. Stage coordinates, generation-box overlays, and initial pose framing stay aligned; intermediate initialization frames remain hidden.
+* **Character reference races**: Older selected-layer or uploaded-character previews cannot overwrite a newer character choice. Stopped pose preparation cannot later commit or leave a reused editor unresponsive.
+* **Panorama and zoom**: Imported live poses remain aligned with raster placement in scaled and native-resolution modes. Small wheel inputs accumulate correctly through zoom snaps.
+* **Responsive redraws**: Unchanged canvas sizes and sidebar selections avoid redundant paints; unchanged layer pixels reuse encoded PNGs while metadata remains current. Pan and zoom do not trigger unnecessary pixel saves.
+
+#### Generation, Models, and VNCSS Config
+
+* **Captured run settings**: Generation captures settings before asynchronous preparation. Changes to prompts, outpaint overlap, and other parameters during the request affect the next run.
+* **Repeated Generate**: Pending reference preparation blocks duplicate generation requests and releases the controls on success, failure, or cancellation.
+* **Stop during preparation**: Stop cancels stalled save, reference, pose, or result-decoding preparation. Late completion cannot publish staging or change the next run.
+* **Scoped cancellation**: Stopping a queued draw cancels it before inference; stopping one canvas does not interrupt another canvas's active draw. Failed Stop requests remain retryable, and cancelled graph draws stop result polling.
+* **Progress polling**: Slow requests do not overlap or move sampling progress backwards. Responses from a finished, stopped, or replaced draw are ignored.
+* **Generation coordinates**: Result images and masks retain the request's captured generation-box position and size through acceptance. Graph outputs match saved result pixels and preserve source pixels outside the mask.
+* **Masked-edit geometry**: Crop and stitch is off by default and remains an explicit option for non-edit models. Edit models retain the full generation box so working images and references use matching geometry.
+* **Qwen masked edits**: Inpaint and outpaint remove source pixels in the selected region, use gray holes and the outpaint LoRA, and apply the mask when pasting back into canvas coordinates.
+* **Qwen reference geometry and alpha**: Sampling follows the native encoder's image geometry. Uploaded RGBA references retain alpha; references also work without canvas content. Old opaque-output settings no longer flatten decoded images.
+* **Qwen runtime integration**: Uses the native Qwen cache and PyTorch attention backend. Unsupported Turbo step, CFG, or denoise values fail explicitly instead of changing the author's schedule.
+* **Native model lifecycle**: All model families use ComfyUI's model patchers and post-node cleanup. Interrupted and failed draws release their runtime state without unloading unrelated workflows.
+* **Batch VAE memory**: Decode one batch item at a time and move decoded images to CPU, limiting simultaneous GPU image allocations. MiniMax H3 keeps the first frame of every batch item.
+* **MiniMax H3 conditioning and VAE**: Sampling retains positive conditioning regardless of negative prompt text, and compatible installed FP16 VAEs are reused across configured model folders.
+* **Inference failures**: Sampling and inpaint-conditioning errors no longer launch a second hidden sampling or encoding path. Tiled VAE failures propagate instead of retrying a larger full-image decode.
+* **Anima and Krea2**: Anima uses native LLLite model-patch nodes while reusing installed control files. Krea2 uses native VAE encoding and releases runtime state after grounded prompt encoding.
+* **Helper offloading**: SAM and layer-naming models move cached weights back to CPU after use, including failures, and reactivate correctly for the next request.
+* **LoRA identity**: Different files sharing a basename remain separate, while aliases resolving to the same installed file apply once. Changing LoRA combinations does not retain previous loader state.
+* **LoRA strengths and Config ownership**: Separate model and CLIP strengths, including CLIP-only LoRAs, are preserved. Config supplies optional LoRAs without unwanted default downloads while retaining required adapters.
+* **Config graph fidelity**: Linked loader widgets and loader or patch options that cannot be reproduced directly use the original graph instead of stale widget values or different model patches. Reference socket gaps survive serialization.
+* **Model selection and preferences**: Restoring an empty LoRA stack clears the previous model's LoRAs. Pending or failed model-list loads do not reset valid scheduler selections; malformed or newer preference files are preserved instead of overwritten.
+* **Dependency detection and installs**: Custom checks use the selected files and configured model roots. Missing files remain visible after an earlier successful download; staged installs are atomic and cannot overwrite a concurrently installed model.
+* **Inference-scale editing**: Slider, numeric field, model panels, and size HUD stay synchronized. Incomplete input is ignored and Escape restores the prior value.
+* **Result-cache memory**: Retained generation results are bounded by entry count and encoded image/mask size while preserving repeatable polling and expiry.
+
+### Pose Studio: Bug Fixes
+
+#### Workflow State and Animation
+
+* **Failed workflow loading**: Malformed state and failed character hydration retain original workflow data instead of replacing it with defaults or the previous viewer pose.
+* **Overlapping character restoration**: A newer workflow can complete its own hydration after an older request fails. Stale switching, removal, library, or model-load callbacks cannot mutate the replacement scene.
+* **Live state serialization**: Camera values, prompt-template edits, pending body morph settings, and the visible animation frame reach workflow state before release, blur, or worker completion.
+* **Immutable animation snapshots**: Editing a clip creates a new cache snapshot. Queued uploads keep each saved payload instead of rewriting tracks referenced by older workflows.
+* **Pending animation saves**: Tracks survive immediate reload while their cache upload is pending or offline. An older acknowledgement cannot discard a newer pending snapshot.
+* **Animation cache revisions**: Restoring a newer server revision advances subsequent edits correctly; later changes continue uploading.
+* **Missing animation tracks**: Unavailable tracks cannot be silently exported or saved as an empty clip.
+* **Multi-character animation JSON**: Export/import preserves every character's tracks. Sparse-key exports keep the imported duration; single-pose imports retain their prompt.
+* **Timeline input**: Frame, FPS, and duration update continuously. Manual timing changes stop playback; automatic playback frames keep it running.
+* **FPS Undo/Redo**: FPS previews use the gesture's original keys across every character. Undo/Redo restores complete timing and keys in one command, including lossy frame-rate changes.
+* **Animation imports**: JSON, FBX, and video imports replace pending or deferred old animation references, so a later cache response cannot restore the previous clip.
+
+#### Captures, Imports, and Interaction
+
+* **Capture readiness**: Captures wait for the newest skin/background textures, body updates, and scene readiness. A replaced or failed background cannot produce a stale capture.
+* **Capture failure cleanup**: Failed setup or rendering restores poses, lighting, helpers, renderer dimensions, and previous valid frames.
+* **Fresh execution images**: Live-sync timeouts, failed SAM analysis, and incomplete frame batches stop node execution rather than returning older captures. Readiness allows time for character loading, capture, and upload.
+* **Pose Manager previews**: Failed or invalid refreshes retain the last visible card but block execution until a valid refresh succeeds.
+* **Capture size budget**: Capture batches support up to 600 images while enforcing a 64 Mi-pixel aggregate limit. Empty or invalid frames are rejected instead of silently dropped.
+* **Execution request isolation**: Parallel capture uploads retain their own images and synchronization tokens. An upload waiting for animation data cannot later send captures from a replacement workflow.
+* **SAM animation execution**: Newly analyzed poses upload freshly captured animation frames instead of reusing the previous cached sequence.
+* **Stale import and fit results**: SAM JSON, image import, overlays, FBX loading, morph responses, and manager proportion fitting cannot apply to a changed character or scene.
+* **Morph worker failures**: Failed workers reject pending requests and block stale captures. Timed-out responses cannot overwrite a newer body or stop another solve.
+* **Interrupted joint dragging**: Pointer cancellation and lost pointer capture end direct IK, preventing subsequent hover events from continuing the drag.
+* **Rig cleanup**: Replaced and removed active/passive characters release skeleton and helper resources.
+* **Lifecycle and library layout**: The original node resize callback retains its receiver. Library headers resize continuously with the node, thumbnail defaults remain correct, and closed or removed widgets cannot restart repository polling.
+
+#### Pose Library
+
+* **Separate pose and animation assets**: Typed storage permits a pose and animation to share a name and category without sharing files, previews, or IDs. Legacy assets remain readable and migrate by type when saved.
+* **Scoped lookup**: Repository/category lookups cannot return unrelated legacy items. Ambiguous untyped requests fail instead of choosing an arbitrary asset.
+* **Save and rename collisions**: New saves, local copies, and renames cannot overwrite existing items, including races during preview preparation or concurrent worker saves.
+* **Transactional item saves**: Failed JSON or preview writes restore the previous item. Failed renames preserve the source and remove uncommitted destinations; obsolete preview formats retire only after a successful commit.
+* **Save/delete races**: Deletion waits for active saves, and a late preview preparation cannot recreate a deleted asset.
+* **Downloaded asset editing**: Remote library items remain read-only. Editing saves a local copy that retains source identity and previews through later repository refreshes.
+* **Safe repository refresh**: Invalid manifests and failed asset downloads preserve the previous cache. Asset failures remain errors rather than being reported as successful synchronization.
+* **Repository settings**: Failed writes and corrupt settings preserve existing data. Refresh completion cannot undo newer enable/disable choices or resurrect removed repositories; directory collisions cannot target another repository.
+* **Responsive browsing**: Normal refresh loads metadata first and fetches only the selected pose on demand. Counts and large listings run outside the HTTP event loop and do not read preview pixels unnecessarily.
+* **Newest selection wins**: Older library, inspector, and repository responses cannot replace a newer selection or modify a closed panel. Multi-character hydration restores the complete selected scene.
+* **Usable cards and previews**: Cards support keyboard selection, Apply closes through proper cleanup, and preview updates within one second receive distinct cache versions. Malformed tags and temporary save files do not hide or pollute the library.
+
+### 3D Factory: Bug Fixes
+
+* **Gaussian rotation**: Exported positions use the viewport's XYZ rotation order and match covariance orientation. Older derived PLY files are invalidated and rebuilt.
+* **Concurrent scene edits**: Stale editors and saved workflow snapshots cannot overwrite a newer scene revision. Scene migration also respects concurrent edits.
+* **Queued scene saves**: Queued revisions advance only after successful saves to the same scene. Preparation failures no longer leave the save queue stuck.
+* **Scene-root ownership**: Objects, cameras, tracks, and lights explicitly assigned to the scene root stay there after reload and library round trips, even when buildings exist.
+* **Reference replacement**: New source and preview files commit before previous files retire. Failed preview or scene writes retain the prior reference.
+* **Skydome replacement**: Failed source, viewport, or library-skydome installation preserves the previous scene assets. Successful commits retire only obsolete files.
+* **Capture cleanup**: Parallel capture cleanup cannot delete the newest committed capture files.
+* **Preview invalidation**: Changing frame settings no longer cancels pending object-preview invalidation.
+* **Gaussian package validation**: Package limits apply before manifest decompression and migration. Invalid packages cannot partially change the scene or leave imported object files behind.
+* **Repository manifests and downloads**: Invalid manifests, checksums, metadata, or preview downloads cannot replace installed packages or delete existing files. Unchanged refreshes avoid redundant copying.
+* **Transactional package installs**: A failed asset commit rolls back all installed files. If rollback also fails, recovery files remain available.
+* **Concurrent repository refreshes**: Refreshes serialize file updates and duplicate automatic refresh requests share one task. Failed tasks release their ownership for retries.
+* **Local library updates**: Failed preview updates or category moves retain the readable original asset. A failed move cannot remove a concurrent successful retry; failed rollback retains recovery files.
+* **Repository identity and settings**: Colliding repository paths cannot sync another cache, and corrupt repository settings cannot be silently overwritten.
+
+### Compatibility, Security, and Maintenance
+
+* **Removed legacy nodes**: `VNCCS_ModelManager`, `VNCCS_ModelSelector`, and `VNCCS_QWEN_Detailer` are no longer shipped. Bundled Pose Studio workflows use standard ComfyUI model and LoRA loaders; older workflows using the removed nodes require replacements.
+* **Independent BBox Extractor**: `VNCCS_BBox_Extractor` remains available without Qwen Detailer, crops and pads detector regions into an image batch, and does not read unused segmentation masks.
+* **Removed Qwen-Image-Edit 2511**: Its UniCanvas model family, presets, and prompt-enhancement templates were removed. Use Qwen Edit 2.1 for the current Qwen editing workflow.
+* **Safer SAM 3D Body loading**: Checkpoints load with weights-only deserialization. SAM 3D Body and BiRefNet downloads use pinned revisions, and model operations share the UniCanvas lock to avoid overlapping model work.
+* **File and request validation**: Model names reject absolute paths and traversal; ambiguous filenames require explicit subfolders. Cache, capture, document, and library endpoints reject invalid JSON, IDs, and request sizes before writes or model work.
+* **Feature-owned modules**: Backend services and frontend helpers now live under their owning feature directories, with shared cache/config helpers and API contract coverage. Retained editors preserve public routes, node identifiers, legacy workflow support, and library roots.
+* **Regression coverage**: Expanded automated coverage for Prompt Designer, canvas documents, persistence, cancellation, continuous interaction, model dependencies and memory, pose/animation captures, library transactions, Gaussian exports, and standalone layout. Restart ComfyUI and hard-reload the browser after updating.
+
 # Version 0.6.9
 ## Registry Compliance Fix
 
@@ -763,7 +934,7 @@
 *   **Contextual Hand Editing UI**: Hand editing was reworked from a permanent sidebar tool into an in-canvas interaction flow.
     *   Hands can now be targeted directly from the model viewport.
     *   The hand editor opens as a floating popover near the active hand instead of occupying the right sidebar.
-    *   Built-in hand presets were added in [web/vnccs_hand_presets.js](web/vnccs_hand_presets.js) to drive the hand shaping workflow without requiring an external hand-pose library.
+    *   Built-in hand presets were added in [web/pose_studio/hand_presets.js](web/pose_studio/hand_presets.js) to drive the hand shaping workflow without requiring an external hand-pose library.
 
 *   **Improved Hand Pose Controls**: The hand slider system was expanded and stabilized.
     *   Added calibrated hand preset blending for `Spread`, `Grasp`, and per-finger controls.

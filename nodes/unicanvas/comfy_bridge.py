@@ -8,6 +8,23 @@ import sys
 from typing import Any, Callable
 
 
+def _release_generation_state() -> None:
+    """Finish a direct node call exactly as ComfyUI does with DynamicVRAM."""
+    try:
+        import comfy.memory_management
+    except ImportError:
+        return
+    if not comfy.memory_management.aimdo_enabled:
+        return
+    import comfy.model_management
+    import comfy.model_prefetch
+    import comfy_aimdo.model_vbar
+
+    comfy.model_prefetch.cleanup_prefetch_queues()
+    comfy.model_management.reset_cast_buffers()
+    comfy_aimdo.model_vbar.vbars_reset_watermark_limits()
+
+
 def find_loaded_module(predicate: Callable[[str, Any], bool]) -> Any:
     """First already-imported module (e.g. another custom node's) that matches ``predicate``."""
     for name, module in list(sys.modules.items()):
@@ -60,7 +77,10 @@ def _call_comfy_node(class_name: str, **kwargs):
     signature = inspect.signature(method)
     accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values())
     accepted = kwargs if accepts_kwargs else {k: v for k, v in kwargs.items() if k in signature.parameters}
-    result = method(**accepted)
+    try:
+        result = method(**accepted)
+    finally:
+        _release_generation_state()
     # V3 (io.ComfyNode) nodes return a NodeOutput; callers expect the V1 result tuple.
     args = getattr(result, "args", None)
     if not isinstance(result, (tuple, list)) and isinstance(args, tuple) and hasattr(result, "block_execution"):
@@ -104,26 +124,7 @@ def _get_node_combo_values(class_names: list[str], input_name: str) -> list[str]
 
 
 def _call_loader_node(class_names: list[str], method_names: list[str], **kwargs):
-    import nodes
-
-    mappings = getattr(nodes, "NODE_CLASS_MAPPINGS", {}) or {}
-    for class_name in class_names:
-        loader_cls = mappings.get(class_name)
-        if loader_cls is None:
-            continue
-        loader = loader_cls()
-        candidate_method_names = list(method_names)
-        function_name = getattr(loader_cls, "FUNCTION", None)
-        if function_name and function_name not in candidate_method_names:
-            candidate_method_names.append(function_name)
-        for method_name in candidate_method_names:
-            method = getattr(loader, method_name, None)
-            if method is None:
-                continue
-            accepted_kwargs = _filter_node_kwargs(loader_cls, method, kwargs)
-            result = method(**accepted_kwargs)
-            return _unwrap_single_node_result(result)
-    return None
+    return _call_node_method(class_names, method_names, **kwargs)
 
 
 def _is_comfy_node_output(value: Any) -> bool:
@@ -195,5 +196,8 @@ def _call_node_method(class_names: list[str], method_names: list[str], **kwargs)
             if method is None:
                 continue
             accepted_kwargs = _filter_node_kwargs(node_cls, method, kwargs)
-            return _unwrap_single_node_result(method(**accepted_kwargs))
+            try:
+                return _unwrap_single_node_result(method(**accepted_kwargs))
+            finally:
+                _release_generation_state()
     return None

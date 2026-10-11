@@ -16,12 +16,12 @@ import {
     stabilizeVideoPoseSequence,
     videoKeyedFrameIndices,
     zoomVideoTimelineViewport,
-} from "../web/vnccs_video_import.mjs";
+} from "../web/pose_studio/imports/video.mjs";
 import {
     createAnimationStateFromPoses,
     eulerDegreesToQuaternion,
     evaluateAnimationFrame,
-} from "../web/vnccs_pose_animation.mjs";
+} from "../web/pose_studio/animation.mjs";
 
 const quaternionDistanceDegrees = (aEuler, bEuler) => {
     const a = eulerDegreesToQuaternion(aEuler);

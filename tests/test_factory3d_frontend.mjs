@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import vm from "node:vm";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const studio = fs.readFileSync(path.join(root, "web", "vnccs_3d_factory.js"), "utf8");
-const viewer = fs.readFileSync(path.join(root, "web", "vnccs_3d_factory_viewer.js"), "utf8");
-const styles = fs.readFileSync(path.join(root, "web", "vnccs_3d_factory.css"), "utf8");
+const viewer = fs.readFileSync(path.join(root, "web", "factory3d/viewer.js"), "utf8");
+const styles = fs.readFileSync(path.join(root, "web", "factory3d/styles.css"), "utf8");
 const planGeometry = fs.readFileSync(path.join(root, "web", "factory3d", "plan_geometry.mjs"), "utf8");
 
 function safeObjectName(value) {
@@ -28,32 +29,10 @@ function normalizedQuaternion(value = [0, 0, 0, 1]) {
 
 
 function serializeFactoryState(widget) {
-    return {
-        schema_version: 17,
-        scene_id: widget.sceneId,
-        selected_object_id: widget.selectedObjectId,
-        selected_object_ids: Array.from(widget.selectedObjectIds),
-        selected_group_id: widget.selectedGroupId,
-        selected_skydome: widget.selectedSkydome,
-        selected_architecture: widget.selectedArchitecture,
-        selected_architectures: widget._selectedArchitectureRefs(),
-        selected_camera_id: widget.selectedCameraId,
-        selected_camera_ids: Array.from(widget.selectedCameraIds),
-        selected_light_id: widget.selectedLightId,
-        collapsed_group_ids: Array.from(widget.collapsedGroupIds),
-        settings: { ...widget.settings },
-        render_settings: { ...widget.exportSettings },
-        lighting_settings: { ...widget.lighting },
-        viewer_state: widget.viewer?.getState?.() || widget.viewerState,
-        editor_view: {
-            ...widget.editorView,
-            plan_camera: widget.viewer?.getState?.().plan_camera || widget.editorView.plan_camera,
-        },
-        active_camera_track_id: widget.activeCameraTrackId,
-        selected_camera_keyframe_id: widget.selectedCameraKeyframeId,
-        scene_snapshot: widget.scene ? widget._scenePayload() : null,
-        source: widget.sourceAsset ? { ...widget.sourceAsset, scene_id: widget.sceneId } : null,
-    };
+    const start = studio.indexOf("    serializeState() {");
+    const end = studio.indexOf("\n    _scheduleStateSave(", start);
+    const methods = vm.runInNewContext(`({ ${studio.slice(start, end)} })`, { STATE_VERSION: 17 });
+    return JSON.parse(JSON.stringify(methods.serializeState.call(widget)));
 }
 
 function hideStateWidget(node) {
@@ -77,7 +56,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
     assert.match(studio, /FRONTEND_BUILD = "20260908\.4"/);
-    assert.match(studio, /vnccs_3d_factory\.css\?v=20260908\.2/);
+    assert.match(studio, /factory3d\/styles\.css\?v=20260908\.2/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -463,7 +442,7 @@ test("Generator selector keeps its name, status, and actions in a compact overfl
 });
 
 test("Factory reuses the UniCanvas support banner in the lower-left panel", () => {
-    assert.match(studio, /assets\/VNCCS_Donate_Button\.png/);
+    assert.match(studio, /shared\/assets\/VNCCS_Donate_Button\.png/);
     assert.match(studio, /https:\/\/www\.buymeacoffee\.com\/MIUProject/);
     assert.match(studio, /vnccs-i3s__donate-link/);
     assert.match(studio, /this\._listen\(this\.els\.donateLink, "pointerdown", event => event\.stopPropagation\(\)\)/);
@@ -974,7 +953,7 @@ test("Factory serializes settings, source, scene snapshot, selection, and viewer
                 camera: { position: [1, 2, 3] },
             }),
         },
-        scene: { objects: snapshot.objects },
+        scene: { objects: snapshot.objects, edit_revision: 8 },
         sourceAsset: { url: "/reference", name: "input.png" },
         _selectedArchitectureRefs: () => [{ type: "room", id: "room-a" }],
         _scenePayload: () => snapshot,
@@ -985,7 +964,7 @@ test("Factory serializes settings, source, scene snapshot, selection, and viewer
     assert.deepEqual(state.selected_object_ids, ["object-a", "object-b"]);
     assert.equal(state.selected_group_id, "group-a");
     assert.deepEqual(state.collapsed_group_ids, ["group-a"]);
-    assert.deepEqual(state.scene_snapshot, snapshot);
+    assert.deepEqual(state.scene_snapshot, { ...snapshot, edit_revision: 8 });
     assert.equal(state.source.url, "/reference");
     assert.equal(state.viewer_state.mode, "scale");
     assert.equal(state.viewer_state.zoom_sensitivity, 0.08);
@@ -1032,7 +1011,7 @@ test("Configured nodes cancel blank initialization before restoring their saved 
 
 test("Plan marquee converts client coordinates into the scaled viewport host", async () => {
     const module = await import(
-        `${pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href}?marquee=${Date.now()}`
+        `${pathToFileURL(path.join(root, "web", "factory3d/viewer.js")).href}?marquee=${Date.now()}`
     );
     const marqueeViewer = Object.create(module.Factory3DViewer.prototype);
     marqueeViewer.host = { clientWidth: 1600, clientHeight: 900 };
@@ -1060,7 +1039,7 @@ test("Plan marquee converts client coordinates into the scaled viewport host", a
 
 test("Plan object drag moves selected Gaussian objects live while preserving height", async () => {
     const module = await import(
-        `${pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href}?object-drag=${Date.now()}`
+        `${pathToFileURL(path.join(root, "web", "factory3d/viewer.js")).href}?object-drag=${Date.now()}`
     );
     const viewer = Object.create(module.Factory3DViewer.prototype);
     const changes = [];
@@ -1213,7 +1192,7 @@ test("Architecture Undo preserves unaffected meshes through opening, building an
 });
 
 test("3D opening placement projects onto a rotated wall and draws a vertical live preview", async () => {
-    const { Factory3DViewer } = await import(pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href);
+    const { Factory3DViewer } = await import(pathToFileURL(path.join(root, "web", "factory3d/viewer.js")).href);
     const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
     const view = Object.create(Factory3DViewer.prototype);
     view.viewMode = "3d";
@@ -1256,7 +1235,7 @@ test("3D opening placement projects onto a rotated wall and draws a vertical liv
 });
 
 test("Plan framing fits XZ extents without moving the export camera", async () => {
-    const { Factory3DViewer } = await import(pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href);
+    const { Factory3DViewer } = await import(pathToFileURL(path.join(root, "web", "factory3d/viewer.js")).href);
     const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
     const view = Object.create(Factory3DViewer.prototype);
     view.viewMode = "plan";
@@ -1270,7 +1249,7 @@ test("Plan framing fits XZ extents without moving the export camera", async () =
 
 test("Factory viewer and every vendored Three/Spark dependency can actually import", async () => {
     const module = await import(
-        `${pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href}?test=${Date.now()}`
+        `${pathToFileURL(path.join(root, "web", "factory3d/viewer.js")).href}?test=${Date.now()}`
     );
     const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
     const SPARK = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "spark.module.js")).href);

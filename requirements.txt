@@ -3,7 +3,6 @@ huggingface_hub
 aiohttp
 av
 kornia
-requests
 torch
 torchvision
 numpy
@@ -12,9 +11,11 @@ transformers
 safetensors
 pytorch-lightning
 omegaconf
+pyyaml
 yacs
 timm
 einops
 roma
 tqdm
 color-matcher
+dynamicprompts>=0.31,<1

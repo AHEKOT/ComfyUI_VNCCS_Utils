@@ -18,7 +18,8 @@ def load_node_module():
     torch_stub.from_numpy = lambda value: value
     spec = importlib.util.spec_from_file_location(
         "vnccs_factory_node_test.nodes.factory3d",
-        ROOT / "nodes" / "factory3d.py",
+        ROOT / "nodes/factory3d/__init__.py",
+        submodule_search_locations=[str(ROOT / "nodes/factory3d")],
     )
     module = importlib.util.module_from_spec(spec)
     with mock.patch.dict(sys.modules, {"torch": torch_stub}):
@@ -30,12 +31,16 @@ def load_node_module():
 class FactoryNodeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.module = load_node_module()
+        cls.package = load_node_module()
+        cls.module = cls.package.node
 
     def setUp(self):
         handle = mock.patch.object(self.module, "_scene_handle", return_value={"scene_id": "a" * 32, "manifest_hash": "c" * 64})
         self.handle = handle.start()
         self.addCleanup(handle.stop)
+
+    def test_package_exports_the_graph_node(self):
+        self.assertIs(self.package.VNCCS_3DFactory, self.module.VNCCS_3DFactory)
 
     def test_node_contract_exposes_current_and_saved_camera_renders_as_a_list(self):
         node = self.module.VNCCS_3DFactory

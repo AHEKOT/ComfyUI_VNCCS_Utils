@@ -5,7 +5,7 @@ import test from "node:test";
 // All regexes avoid literal line breaks so the suite stays CRLF-tolerant on
 // Windows checkouts (see tests/test_unicanvas_frontend.mjs for the contrast).
 const widget = await readFile(new URL("../web/vnccs_config.js", import.meta.url), "utf8");
-const ui = await readFile(new URL("../web/vnccs_config_ui.mjs", import.meta.url), "utf8");
+const ui = await readFile(new URL("../web/config/ui.mjs", import.meta.url), "utf8");
 
 function region(source, startMarker, endMarker) {
     const start = source.indexOf(startMarker);

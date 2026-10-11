@@ -17,6 +17,8 @@ import comfy.utils
 import comfy.ldm.common_dit
 from comfy.ldm.flux.layers import timestep_embedding
 
+from ..comfy_bridge import _call_comfy_node, _release_generation_state
+
 
 def _imgids(bs, frame, h_, w_, device):
     ids = torch.zeros(h_, w_, 3, device=device, dtype=torch.float32)
@@ -112,7 +114,7 @@ def _fit_encode_image(image, vae, H, W, cache, key, fit_mode="crop"):
             y0, x0 = (ih - ch2) // 2, (iw - cw2) // 2
             img = img[..., y0:y0 + ch2, x0:x0 + cw2]
         img = F.interpolate(img.float(), size=(nh, nw), mode="bicubic", antialias=True)
-        lat = vae.encode(img.movedim(1, -1)[..., :3].clamp(0, 1))
+        lat = _call_comfy_node("VAEEncode", vae=vae, pixels=img.movedim(1, -1)[..., :3].clamp(0, 1))[0]["samples"]
         cache[key] = lat
         return lat
     # crop (default / "v1 legacy"): center-crop to the target AR, then resize.
@@ -121,7 +123,7 @@ def _fit_encode_image(image, vae, H, W, cache, key, fit_mode="crop"):
     y0, x0 = (ih - ch) // 2, (iw - cw) // 2
     img = img[..., y0:y0 + ch, x0:x0 + cw]
     img = F.interpolate(img.float(), size=(px_h, px_w), mode="bicubic", antialias=True)
-    lat = vae.encode(img.movedim(1, -1)[..., :3].clamp(0, 1))
+    lat = _call_comfy_node("VAEEncode", vae=vae, pixels=img.movedim(1, -1)[..., :3].clamp(0, 1))[0]["samples"]
     cache[key] = lat
     return lat
 
@@ -332,6 +334,9 @@ class Krea2EditGroundedEncode:
             imgs.append(self._prep(image_b, grounding_px))
         template = self._template(len(imgs), system_prompt)
         tokens = clip.tokenize(prompt, images=imgs, llama_template=template)
-        return (clip.encode_from_tokens_scheduled(tokens),)
+        try:
+            return (clip.encode_from_tokens_scheduled(tokens),)
+        finally:
+            _release_generation_state()
 
 

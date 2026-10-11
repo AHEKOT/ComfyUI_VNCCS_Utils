@@ -6,7 +6,7 @@ import {
     computeMenuVerticalPlacement,
     findBoundaryEnabledOptionIndex,
     findNextEnabledOptionIndex,
-} from "../web/vnccs_custom_select.mjs";
+} from "../web/shared/custom_select.mjs";
 
 
 test("custom select keyboard navigation wraps and skips unavailable options", () => {
@@ -28,9 +28,11 @@ test("custom select keyboard navigation wraps and skips unavailable options", ()
 
 test("every first-party native select is covered by the shared custom selector", async () => {
     const webDirectory = new URL("../web/", import.meta.url);
-    const files = (await readdir(webDirectory))
-        .filter(name => /^vnccs_.*\.(?:js|mjs)$/.test(name))
-        .filter(name => name !== "vnccs_custom_select.mjs");
+    const files = (await readdir(webDirectory, { recursive: true }))
+        .map(name => name.replaceAll("\\", "/"))
+        .filter(name => /\.(?:js|mjs)$/.test(name))
+        .filter(name => !name.startsWith("vendor/") && name !== "shared/custom_select.mjs");
+    assert.ok(files.includes("unicanvas/modes.mjs"), "nested modules must stay covered");
     const nativeSelectPattern = /createElement\(["']select["']\)|<select\b/;
     const uncovered = [];
 
@@ -44,7 +46,7 @@ test("every first-party native select is covered by the shared custom selector",
 
 
 test("custom selector keeps the original control and replaces only its popup", async () => {
-    const source = await readFile(new URL("../web/vnccs_custom_select.mjs", import.meta.url), "utf8");
+    const source = await readFile(new URL("../web/shared/custom_select.mjs", import.meta.url), "utf8");
 
     assert.match(source, /select\.addEventListener\("pointerdown", state\.onPointerDown, true\)/);
     assert.match(source, /event\.preventDefault\(\);[\s\S]*toggleCustomSelect\(state\)/);
@@ -65,7 +67,7 @@ test("custom selector keeps the original control and replaces only its popup", a
 
 
 test("custom select rows commit on click in Chromium: presses are not canceled, opening scrolls only the menu, Escape closes first", async () => {
-    const source = await readFile(new URL("../web/vnccs_custom_select.mjs", import.meta.url), "utf8");
+    const source = await readFile(new URL("../web/shared/custom_select.mjs", import.meta.url), "utf8");
 
     // Canceling pointerdown suppresses the compatibility mouse sequence in Chromium and
     // Firefox, so the row's click - the commit - would never fire there (Safari still fires it).

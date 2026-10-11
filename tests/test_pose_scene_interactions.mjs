@@ -418,3 +418,71 @@ test("reload redraws the pad after the first loaded viewport frame without user 
     scene.viewer.animate();
     assert.equal(scene.pad.drawCommands.length, draws, "idle frames must not poll or redraw the pad");
 });
+
+test("capture setup failure restores helpers and renderer size", () => {
+    const s = createScene();
+    const visibility = [s.viewer.gridHelper, s.viewer.captureFrame, s.viewer.skeletonHelper]
+        .map(item => item?.visible);
+    let sizes = 0;
+    s.viewer.renderer = {
+        getSize: target => target.set(640, 480), getPixelRatio: () => 2,
+        setPixelRatio() {}, setSize() { if (++sizes === 1) throw new Error("context lost"); },
+        render() {},
+    };
+    const oldError = console.error;
+    console.error = () => {};
+    try { assert.equal(s.viewer.capture(512, 512, 1, [255, 255, 255]), null); }
+    finally { console.error = oldError; }
+    assert.equal(s.viewer._captureBatch, null);
+    assert.equal(sizes, 2);
+    assert.equal(s.viewer.scene.background.getHex(), 0x1a1a2e);
+    assert.deepEqual([s.viewer.gridHelper, s.viewer.captureFrame, s.viewer.skeletonHelper]
+        .map(item => item?.visible), visibility);
+});
+
+for (const failure of ["throw", "null"]) {
+    test(`failed full capture (${failure}) restores the editor and previous frames`, () => {
+        const { w, viewer } = createScene();
+        w.poses = [{ spine: [0.1, 0, 0] }, { spine: [0.2, 0, 0] }];
+        w.activeTab = 0; w.poseCaptures = ["old-a", "old-b"];
+        w.lightingPrompts = ["prompt-a", "prompt-b"];
+        const oldLights = JSON.stringify(w.lightParams);
+        let captures = 0, ended = 0;
+        viewer.beginCaptureBatch = () => true;
+        viewer.endCaptureBatch = () => ended++;
+        viewer.capture = () => {
+            if (++captures === 1) return "new-a";
+            if (failure === "throw") throw new Error("renderer failed");
+            return null;
+        };
+        assert.throws(() => w.syncToNode(true, { executionCapture: true }),
+            failure === "throw" ? /renderer failed/ : /Pose capture failed/);
+        assert.equal(w.activeTab, 0);
+        assert.equal(w._isSyncing, false);
+        assert.equal(w._applyingAnimationPose, false);
+        assert.deepEqual(w.poseCaptures, ["old-a", "old-b"]);
+        assert.deepEqual(w.lightingPrompts, ["prompt-a", "prompt-b"]);
+        assert.equal(JSON.stringify(w.lightParams), oldLights);
+        assert.equal(ended, 1);
+    });
+}
+
+test("invalid preview captures retain the last valid manager card", () => {
+    const { w } = createScene(); w.poseCaptures = ["valid"];
+    assert.equal(w.setPoseCapture(0, null), false);
+    assert.equal(w.poseCaptures[0], "valid");
+});
+
+test("a failed manager refresh keeps the old card but rejects execution readiness", async () => {
+    const { w, viewer } = createScene();
+    w.interfaceMode = "manager"; w.poses = [viewer.getPose()]; w.poseCaptures = ["old"];
+    w.lightingPrompts = ["old prompt"]; w._managerPreviewRefreshGeneration = 1;
+    w.showMessage = () => {}; w.computePoseManagerCaptureFraming = () => ({ zoom: 1, offsetX: 0, offsetY: 0 });
+    viewer.beginCaptureBatch = () => true; viewer.endCaptureBatch = () => {};
+    viewer.capture = () => null;
+    w.refreshAllManagerPreviews(1);
+    assert.equal(w.poseCaptures[0], "old");
+    assert.equal(w.lightingPrompts[0], "old prompt");
+    assert.notEqual(w._managerPreviewRefreshCompletedGeneration, 1);
+    await assert.rejects(w.awaitManagerPreviewRefresh(1), /Pose capture failed/);
+});

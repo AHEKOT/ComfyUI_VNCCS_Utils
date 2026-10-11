@@ -34,7 +34,7 @@ test("the prompt '?' shows the active model family's prompt guide and follows th
   await help.click();
   await expect(panel).toBeVisible();
   await expect(help).toHaveAttribute("aria-expanded", "true");
-  await expect(panel).toContainText("Qwen Image 2.1 - how to prompt");
+  await expect(panel).toContainText("Qwen Edit 2.1 - how to prompt");
   await expect(panel).toContainText("<image1> is the working area");
   await expect(panel).toContainText("kjranyone/qwen-image-2.1-prompt-guide");
 

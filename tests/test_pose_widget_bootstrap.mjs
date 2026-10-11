@@ -207,7 +207,7 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
                 if (specifier === "../../scripts/api.js") {
                     return syntheticModule(context, specifier, { api });
                 }
-                if (specifier === "./vnccs_pose_studio_core.js") {
+                if (specifier === "./pose_studio/core.js") {
                     class FakePoseViewerCore {
                         constructor() {
                             return new Proxy(this, {
@@ -226,12 +226,12 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
                         PoseViewerCore: FakePoseViewerCore,
                     });
                 }
-                if (specifier === "./vnccs_mixamo_import.js") {
+                if (specifier === "./pose_studio/imports/mixamo.js") {
                     return syntheticModule(context, specifier, {
                         importMixamoFBXAnimation: async () => null,
                     });
                 }
-                if (specifier === "./vnccs_openpose_import.js") {
+                if (specifier === "./pose_studio/imports/openpose.js") {
                     return syntheticModule(context, specifier, {
                         convertOpenPoseToPose: value => value,
                         detectAndParseJSON: value => value,
@@ -296,6 +296,7 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
     const poseWidget = node.widgets.find(widget => widget.name === "pose_data");
     const imageBatchWidget = node.widgets.find(widget => widget.name === "animation_image_batch");
     assert.equal(poseWidget.hidden, true);
+    assert.equal(poseWidget.options.dynamicPrompts, false);
     assert.equal(poseWidget.computeSize()[0], 0);
     assert.equal(poseWidget.computeSize()[1], -4);
     assert.equal(imageBatchWidget.hidden, true);
@@ -303,6 +304,19 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
     assert.equal(imageBatchWidget.computeSize()[1], -4);
 
     const studio = node.studioWidget;
+    studio.syncToNode();
+    assert.equal(poseWidget.value, "{}", "construction cannot write defaults before workflow configuration");
+    const serializedBeforeConfigure = { widgets_values: [poseWidget.value, false] };
+    node.onSerialize(serializedBeforeConfigure);
+    assert.equal(serializedBeforeConfigure.widgets_values[0], "{}");
+    studio.hydrateCharacterSceneModels = async () => {};
+    const authored = poseWidget.value = JSON.stringify({ poses: [{ prompt: "restored pose" }] });
+    node.onConfigure({});
+    const serializedDuringRestore = { widgets_values: [authored, false] };
+    node.onSerialize(serializedDuringRestore);
+    assert.equal(serializedDuringRestore.widgets_values[0], authored);
+    await Promise.resolve();
+    assert.equal(studio.getPosePrompt(), "restored pose");
     assert.equal(studio.exportParams.capture_image_size, false);
     assert.equal(studio.exportParams.animation_image_batch, false);
     studio.exportParams.editor_mode = "animation";

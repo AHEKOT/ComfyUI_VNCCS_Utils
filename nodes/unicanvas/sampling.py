@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import contextlib
-import gc
-import inspect
 import threading
 from typing import Any
 
-import torch
-
-from .comfy_bridge import _call_node_method
-from .debug import _latent_debug, _uc_log
+from .comfy_bridge import _call_comfy_node
+from .debug import _uc_log
 from .progress import _set_draw_progress
 
 
@@ -108,137 +104,13 @@ def _sample_generation_latent_default(
     gen_settings: dict[str, Any],
     draw_id: str = "unknown",
 ):
-    import nodes
-
     _ensure_direct_sampling_prompt_context()
-    _uc_log(
-        draw_id,
-        "KSampler input",
-        {
-            "seed": seed,
-            "steps": steps,
-            "cfg": cfg,
-            "sampler_name": sampler_name,
-            "scheduler": scheduler,
-            "denoise": denoise,
-            "latent": _latent_debug(latent),
-        },
-    )
-
-    perf = str((gen_settings or {}).get("_performance") or "")
-    suffix = f" - {perf}" if perf else ""
-
-    def on_step(step: int, *_args: Any) -> None:
-        current = min(max(int(step) + 1, 1), max(steps, 1))
-        _set_draw_progress(draw_id, "sampling", 0.35 + 0.5 * (current / max(steps, 1)), current, steps, f"Sampling step {current}/{steps}{suffix}")
-
-    kwargs = dict(
-        model=model,
-        seed=seed,
-        steps=steps,
-        cfg=cfg,
-        sampler_name=sampler_name,
-        scheduler=scheduler,
-        positive=positive,
-        negative=negative,
-        latent=latent,
-        denoise=denoise,
-    )
-    try:
-        sig = inspect.signature(nodes.common_ksampler)
-        if "callback" in sig.parameters:
-            kwargs["callback"] = on_step
-        _set_draw_progress(draw_id, "sampling", 0.35, 0, steps, f"Sampling 0/{steps}")
-        with _suppress_direct_sampling_comfy_progress():
-            sampled = nodes.common_ksampler(**kwargs)[0]
-        _uc_log(draw_id, "common_ksampler output", _latent_debug(sampled))
-        return sampled
-    except Exception as exc:
-        _uc_log(draw_id, "common_ksampler with progress failed; falling back to KSampler", {"error": str(exc)})
-
-    _set_draw_progress(draw_id, "sampling", 0.35, 0, steps, f"Sampling 0/{steps}")
-    with _suppress_direct_sampling_comfy_progress():
-        sampled = _call_node_method(
-            ["KSampler"],
-            ["sample"],
-            model=model,
-            seed=seed,
-            steps=steps,
-            cfg=cfg,
-            sampler_name=sampler_name,
-            scheduler=scheduler,
-            positive=positive,
-            negative=negative,
-            latent_image=latent,
-            latent=latent,
-            denoise=denoise,
-        )
-    _set_draw_progress(draw_id, "sampling", 0.85, steps, steps, f"Sampling {steps}/{steps}")
-    if isinstance(sampled, tuple) and sampled:
-        _uc_log(draw_id, "KSampler tuple output", _latent_debug(sampled[0]))
-        return sampled[0]
-    if sampled is not None:
-        _uc_log(draw_id, "KSampler output", _latent_debug(sampled))
-        return sampled
-    raise RuntimeError("Sampler returned no latent output")
-
-
-def _preload_vae_for_direct_decode(vae: Any, gen_settings: dict[str, Any], draw_id: str = "unknown") -> None:
-    patcher = getattr(vae, "patcher", None)
-    if patcher is None:
-        _uc_log(draw_id, "VAE preload skipped", {"reason": "VAE has no patcher"})
-        return
-
-    try:
-        import comfy.model_management as model_management
-
-        load_models_gpu = getattr(model_management, "load_models_gpu", None)
-        if not callable(load_models_gpu):
-            _uc_log(draw_id, "VAE preload skipped", {"reason": "model_management.load_models_gpu is unavailable"})
-            return
-
-        kwargs = {}
-        with contextlib.suppress(Exception):
-            sig = inspect.signature(load_models_gpu)
-            if "memory_required" in sig.parameters:
-                kwargs["memory_required"] = 0
-        load_models_gpu([patcher], **kwargs)
-        _uc_log(draw_id, "VAE preloaded before Z-image sampling", {"kwargs": kwargs})
-    except Exception as exc:
-        _uc_log(draw_id, "VAE preload failed", {"error": str(exc)})
-
-
-def _unload_vae_after_direct_decode(vae: Any, gen_settings: dict[str, Any], draw_id: str = "unknown") -> None:
-    patcher = getattr(vae, "patcher", None)
-    if patcher is None:
-        return
-
-    try:
-        import comfy.model_management as model_management
-
-        loaded_models = getattr(model_management, "current_loaded_models", None)
-        if not isinstance(loaded_models, list):
-            _uc_log(draw_id, "VAE post-decode unload skipped", {"reason": "current_loaded_models is unavailable"})
-            return
-
-        unloaded = 0
-        for index in range(len(loaded_models) - 1, -1, -1):
-            loaded_model = loaded_models[index]
-            if getattr(loaded_model, "model", None) is not patcher:
-                continue
-            try:
-                loaded_model.model_unload(1e30)
-            finally:
-                loaded_models.pop(index)
-            unloaded += 1
-
-        gc.collect()
-        with contextlib.suppress(Exception):
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        _uc_log(draw_id, "VAE unloaded after direct decode", {"unloaded": unloaded})
-    except Exception as exc:
-        _uc_log(draw_id, "VAE post-decode unload failed", {"error": str(exc)})
+    with _suppress_direct_sampling_comfy_progress(), _report_comfy_sampling_progress(draw_id, steps):
+        return _call_comfy_node(
+            "KSampler", model=model, seed=seed, steps=steps, cfg=cfg,
+            sampler_name=sampler_name, scheduler=scheduler, positive=positive,
+            negative=negative, latent_image=latent, denoise=denoise,
+        )[0]
 
 
 def _release_generation_sampling_refs(gen_settings: dict[str, Any], draw_id: str = "unknown", keys: tuple[str, ...] = ()) -> None:
@@ -248,10 +120,6 @@ def _release_generation_sampling_refs(gen_settings: dict[str, Any], draw_id: str
         if key in gen_settings:
             gen_settings.pop(key, None)
             released_keys.append(key)
-    gc.collect()
-    with contextlib.suppress(Exception):
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
     if released_keys:
         _uc_log(draw_id, "released sampling-only references before VAE decode", {"keys": released_keys})
 

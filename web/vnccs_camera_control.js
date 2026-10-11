@@ -8,7 +8,7 @@ import {
     parseCameraState,
     randomizeCameraState,
     serializeCameraState,
-} from "./vnccs_camera_control_utils.mjs";
+} from "./camera_control/utils.mjs";
 
 const STYLE_ID = "vnccs-camera-control-styles";
 const DOM_WIDGET_NAME = "camera_control_ui";

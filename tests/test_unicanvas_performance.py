@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
+from helpers.unicanvas_package import load_unicanvas_package
+
+load_unicanvas_package("nodes")
+
 from nodes.unicanvas import performance
 
 
@@ -35,6 +41,29 @@ def test_vae_chunking_is_off_by_default_and_tiles_when_on():
     assert performance.apply_vae_chunking(chunked, {"vae_chunking": True}) is chunked
 
 
+@pytest.mark.parametrize("method", ["encode", "decode"])
+def test_missing_tiled_method_can_use_full_vae(method):
+    vae = _Vae()
+    setattr(vae, method + "_tiled", None)
+    assert getattr(performance.ChunkedVAE(vae), method)("input") == "full"
+    assert vae.calls == [method]
+
+
+@pytest.mark.parametrize("method", ["encode", "decode"])
+@pytest.mark.parametrize("error", [MemoryError("OOM"), RuntimeError("decode failed"), KeyboardInterrupt()])
+def test_tiled_failure_never_retries_a_larger_full_image(method, error):
+    vae = _Vae()
+
+    def fail(value):
+        raise error
+
+    setattr(vae, method + "_tiled", fail)
+    with pytest.raises(type(error)) as caught:
+        getattr(performance.ChunkedVAE(vae), method)("input")
+    assert caught.value is error
+    assert vae.calls == []
+
+
 def test_step_cache_is_on_by_default_for_long_runs_only(monkeypatch):
     calls = []
     monkeypatch.setattr(performance, "_call_comfy_node", lambda name, **kw: calls.append((name, kw)) or ("cached",))
@@ -58,3 +87,10 @@ def test_performance_label_names_attention_cache_and_vae(monkeypatch):
     label = performance.performance_label({"vae_chunking": True}, cached=True)
     assert label == "attention comfy_kitchen_int8 · EasyCache on · VAE chunked"
     assert "EasyCache off (6 steps)" in performance.performance_label({}, cached=False, cache_note="6 steps")
+
+
+def test_performance_label_reports_the_native_model_backend_override(monkeypatch):
+    monkeypatch.setattr(performance, "attention_backend", lambda: "attention_comfy_kitchen_int8")
+    label = performance.performance_label({"_attention_backend": "attention_pytorch"}, cached=False)
+    assert "attention pytorch" in label
+    assert "comfy_kitchen" not in label
