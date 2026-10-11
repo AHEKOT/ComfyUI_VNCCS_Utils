@@ -85,6 +85,7 @@ assets through the bundled SparkJS viewport.
 *   **Generation Anywhere**: Use a selected region as the generation target for new images, image edits, inpaint, outpaint, and full-area transformations.
 *   **Mask and Object Tools**: Paint masks, refine selections, and use SAM-powered object selection to isolate or remove parts of an image.
 *   **Preset and Custom Models**: Switch between built-in presets, custom checkpoints, or GGUF files for supported generation backends.
+*   **Qwen Edit 2.1**: Calls ComfyUI nodes directly for generation and masked edits, including the native LoRA loader. Turbo uses the author's [ViggleTurboSigmas node](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/tree/main/comfyui).
 *   **Krea2 Identity Edit**: Edit the bbox image with grounded Qwen3-VL and adjust **Likeness** in the upper-right control. See the [Krea2 Edit guide](docs/UNICANVAS_KREA2_EDIT.md).
 *   **Turbo and LoRA Controls**: Use Turbo LoRA cards and a general LoRA Stack directly from the generation panel.
 *   **Canvas Editing Tools**: Move, resize, rotate, snap, undo/redo, and manage generation results without leaving the node.

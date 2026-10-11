@@ -250,10 +250,6 @@ def _release_generation_sampling_refs(gen_settings: dict[str, Any], draw_id: str
         if key in gen_settings:
             gen_settings.pop(key, None)
             released_keys.append(key)
-    gc.collect()
-    with contextlib.suppress(Exception):
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
     if released_keys:
         _uc_log(draw_id, "released sampling-only references before VAE decode", {"keys": released_keys})
 

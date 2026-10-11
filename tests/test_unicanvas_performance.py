@@ -87,3 +87,10 @@ def test_performance_label_names_attention_cache_and_vae(monkeypatch):
     label = performance.performance_label({"vae_chunking": True}, cached=True)
     assert label == "attention comfy_kitchen_int8 · EasyCache on · VAE chunked"
     assert "EasyCache off (6 steps)" in performance.performance_label({}, cached=False, cache_note="6 steps")
+
+
+def test_performance_label_reports_the_native_model_backend_override(monkeypatch):
+    monkeypatch.setattr(performance, "attention_backend", lambda: "attention_comfy_kitchen_int8")
+    label = performance.performance_label({"_attention_backend": "attention_pytorch"}, cached=False)
+    assert "attention pytorch" in label
+    assert "comfy_kitchen" not in label

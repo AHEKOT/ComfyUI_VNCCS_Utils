@@ -3,7 +3,7 @@
 - Attention: ComfyUI picks its attention kernel once at startup (Comfy Kitchen, sage, flash,
   xformers, PyTorch SDPA - launch flags and installed packages). UniCanvas samples through
   ComfyUI's own KSampler path with ComfyUI's model code, so every family already runs on that
-  kernel; ``attention_backend()`` only reports which one for the debug log.
+  kernel unless a family selects a per-model backend with ComfyUI's native node.
 - Step cache (``step_cache``, on by default): ComfyUI's native EasyCache node - skips diffusion
   steps whose output barely changes. Families opt out through
   ``UniCanvasModelModule.supports_step_cache``.
@@ -78,7 +78,8 @@ def performance_label(settings: dict[str, Any] | None, cached: bool, cache_note:
     """One line for the progress bar: attention kernel, step cache and VAE mode."""
     cache = "EasyCache on" if cached else f"EasyCache off{f' ({cache_note})' if cache_note else ''}"
     vae = "VAE chunked" if _flag(settings, VAE_CHUNKING_SETTING, False) else "VAE full"
-    return f"attention {attention_backend().replace('attention_', '')} · {cache} · {vae}"
+    backend = (settings or {}).get("_attention_backend") or attention_backend()
+    return f"attention {backend.replace('attention_', '')} · {cache} · {vae}"
 
 
 def step_cache_skip_reason(settings: dict[str, Any] | None, steps: int) -> str:

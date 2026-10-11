@@ -21,158 +21,30 @@ draw = unicanvas.draw
 
 
 @pytest.mark.parametrize("family", ["qwen_image21", "flux_klein"])
-def test_qi2_keeps_weights_cached_but_loads_a_fresh_text_encoder(monkeypatch, family):
+def test_generation_reuses_native_loader_outputs_without_reloading_encoder(monkeypatch, family):
     loaders = unicanvas.loaders
-    model, first_clip, fresh_clip, vae = (object() for _ in range(4))
-    load = mock.Mock(return_value=(model, first_clip, vae))
-    fresh = mock.Mock(return_value=fresh_clip)
+    assets = (object(), object(), object())
+    load = mock.Mock(return_value=assets)
     monkeypatch.setattr(loaders, "_MODEL_CACHE", {})
     monkeypatch.setattr(loaders.DiffusionModelUniCanvasLoader, "load_assets", load)
+    fresh = mock.Mock(side_effect=AssertionError("encoder manually reloaded"))
     monkeypatch.setattr(loaders.DiffusionModelUniCanvasLoader, "load_clip", fresh)
     settings = {"model_loader": "diffusion_model", "generation_mode": family}
-    assert loaders._load_generation_assets(settings) == (model, first_clip, vae)
-    second = loaders._load_generation_assets(settings)
-    assert second == (model, fresh_clip if family == "qwen_image21" else first_clip, vae)
+    for _ in range(20):
+        assert loaders._load_generation_assets(settings) == assets
+    assert loaders._peek_cached_generation_assets(settings) == assets
     load.assert_called_once()
-    assert fresh.call_count == int(family == "qwen_image21")
-    cached = loaders._peek_cached_generation_assets(settings)
-    assert cached == (model, None if family == "qwen_image21" else first_clip, vae)
+    fresh.assert_not_called()
 
 
-def test_failed_qi2_encoder_reload_never_reuses_previous_encoder(monkeypatch):
+def test_failed_native_loader_does_not_cache_partial_assets(monkeypatch):
     loaders = unicanvas.loaders
-    model, clip, vae = (object() for _ in range(3))
     monkeypatch.setattr(loaders, "_MODEL_CACHE", {})
-    monkeypatch.setattr(loaders.DiffusionModelUniCanvasLoader, "load_assets", lambda *a: (model, clip, vae))
-    monkeypatch.setattr(loaders.DiffusionModelUniCanvasLoader, "load_clip", mock.Mock(side_effect=RuntimeError("encoder failed")))
+    monkeypatch.setattr(loaders.DiffusionModelUniCanvasLoader, "load_assets", mock.Mock(side_effect=RuntimeError("encoder failed")))
     settings = {"model_loader": "diffusion_model", "generation_mode": "qwen_image21"}
-    loaders._load_generation_assets(settings)
     with pytest.raises(RuntimeError, match="encoder failed"):
         loaders._load_generation_assets(settings)
-    assert loaders._peek_cached_generation_assets(settings) == (model, None, vae)
-
-
-@pytest.mark.parametrize("outcome,event", [("success", "cleanup"), ("error", "cleanup"),
-                                           ("cancel", "cleanup"), ("success", "detach")])
-def test_repeated_turbo_outpaint_releases_adapter_gpu_weights(monkeypatch, outcome, event):
-    import comfy.patcher_extension as extension
-    import comfy.sd
-    import comfy.utils
-
-    qwen = unicanvas.models.qwen_image21
-    viggle = unicanvas.models.qwen_image21_viggle
-    tensor_refs, loaded_files, retained_models = [], [], []
-
-    class Tensor:
-        def __init__(self, device="cpu", value=1):
-            self.device, self.value = device, value
-            tensor_refs.append(weakref.ref(self))
-        def to(self, device):
-            return self if device == self.device else Tensor(device, self.value)
-        def cpu(self):
-            return self.to("cpu")
-        def __mul__(self, value):
-            return Tensor(self.device, self.value * value)
-
-    class Linear:
-        def __init__(self):
-            self.hooks = []
-        def register_forward_hook(self, hook):
-            self.hooks.append(hook)
-            return types.SimpleNamespace(remove=lambda: self.hooks.remove(hook))
-
-    linear = Linear()
-    diffusion = types.SimpleNamespace(get_submodule=lambda name: linear)
-
-    class Model:
-        def __init__(self):
-            self.model_options = {"transformer_options": {}}
-            self.wrappers, self.callbacks, self.patches = {}, {}, {}
-        def clone(self):
-            model = Model()
-            model.parent = self
-            for key in ("model_options", "wrappers", "callbacks", "patches"):
-                setattr(model, key, copy.deepcopy(getattr(self, key)))
-            return model
-        def add_wrapper_with_key(self, kind, key, wrapper):
-            self.wrappers.setdefault(kind, {}).setdefault(key, []).append(wrapper)
-        def add_callback_with_key(self, kind, key, callback):
-            self.callbacks.setdefault(kind, {}).setdefault(key, []).append(callback)
-        def finish(self):
-            for group in self.callbacks.get(event, {}).values():
-                for callback in group:
-                    callback(self, True) if event == "detach" else callback(self)
-
-    monkeypatch.setattr(extension, "WrappersMP", types.SimpleNamespace(DIFFUSION_MODEL="forward"), raising=False)
-    monkeypatch.setattr(extension, "CallbacksMP", types.SimpleNamespace(ON_CLEANUP="cleanup", ON_DETACH="detach"), raising=False)
-    monkeypatch.setattr(sys.modules["comfy"], "patcher_extension", extension, raising=False)
-    monkeypatch.setattr(qwen, "resolve_qwen21_turbo_lora", lambda: qwen.QWEN21_TURBO_LORA_NAME)
-    monkeypatch.setattr(qwen, "resolve_qwen21_outpaint_lora", lambda: qwen.QWEN21_OUTPAINT_LORA_NAME)
-    monkeypatch.setattr(unicanvas.loras, "_get_lora_full_path", lambda name: name)
-
-    def load(name, safe_load, return_metadata=False):
-        loaded_files.append(name)
-        if return_metadata:
-            return {"transformer.block.q.lora_A.weight": Tensor(),
-                    "transformer.block.q.lora_B.weight": Tensor()}, {}
-        return {"outpaint": Tensor()}
-
-    def merge(model, clip, weights, strength, clip_strength):
-        model = model.clone()
-        model.patches["outpaint"] = weights["outpaint"]
-        return model, clip
-
-    monkeypatch.setattr(comfy.utils, "load_torch_file", load)
-    monkeypatch.setattr(comfy.sd, "load_lora_for_models", merge)
-
-    def lora_linear(value, pair):
-        assert all(tensor.device == "gpu" for tensor in pair)
-        assert all(tensor.value == 1 for tensor in pair)
-        return 0
-
-    monkeypatch.setattr(viggle, "_lora_linear", lora_linear)
-
-    class Interrupted(Exception):
-        pass
-
-    failure = {"error": RuntimeError("sampling failed"), "cancel": Interrupted("stopped")}.get(outcome)
-
-    class Executor:
-        class_obj = diffusion
-        def __call__(self, value):
-            for hook in linear.hooks:
-                hook(linear, (value,), 0)
-            if failure:
-                raise failure
-            return "sampled"
-
-    base, clip = Model(), object()
-    module = qwen.QwenImage21UniCanvasModule()
-    settings = {**module.defaults, "draw_mode": "outpaint"}
-    for _ in range(6):
-        # Outpaint and QI2 cache clone the Turbo patcher; callbacks must follow both clones.
-        model, output_clip = module.apply_loras(base.clone(), clip, settings)
-        model = model.clone()
-        retained_models.append(model)
-        assert output_clip is clip and viggle.has_viggle_turbo(model)
-        assert set(model.patches) == {"outpaint"}
-        wrapper = model.wrappers["forward"][viggle.VIGGLE_TURBO_MARKER][0]
-        # A cached patched model must still work after its previous cleanup/offload.
-        for _ in range(2):
-            try:
-                if failure:
-                    with pytest.raises(type(failure), match=str(failure)):
-                        wrapper(Executor(), types.SimpleNamespace(device="gpu"))
-                else:
-                    for _ in range(6):
-                        assert wrapper(Executor(), types.SimpleNamespace(device="gpu")) == "sampled"
-            finally:
-                model.finish()
-            assert linear.hooks == []
-            assert not any(ref() is not None and ref().device == "gpu" for ref in tensor_refs), "Turbo weights survived sampler cleanup"
-    assert loaded_files == [qwen.QWEN21_TURBO_LORA_NAME, qwen.QWEN21_OUTPAINT_LORA_NAME] * 6
-    assert base.wrappers == base.callbacks == base.patches == {}
-    assert base.model_options == {"transformer_options": {}}
+    assert loaders._peek_cached_generation_assets(settings) is None
 
 
 @pytest.mark.parametrize("batch_size", [4, 20])
@@ -224,7 +96,7 @@ def test_qi2_releases_allocator_between_stages_and_decodes_one_image_at_a_time(m
         if name == "TextEncodeQwenImage21":
             work("encode")
             return ("positive", "negative", {"samples": None})
-        if name == "SamplerCustomAdvanced":
+        if name in {"KSampler", "SamplerCustomAdvanced"}:
             work("sample")
             return (latent,)
         if name == "VAEDecode":
@@ -237,12 +109,16 @@ def test_qi2_releases_allocator_between_stages_and_decodes_one_image_at_a_time(m
             return (GpuImage(index),)
         return (object(),)
 
-    def regular_sample(**kwargs):
-        work("sample")
-        return latent
-
-    monkeypatch.setattr(qwen, "_call_comfy_node", node)
-    monkeypatch.setattr(unicanvas.models.base, "_sample_generation_latent_default", regular_sample)
+    import nodes
+    def registered(name):
+        class Node:
+            FUNCTION = "execute"
+            def execute(self, **kwargs):
+                return node(name, **kwargs)
+        return Node
+    monkeypatch.setattr(nodes, "NODE_CLASS_MAPPINGS", {name: registered(name) for name in (
+        "TextEncodeQwenImage21", "KSampler", "SamplerCustomAdvanced", "RandomNoise", "BasicGuider", "KSamplerSelect", "VAEDecode",
+    )}, raising=False)
     def run():
         module._encode_qi21(object(), object(), "cat", "", {}, 1024)
         sampled = module.sample_latent(object(), "positive", "negative", latent, 7, 6, 1, "euler", "simple", 1, {})
@@ -450,6 +326,18 @@ def test_failed_request_releases_draw_ownership(monkeypatch):
     monkeypatch.setattr(draw.DrawRequest, "from_payload", mock.Mock(side_effect=ValueError("invalid payload")))
     with pytest.raises(ValueError, match="invalid payload"):
         draw._run_unicanvas_draw({"debug_id": "failed"})
+    assert draw._ACTIVE_DRAW_ID is None
+
+
+def test_native_lifecycle_failure_releases_draw_ownership(monkeypatch):
+    monkeypatch.setattr(draw, "set_interrupt", mock.Mock())
+    monkeypatch.setattr(draw.DrawRequest, "from_payload", lambda payload: types.SimpleNamespace(
+        draw_id=payload["debug_id"], module=types.SimpleNamespace(validate_request=mock.Mock()),
+    ))
+    monkeypatch.setattr(draw, "_create_draw_pipeline", lambda request: types.SimpleNamespace(run=lambda: {}))
+    monkeypatch.setattr(draw, "_release_generation_state", mock.Mock(side_effect=RuntimeError("native lifecycle failed")))
+    with pytest.raises(RuntimeError, match="native lifecycle failed"):
+        draw._run_unicanvas_draw({"debug_id": "failed-lifecycle"})
     assert draw._ACTIVE_DRAW_ID is None
 
 

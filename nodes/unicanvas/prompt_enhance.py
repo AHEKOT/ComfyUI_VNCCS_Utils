@@ -22,7 +22,7 @@ from typing import Any
 import torch
 from PIL import Image
 
-from .comfy_bridge import _call_loader_node, _safe_filename_list
+from .comfy_bridge import _call_loader_node, _safe_filename_list, _release_generation_state
 from .debug import _uc_log
 from .imaging import _decode_data_url, _pil_to_image_tensor
 from .paths import _safe_get_folder_paths
@@ -210,28 +210,6 @@ def release_enhance_clip(clip: Any) -> None:
         model_management.soft_empty_cache()
     except Exception as exc:  # freeing is best effort: ComfyUI still evicts it under memory pressure
         logging.getLogger(__name__).warning("[VNCCS UniCanvas] Could not release the prompt enhance encoder: %s", exc)
-
-
-def _release_generation_state() -> None:
-    """What ComfyUI's executor does after every node when DynamicVRAM is on.
-
-    A node run outside the executor skips it, and the leftover prefetch queues / cast buffers make the
-    next generation on the same encoder trip a CUDA scatter/gather assert, which aborts the process.
-    """
-    try:
-        import comfy.memory_management
-
-        if not comfy.memory_management.aimdo_enabled:
-            return
-        import comfy.model_management
-        import comfy.model_prefetch
-        import comfy_aimdo.model_vbar
-
-        comfy.model_prefetch.cleanup_prefetch_queues()
-        comfy.model_management.reset_cast_buffers()
-        comfy_aimdo.model_vbar.vbars_reset_watermark_limits()
-    except Exception:
-        pass  # older ComfyUI without DynamicVRAM: nothing to release
 
 
 def enhance_text(clip: Any, text: str, system_prompt: str, images: list[Image.Image] | None = None) -> str:

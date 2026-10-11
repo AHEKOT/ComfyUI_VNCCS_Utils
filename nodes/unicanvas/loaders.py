@@ -288,8 +288,6 @@ def _peek_cached_generation_assets(gen_settings: dict[str, Any]):
     if loader.key == "external":
         return None
     asset_key = loader.cache_key(gen_settings)
-    if gen_settings.get("generation_mode") == "qwen_image21" and isinstance(loader, DiffusionModelUniCanvasLoader):
-        asset_key += ("qwen_image21",)
     with _MODEL_CACHE_LOCK:
         return _MODEL_CACHE.get(asset_key)
 
@@ -308,20 +306,14 @@ def _load_generation_assets_cached(gen_settings: dict[str, Any]):
         # a later external draw reuse the first draw's model/clip/vae. Bypass _MODEL_CACHE entirely.
         return loader.load_assets(gen_settings)
     asset_key = loader.cache_key(gen_settings)
-    fresh_clip = gen_settings.get("generation_mode") == "qwen_image21" and isinstance(loader, DiffusionModelUniCanvasLoader)
-    if fresh_clip:
-        asset_key += ("qwen_image21",)
     with _COMFY_MODEL_OP_LOCK:
         with _MODEL_CACHE_LOCK:
             cached = _MODEL_CACHE.get(asset_key)
             if cached is None and len(_MODEL_CACHE) >= _MODEL_CACHE_MAX_ENTRIES:
                 _MODEL_CACHE.clear()
         if cached is not None:
-            if fresh_clip:
-                return cached[0], loader.load_clip(gen_settings), cached[2]
             return cached
         assets = loader.load_assets(gen_settings)
         with _MODEL_CACHE_LOCK:
-            # Qwen3-VL generation mutates the encoder shared by CLIP.clone().
-            _MODEL_CACHE[asset_key] = (assets[0], None, assets[2]) if fresh_clip else assets
+            _MODEL_CACHE[asset_key] = assets
         return assets

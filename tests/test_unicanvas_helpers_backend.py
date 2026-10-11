@@ -183,6 +183,27 @@ def test_v3_node_outputs_come_back_as_result_tuples(monkeypatch):
     monkeypatch.setattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {"V3": _V3Node}, raising=False)
     assert _call_comfy_node("V3", clip="c") == ("POS", "NEG", {"samples": 1})
 
+
+@pytest.mark.parametrize("helper", ["_call_comfy_node", "_call_node_method", "_call_loader_node"])
+def test_direct_node_call_reports_lifecycle_failures(monkeypatch, helper):
+    import nodes as comfy_nodes
+    from nodes.unicanvas import comfy_bridge
+
+    class Node:
+        FUNCTION = "execute"
+        def execute(self):
+            return (1,)
+
+    monkeypatch.setattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {"Node": Node}, raising=False)
+    def fail():
+        raise RuntimeError("node lifecycle failed")
+    monkeypatch.setattr(comfy_bridge, "_release_generation_state", fail)
+    with pytest.raises(RuntimeError, match="node lifecycle failed"):
+        if helper == "_call_comfy_node":
+            comfy_bridge._call_comfy_node("Node")
+        else:
+            getattr(comfy_bridge, helper)(["Node"], [])
+
 @pytest.mark.parametrize("fail", [False, True])
 def test_naming_model_offloads_after_batch_even_on_failure(monkeypatch, fail):
     from nodes.unicanvas import describe_layers

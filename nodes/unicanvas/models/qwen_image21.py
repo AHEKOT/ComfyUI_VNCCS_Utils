@@ -26,7 +26,6 @@ from ..latents import _unwrap_latent_samples
 from .. import loras
 from ..loras import LoraRequirement, _lora_name_matches
 from ..paths import _get_full_path_agnostic, _resolve_model_filename, _safe_get_folder_paths
-from ..prompt_enhance import _release_generation_state
 from ..sampling import _ensure_direct_sampling_prompt_context, _report_comfy_sampling_progress, _suppress_direct_sampling_comfy_progress
 from .base import UniCanvasModelModule, _reference_image_slots
 from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
@@ -39,8 +38,10 @@ from .qwen_image21_viggle import apply_viggle_turbo_lora, has_viggle_turbo, vigg
 # QwenImage21UniCanvasModule.remove_background().
 QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT = "Remove the background, and output a PNG image"
 
-def _qwen21_cache_model(model: Any):
-    return _call_comfy_node("QwenImage21Cache", model=model, device="gpu", dtype="int8")[0]
+def _qwen21_sampling_model(model: Any):
+    model = _call_comfy_node("QwenImage21Cache", model=model, device="auto", dtype="default")[0]
+    # Use ComfyUI's SDPA backend for QI2 reference attention after fatal CK-path failures.
+    return _call_comfy_node("ModelAttentionBackend", model=model, attention="pytorch attention")[0]
 
 
 QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
@@ -257,6 +258,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         "_qwen21_negative_prompt",
         "_qwen21_latent",
         "_qwen21_pose_edit",
+        "_attention_backend",
     )
     lora_requirements: tuple[LoraRequirement, ...] = (
         LoraRequirement(
@@ -268,7 +270,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             # Looked up at call time so the lazy download (and tests) can replace it.
             resolver=lambda: resolve_qwen21_turbo_lora(),
             resolve_match=QWEN21_TURBO_LORA_NAME,
-            # Only the Viggle turbo runs unmerged (and then samples on its own schedule).
+            # Viggle turbo needs its own schedule after the native LoRA loader.
             apply=lambda model, clip, name, strength: (
                 apply_viggle_turbo_lora(model, clip, name, strength)
                 if _lora_name_matches(name, QWEN21_TURBO_LORA_NAME)
@@ -310,10 +312,15 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         return False
 
     def prepare_model_for_sampling(self, ctx) -> Any:
-        return _qwen21_cache_model(ctx.model)
+        model = _qwen21_sampling_model(ctx.model)
+        ctx.settings["_attention_backend"] = "attention_pytorch"
+        return model
 
-    def prepare_draw_assets(self, ctx) -> None:
-        _release_generation_state()
+    def clone_assets(self, model: Any, clip: Any) -> tuple[Any, Any]:
+        # Use ComfyUI's managed static patcher after mixed-mode DynamicVRAM sampling failures.
+        if getattr(model, "is_dynamic", lambda: False)():
+            model = model.get_non_dynamic_delegate()
+        return super().clone_assets(model, clip)
 
     def prepare_masked_inputs(self, ctx) -> None:
         ctx.settings["_qwen21_source_empty"] = ctx.source_empty
@@ -329,12 +336,9 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         images = []
         # Keep only one decoded image on the GPU, regardless of the requested batch.
         for index in range(latent.shape[0]):
-            try:
-                image = _call_comfy_node("VAEDecode", samples={"samples": latent[index:index + 1]}, vae=vae)[0]
-                images.append(image.cpu())
-                del image
-            finally:
-                _release_generation_state()
+            image = _call_comfy_node("VAEDecode", samples={"samples": latent[index:index + 1]}, vae=vae)[0]
+            images.append(image.cpu())
+            del image
         return images[0] if len(images) == 1 else torch.cat(images, dim=0)
 
     def prepare_pose_edit(self, ctx) -> None:
@@ -519,7 +523,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         gen_settings.update(settings or {})
         if "lora_stack" in (settings or {}):
             # Remove bg picks its (turbo) LoRA explicitly, "None" included: no family default.
-            # A picked Viggle turbo still goes through the family rule (unmerged + its schedule);
+            # A picked Viggle turbo still goes through the family rule and its schedule;
             picked = next(
                 (item for item in gen_settings.get("lora_stack") or []
                  if isinstance(item, dict) and _lora_name_matches(item.get("name"), QWEN21_TURBO_LORA_NAME)),
@@ -538,8 +542,8 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
                 f"(UNETLoader/CLIPLoader/VAELoader): {exc}"
             ) from exc
         # The family's LoRA rules plus the optional turbo LoRA picked for Remove bg.
-        model, clip = self.apply_loras(model, clip, gen_settings)
-        model = _qwen21_cache_model(model)
+        model, clip = self.apply_loras(*self.clone_assets(model, clip), gen_settings)
+        model = _qwen21_sampling_model(model)
         gen_settings["_qwen21_clip"] = clip
         gen_settings["_qwen21_prompt"] = str(gen_settings.get("prompt") or "").strip() or QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT
         gen_settings["_qwen21_negative_prompt"] = ""
@@ -606,18 +610,15 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         passed as well: execute() rejects them.
         """
         slot_images = {f"image_{slot}": tensor for slot, tensor in sorted(images.items())}
-        try:
-            encoded = _call_comfy_node(
-                "TextEncodeQwenImage21",
-                clip=clip,
-                vae=vae,
-                prompt=prompt,
-                negative_prompt=negative_prompt or "",
-                resolution=int(resolution),
-                images=slot_images,
-            )
-        finally:
-            _release_generation_state()
+        encoded = _call_comfy_node(
+            "TextEncodeQwenImage21",
+            clip=clip,
+            vae=vae,
+            prompt=prompt,
+            negative_prompt=negative_prompt or "",
+            resolution=int(resolution),
+            images=slot_images,
+        )
         if encoded is None:
             raise RuntimeError("[VNCCS UniCanvas] Qwen-Image-2.1 text encoding returned no conditioning.")
         if isinstance(encoded, (list, tuple)):
@@ -652,27 +653,25 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         config_loras = loras._active_lora_names(external.get("lora_stack") if isinstance(external, dict) else None)
         # A turbo merged by a linked VNCSS Config still needs the student schedule.
         if not (has_viggle_turbo(model) or loras._lora_name_in(QWEN21_TURBO_LORA_NAME, config_loras)):
-            try:
-                return super().sample_latent(
-                    model, positive, negative, latent, seed, steps, cfg, sampler_name, scheduler, denoise, gen_settings, draw_id
-                )
-            finally:
-                _release_generation_state()
+            _ensure_direct_sampling_prompt_context()
+            with _suppress_direct_sampling_comfy_progress(), _report_comfy_sampling_progress(draw_id, steps):
+                return _call_comfy_node(
+                    "KSampler", model=model, positive=positive, negative=negative,
+                    latent_image=latent, seed=seed, steps=steps, cfg=cfg,
+                    sampler_name=sampler_name, scheduler=scheduler, denoise=denoise,
+                )[0]
         if int(steps) != 6 or abs(float(cfg) - 1.0) > 1e-6 or float(denoise) != 1.0:
             raise ValueError("[VNCCS UniCanvas] QI2 turbo requires 6 steps, CFG 1 and denoise 1.")
         _ensure_direct_sampling_prompt_context()
         sigmas = viggle_turbo_sigmas(latent)
         total = len(sigmas) - 1
         _uc_log(draw_id, "Viggle turbo sampling", {"sigmas": [round(float(s), 4) for s in sigmas], "cfg": cfg, "seed": seed})
-        try:
-            noise = _call_comfy_node("RandomNoise", noise_seed=seed)[0]
-            guider = _call_comfy_node("BasicGuider", model=model, conditioning=positive)[0]
-            sampler = _call_comfy_node("KSamplerSelect", sampler_name="euler")[0]
-            with _suppress_direct_sampling_comfy_progress(), _report_comfy_sampling_progress(draw_id, total):
-                out = _call_comfy_node("SamplerCustomAdvanced", noise=noise, guider=guider, sampler=sampler,
-                                       sigmas=sigmas, latent_image=latent)[0]
-        finally:
-            _release_generation_state()
+        noise = _call_comfy_node("RandomNoise", noise_seed=seed)[0]
+        guider = _call_comfy_node("BasicGuider", model=model, conditioning=positive)[0]
+        sampler = _call_comfy_node("KSamplerSelect", sampler_name="euler")[0]
+        with _suppress_direct_sampling_comfy_progress(), _report_comfy_sampling_progress(draw_id, total):
+            out = _call_comfy_node("SamplerCustomAdvanced", noise=noise, guider=guider, sampler=sampler,
+                                   sigmas=sigmas, latent_image=latent)[0]
         _uc_log(draw_id, "Viggle turbo sampling output", _latent_debug(out))
         return out
 

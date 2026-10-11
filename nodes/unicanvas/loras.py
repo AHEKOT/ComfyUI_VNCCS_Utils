@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .comfy_bridge import _call_node_method
+from .comfy_bridge import _call_node_method, _call_comfy_node
 from .paths import _get_full_path_agnostic, _resolve_model_filename
 
 
@@ -74,11 +74,17 @@ def _apply_lora_cached(model: Any, clip: Any, lora_name: str, strength: float, c
     effective_clip = strength if clip_strength is None else clip_strength
     if not lora_name or (float(strength or 0) == 0 and float(effective_clip or 0) == 0):
         return model, clip
-    import comfy.sd
-    import comfy.utils
+    import folder_paths
 
-    lora = comfy.utils.load_torch_file(_get_lora_full_path(lora_name), safe_load=True)
-    return comfy.sd.load_lora_for_models(model, clip, lora, strength, strength if clip_strength is None else clip_strength)
+    lora_name = _resolve_model_filename(folder_paths, "loras", lora_name, allow_subfolder_fallback=True)
+    if effective_clip == 0:
+        return _call_comfy_node(
+            "LoraLoaderModelOnly", model=model, lora_name=lora_name, strength_model=strength,
+        )[0], clip
+    return _call_comfy_node(
+        "LoraLoader", model=model, clip=clip, lora_name=lora_name,
+        strength_model=strength, strength_clip=effective_clip,
+    )
 
 
 def _load_model_patch(patch_name: str):

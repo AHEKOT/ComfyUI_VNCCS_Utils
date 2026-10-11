@@ -51,6 +51,42 @@ const widget = (values = {}) => Object.assign(Object.create(prototype), {
   layers: [], panorama: null, origin: { x: 0, y: 0 }, size: { width: 100, height: 100 }, setStatus() {}, ...values,
 });
 
+for (const bbox of [{ x: 0, y: 0, width: 1024, height: 1024 }, { x: -384, y: 128, width: 768, height: 640 }]) {
+  test(`generated pixels and mask retain the captured bbox at ${bbox.x},${bbox.y} through acceptance`, async () => {
+    const image = { naturalWidth: bbox.width * 2, naturalHeight: bbox.height * 2 };
+    const mask = new AlphaCanvas(bbox.width, bbox.height);
+    const draws = [], history = [];
+    const layer = { type: "raster", canvas: new AlphaCanvas(4219, 2231) };
+    const w = widget({
+      bbox: { x: 800, y: 900, width: 256, height: 256 },
+      origin: { x: -1616.8125835402689, y: -594.5452571563894 },
+      _documentRevision: 7, stagingItems: [], activeStagingIndex: -1,
+      resultImageURL: value => value, loadImage: async value => value === "mask" ? mask : image,
+      makeAlphaMaskCanvasFromImage: () => mask,
+      addStagingItem(item) { this.stagingItems.push(item); this.activeStagingIndex = 0; },
+      configureImageContext(ctx) { ctx.drawImage = (...args) => draws.push(args); return ctx; },
+      ensureWorldBounds() { this.origin = { x: -1800.5, y: -700.25 }; return true; },
+      addLayer: () => layer, pushHistoryEntry: entry => history.push(entry),
+    });
+    for (const name of ["invalidateLayerCaches", "requestRender", "renderLayerList", "syncLightStateToWidget", "scheduleFullSync"]) w[name] = () => {};
+    context.maybeAutoNameLayer = () => {};
+    await w._stageGeneratedImages({ images: ["result"], mask: "mask" }, mask, "inpaint", {
+      bbox, inferenceSize: { width: image.naturalWidth, height: image.naturalHeight },
+      outputSize: { width: bbox.width, height: bbox.height }, requestPanorama: null, requestDocumentRevision: 7,
+    });
+    assert.deepEqual(plain(w.getStagingImageRect()), bbox, "live bbox changes never move a completed request");
+    await w.acceptStaging();
+    assert.deepEqual(plain(layer.hiresRect), bbox);
+    assert.deepEqual(draws[0], [image, 0, 0, image.naturalWidth, image.naturalHeight]);
+    assert.deepEqual(draws[1], [mask, 0, 0, image.naturalWidth, image.naturalHeight]);
+    assert.deepEqual(draws[2], [layer.hiresCanvas, bbox.x - w.origin.x, bbox.y - w.origin.y, bbox.width, bbox.height]);
+    assert.equal(history.length, 1);
+    assert.equal(w.stagingItems.length, 0);
+    w.drawRasterLayerToWorldRect({ save() {}, restore() {} }, layer, bbox, { x: 0, y: 0, width: image.naturalWidth, height: image.naturalHeight });
+    assert.deepEqual(draws[3], [layer.hiresCanvas, 0, 0, image.naturalWidth, image.naturalHeight, 0, 0, image.naturalWidth, image.naturalHeight]);
+  });
+}
+
 // Objects made inside the vm context have another Object prototype.
 const plain = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 

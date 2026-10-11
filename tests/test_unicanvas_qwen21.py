@@ -258,6 +258,22 @@ def test_rgba_reference_geometry_is_independent_of_pixel_content(monkeypatch, pi
     assert settings["_qwen21_latent"] is native
 
 
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_qi2_uses_comfys_native_non_dynamic_delegate(dynamic):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    model_clone, clip_clone = object(), object()
+    native = SimpleNamespace(clone=Mock(return_value=model_clone))
+    model = SimpleNamespace(is_dynamic=lambda: dynamic, get_non_dynamic_delegate=Mock(return_value=native), clone=Mock(return_value=model_clone))
+    clip = SimpleNamespace(clone=Mock(return_value=clip_clone))
+    assert _get_unicanvas_model_module("qwen_image21").clone_assets(model, clip) == (model_clone, clip_clone)
+    assert model.get_non_dynamic_delegate.call_count == int(dynamic)
+    assert native.clone.call_count == int(dynamic)
+    assert model.clone.call_count == int(not dynamic)
+    clip.clone.assert_called_once()
+
+
 def test_model_uses_native_qi2_cache_and_never_easycache(monkeypatch):
     from types import SimpleNamespace
     from nodes.unicanvas.models import qwen_image21
@@ -265,8 +281,11 @@ def test_model_uses_native_qi2_cache_and_never_easycache(monkeypatch):
     calls = []
     monkeypatch.setattr(qwen_image21, "_call_comfy_node", lambda name, **kw: calls.append((name, kw)) or ("cached",))
     module = _get_unicanvas_model_module("qwen_image21")
-    assert module.prepare_model_for_sampling(SimpleNamespace(model="base")) == "cached"
-    assert calls == [("QwenImage21Cache", {"model": "base", "device": "gpu", "dtype": "int8"})]
+    ctx = SimpleNamespace(model="base", settings={})
+    assert module.prepare_model_for_sampling(ctx) == "cached"
+    assert ctx.settings["_attention_backend"] == "attention_pytorch"
+    assert calls == [("QwenImage21Cache", {"model": "base", "device": "auto", "dtype": "default"}),
+                     ("ModelAttentionBackend", {"model": "cached", "attention": "pytorch attention"})]
     assert module.supports_step_cache({"step_cache": True}) is False
 
 
@@ -371,8 +390,11 @@ def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
         captured.setdefault("calls", []).append((class_name, kwargs))
         if class_name == "TextEncodeQwenImage21":
             return ("POS", "NEG", {"samples": torch.zeros(1, 64, 4, 4)})
-        if class_name == "QwenImage21Cache":
+        if class_name in {"QwenImage21Cache", "ModelAttentionBackend"}:
             return (kwargs["model"],)
+        if class_name == "KSampler":
+            captured["sample_latent"] = kwargs["latent_image"]
+            return (kwargs["latent_image"],)
         if class_name == "VAEDecode":
             return (kwargs["vae"].decode(kwargs["samples"]["samples"]),)
         raise AssertionError(f"unexpected node call: {class_name}")
@@ -391,7 +413,7 @@ def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
     encode = next(kwargs for name, kwargs in captured["calls"] if name == "TextEncodeQwenImage21")
     assert encode["resolution"] == 0
     assert captured["sample_latent"]["samples"].shape == (1, 64, 4, 4)
-    assert [name for name, _ in captured["calls"]] == ["QwenImage21Cache", "TextEncodeQwenImage21", "VAEDecode"]
+    assert [name for name, _ in captured["calls"]] == ["QwenImage21Cache", "ModelAttentionBackend", "TextEncodeQwenImage21", "KSampler", "VAEDecode"]
     assert tuple(rgba.shape) == (48, 80, 4)
     assert torch.all(rgba[..., 3] == 0.5)
 
@@ -439,43 +461,36 @@ def test_spectrum_is_removed():
     assert module.supports_step_cache({"spectrum": {"enabled": True}}) is False
 
 
-# --- Viggle turbo: student schedule + unmerged adapter ---------------------------------
+# --- Viggle turbo: student schedule + native LoRA loader -------------------------------
 
 
-@pytest.mark.parametrize("channels,side,scale", [(64, 64, 16), (4, 128, 8)])
-def test_viggle_turbo_sigmas_use_standard_student_nodes(channels, side, scale):
-    from nodes.unicanvas.models.qwen_image21_viggle import viggle_turbo_sigmas
+def test_viggle_schedule_is_delegated_to_the_registered_node(monkeypatch):
+    from nodes.unicanvas.models import qwen_image21_viggle as viggle
 
-    latent = {"samples": torch.zeros(1, channels, side, side), "downscale_ratio_spacial": scale}
-    sigmas = viggle_turbo_sigmas(latent)
-    # The 1024x1024 schedule, including the final raw node 0.25 and terminal zero.
-    expected = torch.tensor([1, 0.967754458, 0.933358293, 0.857191977, 0.666755818, 0.400096293, 0])
-    torch.testing.assert_close(sigmas, expected, rtol=0, atol=1e-7)
-
-
-def test_turbo_sigmas_use_the_current_generation_area():
-    from nodes.unicanvas.models.qwen_image21_viggle import viggle_turbo_sigmas
-
-    sigmas = viggle_turbo_sigmas({"samples": torch.zeros(1, 64, 64, 128)})
-    expected = torch.tensor([1, 0.973610630, 0.945106888, 0.880651300, 0.710949503, 0.450509508, 0])
-    torch.testing.assert_close(sigmas, expected, rtol=0, atol=1e-7)
+    latent = {"samples": torch.zeros(1, 64, 128, 128)}
+    native_sigmas = torch.tensor([1, .98, .95, .9, .8, .6, 0])
+    calls = []
+    monkeypatch.setattr(viggle, "_call_comfy_node", lambda name, **kwargs: calls.append((name, kwargs)) or (native_sigmas,))
+    assert viggle.viggle_turbo_sigmas(latent) is native_sigmas
+    assert calls == [("ViggleTurboSigmas", {"latent": latent, "nodes": "1.0, 0.9375, 0.875, 0.75, 0.5, 0.25"})]
 
 
-def test_viggle_lora_weights_fold_alpha_rank_and_strength():
-    from nodes.unicanvas.models.qwen_image21_viggle import viggle_lora_weights
+def test_viggle_adapter_is_owned_by_the_registered_node(monkeypatch):
+    from nodes.unicanvas.models import qwen_image21_viggle as viggle
+    from types import SimpleNamespace
 
-    sd = {
-        "transformer.transformer_blocks.0.attn.to_q.lora_A.weight": torch.ones(2, 4),
-        "transformer.transformer_blocks.0.attn.to_q.lora_B.weight": torch.ones(4, 2),
-    }
-    weights = viggle_lora_weights(sd, {"lora_adapter_metadata": '{"transformer.lora_alpha": 64, "transformer.r": 128}'}, 0.5)
-    down, up = weights["transformer_blocks.0.attn.to_q"]
-    assert torch.equal(down, torch.ones(2, 4)) and torch.allclose(up, torch.full((4, 2), 0.25))
-    with pytest.raises(ValueError):
-        viggle_lora_weights({}, None, 1.0)
+    base = SimpleNamespace(model_options={})
+    patched = SimpleNamespace(model_options={})
+    clip = object()
+    calls = []
+    monkeypatch.setattr(viggle, "_call_comfy_node", lambda name, **kwargs: calls.append((name, kwargs)) or (patched,))
+    assert viggle.apply_viggle_turbo_lora(base, clip, "turbo.safetensors", .7) == (patched, clip)
+    assert calls == [("LoraLoaderModelOnly", {"model": base, "lora_name": "turbo.safetensors", "strength_model": .7})]
+    assert viggle.has_viggle_turbo(patched)
+    assert not viggle.has_viggle_turbo(base)
 
 
-def test_turbo_lora_runs_unmerged_and_other_loras_merge(monkeypatch):
+def test_turbo_lora_selects_student_schedule_and_other_loras_use_native_loader(monkeypatch):
     from nodes.unicanvas.models import qwen_image21
 
     calls = []
@@ -490,13 +505,15 @@ def test_turbo_lora_runs_unmerged_and_other_loras_merge(monkeypatch):
 
 def test_turbo_model_samples_on_the_viggle_schedule(monkeypatch):
     from nodes.unicanvas.models import qwen_image21
-    from nodes.unicanvas.models.qwen_image21_viggle import VIGGLE_TURBO_MARKER, viggle_turbo_sigmas
+    from nodes.unicanvas.models.qwen_image21_viggle import VIGGLE_TURBO_MARKER
 
     calls = []
     def node(name, **kwargs):
         calls.append((name, kwargs))
         return ({"samples": kwargs["latent_image"]["samples"] + 1},) if name == "SamplerCustomAdvanced" else (name,)
 
+    native_sigmas = torch.tensor([1, .9, .8, .7, .6, .5, 0])
+    monkeypatch.setattr(qwen_image21, "viggle_turbo_sigmas", lambda latent: native_sigmas)
     monkeypatch.setattr(qwen_image21, "_call_comfy_node", node)
     monkeypatch.setattr("nodes.unicanvas.models.base._sample_generation_latent_default", lambda **kw: pytest.fail("KSampler path used for turbo"))
 
@@ -510,7 +527,7 @@ def test_turbo_model_samples_on_the_viggle_schedule(monkeypatch):
     assert calls[0][1] == {"noise_seed": 7}
     assert calls[1][1]["conditioning"] == "POS" and "negative" not in calls[1][1]
     assert calls[2][1] == {"sampler_name": "euler"}
-    assert torch.equal(calls[3][1]["sigmas"], viggle_turbo_sigmas(latent))
+    assert torch.equal(calls[3][1]["sigmas"], native_sigmas)
     assert calls[3][1]["latent_image"] is latent
     assert torch.equal(out["samples"], torch.ones(1, 64, 48, 64))
 

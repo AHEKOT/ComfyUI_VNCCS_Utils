@@ -84,6 +84,8 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             request.module.validate_request(request)
             return _create_draw_pipeline(request).run()
         finally:
-            _release_generation_state()
-            with _DRAW_OWNER_LOCK:
-                _ACTIVE_DRAW_ID = None
+            try:
+                _release_generation_state()
+            finally:
+                with _DRAW_OWNER_LOCK:
+                    _ACTIVE_DRAW_ID = None

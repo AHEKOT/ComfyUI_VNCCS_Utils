@@ -156,15 +156,19 @@ def test_clip_only_loras_count_as_applied_and_are_not_duplicated(applied):
     assert applied == []
 
 
-def test_cached_loader_passes_clip_only_strength_to_comfy(monkeypatch):
-    import comfy.sd
-    import comfy.utils
+@pytest.mark.parametrize("strength,clip_strength,node_name", [(0, 1, "LoraLoader"), (1, 0, "LoraLoaderModelOnly")])
+def test_lora_loading_delegates_strengths_to_native_nodes(monkeypatch, strength, clip_strength, node_name):
     calls = []
-    monkeypatch.setattr(loras, "_get_lora_full_path", lambda name: "/loras/" + name)
-    monkeypatch.setattr(comfy.utils, "load_torch_file", lambda *_args, **_kwargs: "weights")
-    monkeypatch.setattr(comfy.sd, "load_lora_for_models", lambda *args: (calls.append(args) or (args[0], args[1])), raising=False)
-    assert loras._apply_lora_cached("m", "c", "clip-only", 0, 1) == ("m", "c")
-    assert calls == [("m", "c", "weights", 0, 1)]
+    def call(name, **kwargs):
+        calls.append((name, kwargs))
+        return ("patched",) if name == "LoraLoaderModelOnly" else ("patched", "patched-clip")
+    monkeypatch.setattr(loras, "_call_comfy_node", call)
+    result = loras._apply_lora_cached("m", "c", "adapter", strength, clip_strength)
+    assert result == ("patched", "c" if clip_strength == 0 else "patched-clip")
+    expected = {"model": "m", "lora_name": "adapter", "strength_model": strength}
+    if clip_strength:
+        expected.update(clip="c", strength_clip=clip_strength)
+    assert calls == [(node_name, expected)]
     calls.clear()
     assert loras._apply_lora_cached("m", "c", "zero", 0) == ("m", "c")
     assert calls == []
@@ -263,27 +267,22 @@ def test_different_lora_files_with_same_basename_both_apply(applied, monkeypatch
     assert [name for name, *_ in applied] == ["portraits/adapter.safetensors", "styles/adapter.safetensors"]
 
 
-def test_loaded_lora_weights_are_not_retained_by_a_global_cache(monkeypatch):
+def test_lora_loader_instances_do_not_retain_previous_combinations(monkeypatch):
     import weakref
-    import comfy.sd
-    import comfy.utils
-
-    class Weights:
-        pass
-
-    references = []
-
-    def load(path, safe_load):
-        weights = Weights()
-        references.append(weakref.ref(weights))
-        return weights
-
-    monkeypatch.setattr(loras, "_get_lora_full_path", lambda name: f"/loras/{name}")
-    monkeypatch.setattr(comfy.utils, "load_torch_file", load)
-    monkeypatch.setattr(comfy.sd, "load_lora_for_models", lambda model, clip, weights, *args: (model, clip))
+    import nodes
+    references, names = [], []
+    class NativeLoader:
+        FUNCTION = "load"
+        def __init__(self):
+            references.append(weakref.ref(self))
+        def load(self, model, clip, lora_name, strength_model, strength_clip):
+            names.append(lora_name)
+            self.loaded_lora = object()
+            return model, clip
+    monkeypatch.setattr(nodes, "NODE_CLASS_MAPPINGS", {"LoraLoader": NativeLoader}, raising=False)
     for name in ("a", "b", "a"):
         assert loras._apply_lora_cached("m", "c", name, 1) == ("m", "c")
-    assert len(references) == 3
+    assert names == ["a", "b", "a"]
     assert all(reference() is None for reference in references)
 
 
