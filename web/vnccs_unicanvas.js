@@ -2,22 +2,22 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791710743230";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791710743230";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791717134721";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791717134721";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791710743230";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791710743230";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791710743230";
-import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791710743230";
-import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791710743230";
-import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791710743230";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791710743230";
-import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791710743230";
-import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791710743230";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791710743230";
-import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791710743230";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791710743230";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791717134721";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791717134721";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791717134721";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791717134721";
+import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791717134721";
+import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791717134721";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791717134721";
+import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791717134721";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791717134721";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791717134721";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791717134721";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791717134721";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -49,22 +49,23 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./unicanvas/transform.mjs?v=1791710743230";
+} from "./unicanvas/transform.mjs?v=1791717134721";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./unicanvas/presets.mjs?v=1791710743230";
+} from "./unicanvas/presets.mjs?v=1791717134721";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
   readUniCanvasStandaloneSetting,
+  showUniCanvasToast,
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./unicanvas/modes.mjs?v=1791710743230";
-import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791710743230";
-import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791710743230";
-import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791710743230";
+} from "./unicanvas/modes.mjs?v=1791717134721";
+import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791717134721";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791717134721";
+import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791717134721";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -77,7 +78,7 @@ import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencie
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1791710743230";
+const VNCCS_UNICANVAS_VERSION = "1791717134721";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -127,8 +128,8 @@ const VNCCS_UNICANVAS_VERSION = "1791710743230";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791710743230";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791710743230";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791717134721";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791717134721";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -154,12 +155,13 @@ const STYLES = `
 .vnccs-uc-preview-stage { position:absolute; inset:0; width:100%; height:100%; display:block; pointer-events:none; z-index:4; }
 .vnccs-uc-hud { position:absolute; left:10px; top:10px; zoom:var(--vnccs-uc-ui-scale); display:flex; gap:6px; align-items:center; pointer-events:none; }
 .vnccs-uc-chip { background:rgba(10,10,15,.72); border:1px solid var(--uc-border); border-radius:8px; padding:5px 8px; color:var(--uc-muted); }
-.vnccs-uc-generation-progress { grid-column:2; grid-row:2; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; padding:7px 12px; background:rgba(10,10,15,.9); border-bottom:1px solid rgba(255,143,163,.24); box-sizing:border-box; pointer-events:none; min-width:0; visibility:hidden; opacity:0; transition:opacity .16s ease; }
+.vnccs-uc-generation-progress { grid-column:2; grid-row:2; position:relative; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; padding:7px 12px 9px; background:rgba(10,10,15,.9); border-bottom:1px solid rgba(255,143,163,.24); box-sizing:border-box; pointer-events:none; min-width:0; visibility:hidden; opacity:0; transition:opacity .16s ease; }
 .vnccs-uc-generation-progress.visible { visibility:visible; opacity:1; }
 .vnccs-uc-progress-label { color:var(--uc-text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700; }
 .vnccs-uc-progress-percent { color:var(--uc-muted); font-variant-numeric:tabular-nums; min-width:42px; text-align:right; }
-.vnccs-uc-progress-track { grid-column:1 / -1; height:6px; border-radius:999px; background:rgba(255,255,255,.12); overflow:hidden; }
-.vnccs-uc-progress-fill { height:100%; width:0%; background:linear-gradient(90deg,var(--uc-accent),var(--uc-accent-2)); border-radius:inherit; transition:width .18s ease; }
+.vnccs-uc-progress-track { position:absolute; left:0; right:0; bottom:0; height:4px; background:rgba(255,255,255,.12); overflow:hidden; }
+.vnccs-uc-progress-fill { height:100%; width:100%; background:linear-gradient(90deg,var(--uc-accent),var(--uc-accent-2)); transform:scaleX(0); transform-origin:left; transition:transform .2s ease-out; }
+@media (prefers-reduced-motion:reduce) { .vnccs-uc-generation-progress, .vnccs-uc-progress-fill { transition:none; } }
 .vnccs-uc-left { width:320px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; background:rgba(6,5,12,.72); min-height:0; max-height:100%; box-sizing:border-box; overflow:hidden; }
 .vnccs-uc-side { width:286px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; background:rgba(6,5,12,.72); min-height:0; box-sizing:border-box; overflow:auto; }
 .vnccs-uc-left { grid-column:1; grid-row:1 / span 3; border-right:1px solid var(--uc-border); }
@@ -424,6 +426,8 @@ const STYLES = `
 }
 .vnccs-uc-modal-title { color:var(--uc-accent); font-weight:800; font-size:18px; }
 .vnccs-uc-modal-message { color:var(--uc-text); line-height:1.5; }
+.vnccs-uc-copy-preview { box-sizing:border-box; min-height:0; max-height:calc(100% - 24px); overflow:auto; }
+.vnccs-uc-copy-image { display:block; min-height:0; width:100%; max-height:min(45vh, 280px); object-fit:contain; }
 .vnccs-uc-modal-actions { display:flex; justify-content:flex-end; gap:8px; }
 .vnccs-uc-modal-actions .vnccs-uc-btn { height:34px; padding:0 14px; font-size:14px; }
 .vnccs-uc-gear svg { width:21px; height:21px; }
@@ -1129,7 +1133,7 @@ class UniCanvasWidget {
     this.generationProgress.innerHTML = `
       <div class="vnccs-uc-progress-label">Ready</div>
       <div class="vnccs-uc-progress-percent">0%</div>
-      <div class="vnccs-uc-progress-track"><div class="vnccs-uc-progress-fill"></div></div>`;
+      <div class="vnccs-uc-progress-track" role="progressbar" aria-label="Generation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="vnccs-uc-progress-fill"></div></div>`;
     this.container.appendChild(this.generationProgress);
     this.stageWrap = document.createElement("div");
     this.stageWrap.className = "vnccs-uc-stage-wrap";
@@ -7780,6 +7784,10 @@ class UniCanvasWidget {
     URL.revokeObjectURL(url);
   }
 
+  showToast(title, detail = "", kind = "success") {
+    return showUniCanvasToast(this, title, detail, kind);
+  }
+
   setStatus(text, isError = false) {
     if (this.settings?.debug_mode) (isError ? console.warn : console.info)("[VNCCS UniCanvas][debug]", text);
     if (!this.drawInProgress) this.updateGenerationProgress({ message: text, progress: isError ? 1 : 0, stage: isError ? "error" : "status" }, isError);
@@ -7794,7 +7802,10 @@ class UniCanvasWidget {
     const detail = steps > 0 ? `${message} (${step}/${steps})` : message;
     this.generationProgress.querySelector(".vnccs-uc-progress-label").textContent = detail;
     this.generationProgress.querySelector(".vnccs-uc-progress-percent").textContent = `${Math.round(value * 100)}%`;
-    this.generationProgress.querySelector(".vnccs-uc-progress-fill").style.width = `${value * 100}%`;
+    this.generationProgress.querySelector(".vnccs-uc-progress-fill").style.transform = `scaleX(${value})`;
+    const track = this.generationProgress.querySelector(".vnccs-uc-progress-track");
+    track.setAttribute("aria-valuenow", String(Math.round(value * 100)));
+    track.setAttribute("aria-valuetext", detail);
     this.generationProgress.classList.toggle("visible", Boolean(visible));
   }
 

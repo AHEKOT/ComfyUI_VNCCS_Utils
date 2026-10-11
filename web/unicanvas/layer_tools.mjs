@@ -3,8 +3,8 @@
  *
  *  - 10.1 Right-clicking a layer row opens the grouped context menu: Layer
  *    (Duplicate / Move up / Move down, operating on the right-clicked layer),
- *    Content (copy the layer PNG with alpha to the clipboard, save it via the
- *    save_output route), Enhance (remove background via QI2.1 or BiRefNet, the
+ *    Content (copy the layer PNG with alpha to the clipboard, download it),
+ *    Enhance (remove background via QI2.1 or BiRefNet, the
  *    prompt variant, color-match to the composite below), Name (auto-name) and
  *    the pose-layer entries Edit pose / Rasterize (pose layers only).
  *  - 10.2 PSD export/import live in one grouped row built by the widget's
@@ -222,37 +222,106 @@ async function importPSDFile(uc, file) {
   }
 }
 
+function layerImageCanvas(uc, layer) {
+  if (uc.panorama && layer.panoramaCanvas) return layer.panoramaCanvas;
+  if (layer.hiresCanvas && layer.hiresRect) return layer.hiresCanvas;
+  const crop = uc.getLayerAlphaBounds(layer);
+  return crop ? uc.cloneCanvasCrop(layer.canvas, crop) : layer.canvas;
+}
+
+function layerPngBlob(uc, layer) {
+  const source = layerImageCanvas(uc, layer);
+  return new Promise((resolve, reject) => {
+    source.toBlob(value => value ? resolve(value) : reject(new Error("PNG encoding failed")), "image/png");
+  });
+}
+
+function openLayerCopyPreview(uc, layer, blob) {
+  if (uc._disposed) return;
+  uc._vnccsLayerCopyPreview?.();
+  const overlay = document.createElement("div");
+  overlay.className = "vnccs-uc-modal-overlay";
+  const modal = document.createElement("div");
+  modal.className = "vnccs-uc-modal vnccs-uc-copy-preview";
+  modal.setAttribute("role", "dialog");
+  modal.setAttribute("aria-modal", "true");
+  modal.setAttribute("aria-label", "Copy image");
+  const title = document.createElement("div");
+  title.className = "vnccs-uc-modal-title";
+  title.textContent = "Copy image";
+  const hint = document.createElement("div");
+  hint.className = "vnccs-uc-modal-message";
+  hint.textContent = "Right-click the image below and choose Copy image from the browser menu.";
+  const image = document.createElement("img");
+  image.className = "vnccs-uc-copy-image";
+  image.alt = layer.name || "Layer image";
+  image.tabIndex = 0;
+  const url = URL.createObjectURL(blob);
+  image.src = url;
+  // The native image menu works even when programmatic clipboard access is unavailable.
+  image.addEventListener("contextmenu", event => event.stopPropagation());
+  const previousFocus = document.activeElement;
+  const signal = uc._eventAbortController?.signal;
+  const close = () => {
+    overlay.remove();
+    URL.revokeObjectURL(url);
+    signal?.removeEventListener("abort", close);
+    if (uc._vnccsLayerCopyPreview === close) uc._vnccsLayerCopyPreview = null;
+    if (!uc._disposed && previousFocus?.isConnected) previousFocus.focus();
+  };
+  const actions = document.createElement("div");
+  actions.className = "vnccs-uc-modal-actions";
+  const closeButton = uc._button("Close", "vnccs-uc-btn", close, "Close image preview");
+  actions.append(closeButton);
+  modal.append(title, hint, image, actions);
+  overlay.append(modal);
+  overlay.addEventListener("pointerdown", event => {
+    event.stopPropagation();
+    if (event.target === overlay) close();
+  });
+  overlay.addEventListener("keydown", event => {
+    event.stopPropagation();
+    if (event.key === "Escape") { event.preventDefault(); close(); }
+    if (event.key === "Tab") {
+      event.preventDefault();
+      (document.activeElement === image ? closeButton : image).focus();
+    }
+  });
+  signal?.addEventListener("abort", close, { once:true });
+  uc._vnccsLayerCopyPreview = close;
+  uc.container.append(overlay);
+  closeButton.focus();
+}
+
 async function copyLayerToClipboard(uc, layer) {
   try {
-    const crop = uc.getLayerAlphaBounds(layer);
-    const source = crop ? uc.cloneCanvasCrop(layer.canvas, crop) : layer.canvas;
-    const blob = await new Promise((resolve, reject) => {
-      source.toBlob((value) => (value ? resolve(value) : reject(new Error("PNG encoding failed"))), "image/png");
-    });
-    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
-    uc.setStatus("[VNCCS UniCanvas] Layer copied to clipboard.");
+    const blob = layerPngBlob(uc, layer);
+    if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+      openLayerCopyPreview(uc, layer, await blob);
+      return;
+    }
+    try {
+      // Start the write during the click; awaiting encoding first loses WebKit's user activation.
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    } catch {
+      openLayerCopyPreview(uc, layer, await blob);
+      return;
+    }
+    if (!uc._disposed) uc.showToast("Layer copied to clipboard");
   } catch (err) {
-    uc.setStatus(`[VNCCS UniCanvas] Clipboard copy failed: ${err.message || err}`, true);
+    if (!uc._disposed) uc.showToast("Clipboard copy failed", err.message || String(err), "error");
   }
 }
 
 async function saveLayerAsImage(uc, layer) {
   try {
-    uc.setStatus("[VNCCS UniCanvas] Saving layer image...");
-    const crop = uc.getLayerAlphaBounds(layer);
-    const source = crop ? uc.cloneCanvasCrop(layer.canvas, crop) : layer.canvas;
-    // Route owned by a parallel branch: only call it (contract #1), with the
-    // layer id in both the query string and the body for compatibility.
-    const res = await fetch(`${SAVE_OUTPUT_ROUTE}?layer_id=${encodeURIComponent(layer.id)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ layer_id: layer.id, name: layer.name, image: source.toDataURL("image/png") }),
-    });
-    const data = await res.json();
-    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-    uc.setStatus(`[VNCCS UniCanvas] Layer image saved to output/ (${data.filename || layer.name}).`);
+    const blob = await layerPngBlob(uc, layer);
+    if (uc._disposed) return;
+    const name = String(layer.name || "Layer").replace(/[\\/:*?"<>|]/g, "_").replace(/\.png$/i, "").replace(/[.\s]+$/g, "") || "Layer";
+    uc.downloadBlob(blob, `${name}.png`);
+    uc.showToast("Image downloaded", `${name}.png`);
   } catch (err) {
-    uc.setStatus(`[VNCCS UniCanvas] Save layer failed: ${err.message || err}`, true);
+    if (!uc._disposed) uc.showToast("Image download failed", err.message || String(err), "error");
   }
 }
 

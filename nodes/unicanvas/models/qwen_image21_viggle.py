@@ -97,6 +97,11 @@ def viggle_lora_weights(state_dict: dict[str, torch.Tensor], metadata: dict[str,
     return weights
 
 
+def _offload_viggle_lora(weights: dict[str, list]) -> None:
+    for pair in weights.values():
+        pair[0], pair[1] = pair[0].cpu(), pair[1].cpu()
+
+
 def apply_viggle_turbo_lora(model: Any, clip: Any, lora_name: str, strength: float):
     """``LoraRequirement.apply`` for the Viggle turbo: wrap the diffusion model, keep weights unmerged."""
     import comfy.patcher_extension
@@ -112,6 +117,9 @@ def apply_viggle_turbo_lora(model: Any, clip: Any, lora_name: str, strength: flo
         VIGGLE_TURBO_MARKER,
         lambda executor, *args, **kwargs: _run_with_viggle_lora(weights, executor, *args, **kwargs),
     )
+    # The wrapper's tensors are outside ModelPatcher's managed model weights.
+    for event in (comfy.patcher_extension.CallbacksMP.ON_CLEANUP, comfy.patcher_extension.CallbacksMP.ON_DETACH):
+        patched.add_callback_with_key(event, VIGGLE_TURBO_MARKER, lambda *args: _offload_viggle_lora(weights))
     # Tells sample_latent to use the student schedule.
     patched.model_options.setdefault("transformer_options", {})[VIGGLE_TURBO_MARKER] = True
     return patched, clip

@@ -93,21 +93,24 @@ def test_qwen_inpaint_keeps_bbox_geometry_and_applies_only_the_mask(use_layers, 
     assert ctx.crop_plan is None
     monkeypatch.setattr(draw_pipeline, "_pil_to_image_tensor", lambda image: np.asarray(image)[None])
     monkeypatch.setattr("nodes.unicanvas.models.qwen_image21._pil_rgba_to_image_tensor", lambda image: np.asarray(image)[None])
+    ctx.mask_image = mask
+    module.on_mask_prepared(ctx)
     pipeline.prepare_inputs()
     seen = {}
+    empty = {"samples": np.zeros((1, 64, 24, 32))}
     def encode(self, **kwargs):
         seen.update(kwargs)
-        return [], []
+        return [], [], empty
     monkeypatch.setattr(type(module), "_encode_qi21", encode)
     monkeypatch.setattr(type(module), "_prepare_qi21_condition_image", lambda self, image: image)
-    empty = {"samples": np.zeros((1, 64, 24, 32))}
-    monkeypatch.setattr(type(module), "create_empty_latent", lambda *a, **kw: empty)
+    monkeypatch.setattr(type(module), "create_empty_latent", lambda *a, **kw: pytest.fail("Use the encoder's aligned latent"))
     module.prepare_reference_conditioning([], [], object(), ctx.reference_image_tensor, ctx.settings)
     assert module.prepare_generation_latent(ctx) is empty
     assert ctx.denoise == 1.0
-    assert (1 in seen["images"]) is use_layers
-    if use_layers:
-        assert seen["images"][1].shape == (1, 384, 512, 4)
+    assert seen["resolution"] == 0
+    assert seen["images"][1].shape == (1, 384, 512, 3)
+    assert tuple(seen["images"][1][0, 80, 225]) == (128, 128, 128)
+    assert ctx.settings["edit_use_layers_as_reference"] is use_layers, "The next draw's preference is unchanged"
     ctx.mask_image, ctx.paste_mask_image = mask, mask.getchannel("A")
     generated = Image.new("RGBA", mask.size, (0, 255, 0, 255))
     generated.paste((255, 0, 0, 255), (220, 70, 240, 102))

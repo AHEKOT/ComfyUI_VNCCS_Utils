@@ -76,12 +76,13 @@ QWEN21_TURBO_STEPS = 6
 QWEN_IMAGE21_DEFAULTS["qwen_lora_name"] = QWEN21_TURBO_LORA_NAME
 
 # AusBoss QI2.1 outpaint LoRA v2 (https://huggingface.co/ausboss/Qwen-Image-2.1-Outpaint-LoRA):
-# trained on canvases padded with flat gray #808080. Applied automatically in outpaint mode.
+# trained on canvases padded with flat gray #808080. Masked edits use the same hole-filling flow.
 QWEN21_OUTPAINT_LORA_REPO_ID = "ausboss/Qwen-Image-2.1-Outpaint-LoRA"
 QWEN21_OUTPAINT_LORA_REVISION = "449336db42ff074aee970ba0facc0ac0feb77863"
 QWEN21_OUTPAINT_LORA_FILENAME = "qwen-image-2.1-outpaint-v2.safetensors"
 QWEN21_OUTPAINT_LORA_NAME = f"ausboss/{QWEN21_OUTPAINT_LORA_FILENAME}"
 QWEN21_OUTPAINT_FILL = (128, 128, 128)
+QWEN21_OUTPAINT_INSTRUCTION = "Outpaint the image: replace the solid gray areas with a seamless continuation of the scene, keeping the existing picture unchanged."
 QWEN_IMAGE21_DEFAULTS["qwen21_outpaint_lora_name"] = QWEN21_OUTPAINT_LORA_NAME
 
 QWEN21_POSE_LORA_REPO_ID = "MIUProject/VNCCS_PoseStudio_QI2.1"
@@ -202,8 +203,9 @@ QWEN_IMAGE21_EDIT_PROMPT_GUIDE = PromptGuide(
 class QwenImage21UniCanvasModule(UniCanvasModelModule):
     """UniCanvas adapter for Qwen-Image-2.1 (RGBA by default).
 
-    Every draw starts from an empty latent at full denoise. Inpaint and
-    outpaint apply their masks when pasting the generated result back.
+    Every draw starts from an empty latent at full denoise. Canvas edits use
+    the encoder's latent so references and sampling share their geometry.
+    Inpaint and outpaint fill gray holes and apply masks only when pasting back.
     Connected references are numbered consecutively, with the working area
     first when enabled and present. The user's prompt is unchanged.
     The decoded alpha channel is preserved without additional
@@ -253,6 +255,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         "_qwen21_prompts",
         "_qwen21_prompt",
         "_qwen21_negative_prompt",
+        "_qwen21_latent",
         "_qwen21_pose_edit",
     )
     lora_requirements: tuple[LoraRequirement, ...] = (
@@ -276,12 +279,12 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         LoraRequirement(
             name_setting="qwen21_outpaint_lora_name",
             strength_setting="qwen21_outpaint_lora_strength",
-            draw_modes=frozenset({"outpaint"}),
+            draw_modes=frozenset({"inpaint", "outpaint"}),
             require_positive_strength=True,
             clip_strength=0.0,
             resolver=lambda: resolve_qwen21_outpaint_lora(),
             resolve_match=QWEN21_OUTPAINT_LORA_NAME,
-            description="Qwen-Image-2.1 outpaint LoRA (AusBoss v2, outpaint mode only, downloads on first use)",
+            description="Qwen-Image-2.1 outpaint LoRA (AusBoss v2, masked edits, downloads on first use)",
         ),
         LoraRequirement(
             name_setting="qwen21_pose_lora_name",
@@ -314,8 +317,12 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
 
     def prepare_masked_inputs(self, ctx) -> None:
         ctx.settings["_qwen21_source_empty"] = ctx.source_empty
-        if not ctx.pose_images and ctx.mode != "outpaint":
+        if not ctx.pose_images and ctx.mode not in {"inpaint", "outpaint"}:
             ctx.reference_image_tensor = _pil_rgba_to_image_tensor(ctx.source_rgba)
+
+    def on_mask_prepared(self, ctx) -> None:
+        if ctx.mode == "inpaint" and ctx.mask_image is not None:
+            ctx.source = ctx.reference_source = self.prepare_outpaint_reference_image(ctx.source_rgba, ctx.mask_image, ctx.draw_id)
 
     def decode_samples(self, vae: Any, samples: Any, gen_settings: dict[str, Any]):
         latent = _unwrap_latent_samples(samples)
@@ -350,6 +357,10 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         # The outpaint LoRA was trained on canvases padded with flat gray #808080.
         background = Image.new("RGBA", source_rgba.size, (*QWEN21_OUTPAINT_FILL, 255))
         background.alpha_composite(source_rgba.convert("RGBA"))
+        if mask_image is not None:
+            # Keep the conditioning hole solid gray; feathering belongs to the paste mask.
+            hole = mask_image.convert("RGBA").getchannel("A").point(lambda alpha: 255 if alpha > 8 else 0)
+            background.paste((*QWEN21_OUTPAINT_FILL, 255), (0, 0, *source_rgba.size), hole)
         _uc_log(draw_id, "QI2.1 outpaint reference flattened on gray", {"source_size": source_rgba.size})
         return background.convert("RGB")
 
@@ -370,14 +381,20 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         if pose_images:
             return dict(enumerate(pose_images, start=1))
         settings = gen_settings or {}
+        if settings.get("draw_mode") in {"inpaint", "outpaint"}:
+            # A masked edit needs the canvas with its hole, even when optional layer references are off.
+            settings = {**settings, "edit_use_layers_as_reference": True}
         slots = _reference_image_slots(image_tensor, settings)
         if (settings.get("draw_mode") == "txt2img" or settings.get("_qwen21_source_empty")) and settings.get("edit_use_layers_as_reference") is not False:
             slots.pop(1, None)
         return dict(enumerate(slots.values(), start=1))
 
     def assemble_instruction(self, prompt: str, slots, outpaint: bool = False, use_layers: bool = True) -> str:
-        """Pass the user's QI2.1 prompt through verbatim in every draw mode."""
-        return str(prompt or "")
+        """Masked edits use the outpaint LoRA's trigger followed by the user's instruction."""
+        prompt = str(prompt or "")
+        if outpaint and not prompt.lstrip().lower().startswith("outpaint the image:"):
+            return f"{QWEN21_OUTPAINT_INSTRUCTION} {prompt}".strip()
+        return prompt
 
     def encode_prompt(self, clip: Any, text: str, gen_settings: dict[str, Any]):
         # The Qwen3-VL encoder needs the <image N> condition images, so the real
@@ -407,8 +424,9 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             raise RuntimeError("[VNCCS UniCanvas] Qwen-Image-2.1 requires a Qwen3-VL text encoder (CLIP).")
         slots = self.reference_image_slots(image_tensor, gen_settings)
         use_layers = gen_settings.get("edit_use_layers_as_reference") is not False
-        outpaint = str(gen_settings.get("draw_mode") or "") == "outpaint"
+        outpaint = str(gen_settings.get("draw_mode") or "") in {"inpaint", "outpaint"}
         pose_edit = bool(gen_settings.get("_pose_edit_images"))
+        canvas_reference = pose_edit or (bool(slots) and slots.get(1) is image_tensor)
         instruction = str(gen_settings.get("_qwen21_prompt") or "") if pose_edit else self.assemble_instruction(
             gen_settings.get("_qwen21_prompt"), slots, outpaint=outpaint, use_layers=use_layers,
         )
@@ -416,15 +434,19 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         condition_images = {slot: self._prepare_qi21_condition_image(tensor) for slot, tensor in slots.items()}
         image_h, image_w = _qwen21_image_size(image_tensor)
         target_w, target_h = self.resolve_generation_size(image_w, image_h, gen_settings)
-        positive, negative = self._encode_qi21(
+        positive, negative, latent = self._encode_qi21(
             clip=clip,
             vae=vae,
             prompt=instruction,
             negative_prompt=negative_prompt,
             images=condition_images,
-            resolution=1024,
+            resolution=0 if canvas_reference else 1024,
             draw_id=draw_id,
         )
+        if canvas_reference:
+            if latent is None:
+                raise RuntimeError("[VNCCS UniCanvas] Qwen-Image-2.1 encoder returned no canvas-aligned latent.")
+            gen_settings["_qwen21_latent"] = latent
         _uc_log(
             draw_id,
             "Qwen-Image-2.1 conditioning prepared",
@@ -523,7 +545,9 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         gen_settings["_qwen21_negative_prompt"] = ""
         positive, negative = self.prepare_reference_conditioning(None, None, vae, pixels, gen_settings, draw_id)
         pixels_h, pixels_w = _qwen21_image_size(pixels)
-        latent = self.create_empty_latent(int(pixels_w), int(pixels_h), gen_settings, draw_id)
+        latent = gen_settings.pop("_qwen21_latent", None)
+        if latent is None:
+            latent = self.create_empty_latent(int(pixels_w), int(pixels_h), gen_settings, draw_id)
         sampled = self.sample_latent(
             model=model,
             positive=positive,
@@ -572,7 +596,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         images: dict[int, Any],
         resolution: int,
         draw_id: str = "unknown",
-    ) -> tuple[Any, Any]:
+    ) -> tuple[Any, Any, Any]:
         """Encode the instruction and <image N> condition images with the
         Qwen3-VL 8B text encoder through ComfyUI core's TextEncodeQwenImage21.
 
@@ -604,7 +628,8 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             negative = None
         if negative is None:
             negative = [(torch.zeros_like(cond[0]), cond[1]) for cond in positive]
-        return positive, negative
+        latent = encoded[2] if isinstance(encoded, (list, tuple)) and len(encoded) > 2 else None
+        return positive, negative, latent
 
     def sample_latent(
         self,
@@ -655,6 +680,8 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
 
     def prepare_generation_latent(self, ctx) -> Any:
         ctx.denoise = ctx.settings["denoise"] = 1.0
-        latent = self.create_empty_latent(ctx.width, ctx.height, ctx.settings, draw_id=ctx.draw_id)
+        latent = ctx.settings.pop("_qwen21_latent", None)
+        if latent is None:
+            latent = self.create_empty_latent(ctx.width, ctx.height, ctx.settings, draw_id=ctx.draw_id)
         _uc_log(ctx.draw_id, "Qwen-Image-2.1 latent prepared", {"mode": ctx.mode, "latent": _latent_debug(latent)})
         return latent

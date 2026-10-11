@@ -7,7 +7,7 @@
  */
 
 import { app } from "../../../scripts/app.js";
-import { STANDALONE_STYLES } from "./standalone_theme.mjs?v=1791710743230";
+import { STANDALONE_STYLES } from "./standalone_theme.mjs?v=1791717134721";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 
