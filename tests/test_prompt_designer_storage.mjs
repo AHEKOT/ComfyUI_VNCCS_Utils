@@ -485,7 +485,7 @@ test("legacy tab migration cannot roll a large restored workflow back to the pre
             ? { revision: 1 } : { revision: 0, state: null }) },
         copy: {}, undo: {}, redo: {}, container: {}, state: old, saved: JSON.stringify(old), revision: 0,
         render() {}, setStatus(message) { this.message = message; }, hideInspector() {}, restorePromptDetails() {},
-        loadLibraryCards() {}, schedulePreview() {},
+        loadLibraryCards() {}, schedulePreview() {}, refreshInstanceLabels() {},
     });
     t.after(() => { widget.documentStorage?.dispose(); });
     await widget.loadFromNode();

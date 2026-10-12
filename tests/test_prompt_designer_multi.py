@@ -12,6 +12,58 @@ def multi(*variants):
     return {"multiPrompt": {"variants": list(variants)}}
 
 
+@pytest.mark.parametrize("mode", [None, "random", "cycle"])
+def test_block_copies_share_their_draw_inside_and_outside_every_output(mode):
+    block = {"id": "color", "name": "Colors", "text": "{~red|blue|green}"}
+    if mode is not None:
+        block["mode"] = mode
+    parts = [{"blockId": "color"}, {"text": "/"},
+             multi([{"blockId": "color"}, {"text": "/"}, {"blockId": "color"}],
+                   [{"blockId": "color"}, {"text": "/"}, {"blockId": "color"}]),
+             {"text": "/"}, {"blockId": "color"}]
+    draws = set()
+    for seed in range(20):
+        raw = json.loads(state(parts, [block], seed))
+        raw["cycleIndex"] = seed
+        result = resolve_prompt(json.dumps(raw))
+        assert result["prompts"][0] == result["prompts"][1]
+        copies = result["prompts"][0].split("/")
+        assert len(copies) == 4 and len(set(copies)) == 1
+        assert result == resolve_prompt(json.dumps(raw))
+        assert list(VNCCS_PromptDesigner().execute(json.dumps(raw))["result"][:2]) == result["prompts"]
+        draws.add(copies[0])
+    assert draws == {"red", "blue", "green"}
+
+
+def test_only_the_marked_instance_randomizes_and_forward_checks_reuse_its_draw():
+    block = {"id": "color", "name": "Colors", "text": "{@red|blue|green}", "mode": "cycle"}
+    check = {"condition": {"blockId": "color", "operator": "equals", "value": "red", "then": {"text": "red:"}, "else": {"text": "other:"}}}
+    parts = [check, multi([{"blockId": "color", "random": True}, {"text": "/"}, {"blockId": "color"}],
+                         [{"blockId": "color"}, {"text": "/"}, {"blockId": "color"}])]
+    draws = set()
+    for seed in range(20):
+        raw = state(parts, [block], seed)
+        result = resolve_prompt(raw)
+        prefix, values = result["prompts"][0].split(":")
+        random, shared = values.split("/")
+        assert prefix == ("red" if random == "red" else "other")
+        assert shared == "red"
+        assert result["prompts"][1] == "red:red/red"
+        assert resolve_prompt(raw) == result
+        draws.add(random)
+    assert draws == {"red", "blue", "green"}
+
+
+@pytest.mark.parametrize("invalid", [None, 0, 1, "true", [], {}])
+@pytest.mark.parametrize("location", ["main", "multi", "condition"])
+def test_instance_random_flag_requires_a_boolean_at_every_state_boundary(invalid, location):
+    reference = {"blockId": "a", "random": invalid}
+    parts = [reference] if location == "main" else [multi([reference], [])] if location == "multi" else [
+        {"condition": {"blockId": "a", "operator": "equals", "value": "red", "then": {"parts": [reference]}}}]
+    with pytest.raises(ValueError):
+        prompt_template(state(parts, [{"id": "a", "name": "Colors", "text": "red"}]))
+
+
 def state(parts, blocks=None, seed=17):
     return json.dumps({"version": 1, "parts": parts, "blocks": blocks or [], "seed": str(seed)})
 
@@ -133,7 +185,8 @@ def test_every_output_is_bounded_including_later_variants():
 
 @pytest.mark.parametrize("location", ["main", "then", "else", "multi"])
 @pytest.mark.parametrize("repeat_count", [4, 200])
-def test_resolved_lengths_stop_sampling_before_oversized_composite_strings(location, repeat_count, monkeypatch):
+@pytest.mark.parametrize("random", [False, True])
+def test_resolved_lengths_stop_sampling_before_oversized_composite_strings(location, repeat_count, random, monkeypatch):
     from dynamicprompts.parser import parse as parser
     original = parser.parse
     calls = 0
@@ -147,7 +200,7 @@ def test_resolved_lengths_stop_sampling_before_oversized_composite_strings(locat
 
     monkeypatch.setattr(parser, "parse", counted)
     definitions = [{"text": "${v0=!x}"}, *[{"text": f"${{v{i}=!${{v{i-1}}}${{v{i-1}}}}}"} for i in range(1, 15)]]
-    repeats = [{"blockId": "repeat"}] * repeat_count
+    repeats = [{"blockId": "repeat", "random": random}] * repeat_count
     if location == "main":
         parts = [*definitions, *repeats, multi(*([[]] * MAX_PROMPT_OUTPUTS))]
     elif location == "multi":
@@ -161,11 +214,11 @@ def test_resolved_lengths_stop_sampling_before_oversized_composite_strings(locat
     if repeat_count == 4:
         result = resolve_prompt(raw)
         assert len(result.get("prompts", [result["prompt"]])[-1]) == MAX_PROMPT_CHARS
-        assert calls == 4
+        assert calls == (4 if random else 1)
     else:
         with pytest.raises(ValueError, match="64 KiB"):
             resolve_prompt(raw)
-        assert calls == 5
+        assert calls == (5 if random else 1)
 
 
 def test_preview_endpoint_returns_every_output_and_matches_execution():

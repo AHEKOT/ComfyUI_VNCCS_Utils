@@ -38,6 +38,114 @@ function insertIf(widget) {
     return chip;
 }
 
+test("copying mixed prompt text and cards into multi-prompt rows preserves references and local randomness", t => {
+    const { widget, selection } = setup(t);
+    widget.editor.replaceChildren(text("prefix\n"), widget.chip("artists", { random: true }), text(" / "),
+        widget.chip("artists"), text("\n"), widget.chip("clothing"));
+    widget.savePromptEditor(widget.editor);
+    const parts = readEditor(widget.editor), before = widget.node.widgets[0].value;
+    const range = document.createRange(); range.selectNodeContents(widget.editor); selection.addRange(range);
+    const clipboardData = transfer();
+    const copied = bubble(widget.editor, "copy", { clipboardData });
+    assert.equal(copied.defaultPrevented, true);
+    assert.deepEqual(JSON.parse(clipboardData.getData("application/x-vnccs-prompt-parts")).parts, parts);
+    assert.equal(widget.node.widgets[0].value, before);
+    assert.match(clipboardData.getData("text/plain"), /^prefix\n\{~watercolor/);
+    selection.removeAllRanges(); widget.caret = null;
+    const multi = widget.multiPromptChip({ variants: [[], []] });
+    widget.editor.replaceChildren(multi); widget.savePromptEditor(widget.editor); widget.editMultiPrompt(multi);
+    const editors = widget.multiRows.querySelectorAll(".vnccs-pd-variant-editor");
+    for (const editor of editors) bubble(editor, "paste", { clipboardData });
+    assert.deepEqual(widget.state.parts[0].multiPrompt.variants, [parts, parts]);
+    assert.deepEqual(editors[0].querySelectorAll("[data-block-id]").map(chip => chip.textContent), ["Artists 1", "Artists 2", "Clothing 1"]);
+    assert.deepEqual(editors[1].querySelectorAll("[data-block-id]").map(chip => chip.textContent), ["Artists 3", "Artists 4", "Clothing 2"]);
+    assert.deepEqual(JSON.parse(widget.node.widgets[0].value).parts, widget.state.parts);
+    assert.equal(selection.getRangeAt(0).startContainer, editors[1]);
+    assert.equal(selection.getRangeAt(0).startOffset, editors[1].childNodes.length);
+    const saved = normalizeState(JSON.parse(widget.node.widgets[0].value));
+    widget.state = saved; widget.render();
+    widget.editMultiPrompt(widget.editor.querySelector("[data-multi-prompt]"));
+    assert.deepEqual(widget.multiRows.querySelectorAll(".vnccs-pd-variant-editor").map(readEditor), [parts, parts]);
+});
+
+test("selected card copy and cut retain the whole card, and importing conflicting IDs preserves the current block", t => {
+    const { widget, selection } = setup(t);
+    const chip = widget.editor.querySelector("[data-block-id]");
+    bubble(chip, "click");
+    const clipboardData = transfer(); bubble(chip, "cut", { clipboardData });
+    assert.deepEqual(JSON.parse(clipboardData.getData("application/x-vnccs-prompt-parts")).parts, [{ blockId: "artists" }]);
+    assert.equal(widget.state.parts.some(part => part.blockId === "artists"), false);
+    assert.equal(widget.state.blocks.find(block => block.id === "artists").name, "Artists");
+    const copied = JSON.parse(clipboardData.getData("application/x-vnccs-prompt-parts"));
+    copied.blocks[0].text = "{~external red|external blue}";
+    clipboardData.setData("application/x-vnccs-prompt-parts", JSON.stringify(copied));
+    selection.removeAllRanges(); widget.caret = null;
+    bubble(widget.editor, "paste", { clipboardData });
+    const imported = widget.state.blocks.at(-1);
+    assert.notEqual(imported.id, "artists");
+    assert.equal(imported.text, copied.blocks[0].text);
+    assert.equal(widget.state.parts.at(-1).blockId, imported.id);
+    assert.equal(widget.state.blocks.find(block => block.id === "artists").text, sampleState().blocks[0].text);
+    widget.moveHistory("undo");
+    assert.equal(widget.state.parts.some(part => part.blockId === imported.id), false);
+    widget.moveHistory("redo");
+    assert.equal(widget.state.parts.at(-1).blockId, imported.id);
+});
+
+test("invalid clipboard fragments and nested logic cannot overwrite a multi-prompt row", t => {
+    const { widget } = setup(t);
+    const multi = widget.multiPromptChip({ variants: [[{ text: "retained" }], []] });
+    widget.editor.replaceChildren(multi); widget.savePromptEditor(widget.editor); widget.editMultiPrompt(multi);
+    const editor = widget.multiRows.querySelector(".vnccs-pd-variant-editor"), before = widget.node.widgets[0].value;
+    for (const raw of ["{broken", JSON.stringify({ ...sampleState(), parts: [{ blockId: "missing" }] }),
+        JSON.stringify({ ...sampleState(), parts: [{ blockId: "artists", random: "true" }] }),
+        JSON.stringify({ ...sampleState(), parts: [{ multiPrompt: { variants: [[], []] } }] })]) {
+        const clipboardData = transfer(); clipboardData.setData("application/x-vnccs-prompt-parts", raw);
+        clipboardData.setData("text/plain", "must not flatten invalid cards");
+        bubble(editor, "paste", { clipboardData });
+        assert.equal(widget.node.widgets[0].value, before);
+        assert.equal(editor.textContent, "retained");
+        assert.match(widget.status.textContent, /Cannot paste prompt cards/);
+    }
+});
+
+test("double-click edits only the numbered instance, persists immediately, restores and undoes its random checkbox", t => {
+    const { widget } = setup(t);
+    widget.state.parts = [{ blockId: "artists" }, { multiPrompt: { variants: [[{ blockId: "artists" }], [{ blockId: "artists" }]] } }];
+    widget.render(); widget.commit(null, false);
+    const shared = JSON.stringify(widget.state.blocks), main = widget.editor.querySelector("[data-block-id]");
+    emit(widget.editor, "dblclick", { target: main });
+    assert.equal(widget.state.activeTab, "prompt");
+    assert.equal(widget.instanceName.textContent, "Artists 1");
+    assert.equal(widget.instanceRandom.checked, false);
+    widget.instancePanel.scrollTop = 35;
+    const multi = widget.editor.querySelector("[data-multi-prompt]");
+    widget.editMultiPrompt(multi); widget.multiPanel.scrollTop = 120;
+    const editor = widget.multiRows.querySelector(".vnccs-pd-variant-editor"), card = editor.querySelector("[data-block-id]");
+    emit(editor, "dblclick", { target: card });
+    assert.equal(widget.instanceName.textContent, "Artists 2");
+    widget.instanceRandom.checked = true; emit(widget.instanceRandom, "input");
+    assert.deepEqual(widget.state.parts[1].multiPrompt.variants, [[{ blockId: "artists", random: true }], [{ blockId: "artists" }]]);
+    assert.deepEqual(JSON.parse(widget.node.widgets[0].value).parts, widget.state.parts);
+    assert.equal(JSON.stringify(widget.state.blocks), shared);
+    widget.closeBlockInstance();
+    assert.equal(widget.inspectorPanel, widget.multiPanel);
+    assert.equal(widget.multiPanel.scrollTop, 120);
+    assert.equal(widget.multiRows.querySelector(".vnccs-pd-variant-editor"), editor);
+    widget.state = normalizeState(JSON.parse(widget.node.widgets[0].value)); widget.render();
+    widget.editMultiPrompt(widget.editor.querySelector("[data-multi-prompt]"));
+    const restoredEditor = widget.multiRows.querySelector(".vnccs-pd-variant-editor");
+    emit(restoredEditor, "dblclick", { target: restoredEditor.querySelector("[data-block-id]") });
+    assert.equal(widget.instanceRandom.checked, true);
+    widget.moveHistory("undo");
+    assert.equal(widget.state.parts[1].multiPrompt.variants[0][0].random, undefined);
+    widget.moveHistory("redo");
+    assert.equal(widget.state.parts[1].multiPrompt.variants[0][0].random, true);
+    widget.openBlock("artists");
+    assert.equal(widget.inspectorPanel, widget.cardPanel);
+    assert.equal(widget.state.activeTab, "artists");
+});
+
 test("paste stays inside Prompt Designer while plain text and native fields remain editable", t => {
     const { widget } = setup(t);
     document.append(document.body); document.body.append(widget.container);
@@ -183,14 +291,16 @@ test("stale library callbacks use the current card after immutable edits and can
         "editing and clicking must not reorder cards");
 });
 
-test("prompt card click selects, Enter opens, Backspace removes only that occurrence", t => {
+test("prompt card click selects, Enter opens instance settings, Backspace removes only that occurrence", t => {
     const { widget } = setup(t);
     const chip = widget.editor.querySelector("[data-block-id]");
     emit(widget.editor, "click", { target: chip });
     assert.equal(widget.selectedCard, chip); assert.equal(widget.state.activeTab, "prompt");
     emit(widget.container, "keydown", { key: "Enter", target: chip });
-    assert.equal(widget.state.activeTab, "artists");
-    widget.switchTab("prompt");
+    assert.equal(widget.state.activeTab, "prompt");
+    assert.equal(widget.inspectorPanel, widget.instancePanel);
+    assert.equal(widget.editingBlockInstance.chip, chip);
+    widget.closeBlockInstance();
     emit(widget.editor, "click", { target: chip });
     emit(widget.container, "keydown", { key: "Backspace", target: chip });
     assert.equal(widget.state.parts.some(part => part.blockId === "artists"), false);

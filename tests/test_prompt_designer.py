@@ -47,11 +47,12 @@ def test_seed_is_reproducible_and_preview_matches_execution():
 
 
 @pytest.mark.parametrize("mode", [None, "random"])
-def test_repeated_cards_sample_independently_and_unused_cards_do_not_change_the_sequence(mode):
+def test_local_random_instances_sample_independently_and_unused_cards_do_not_change_the_sequence(mode):
     block = {"id": "a", "name": "Color", "text": "{~red|blue|green}"}
     if mode:
         block["mode"] = mode
-    parts = [{"blockId": "a"}, {"text": ","}, {"blockId": "a"}, {"text": ","}, {"blockId": "a"}]
+    parts = [{"blockId": "a", "random": True}, {"text": ","}, {"blockId": "a", "random": True},
+             {"text": ","}, {"blockId": "a", "random": True}]
     sequences = set()
     for seed in range(20):
         raw = state(blocks=[block], parts=parts, seed=str(seed))
@@ -79,7 +80,7 @@ def test_cycle_advances_wraps_and_keeps_native_nested_and_multiple_choice_order(
     for position in [*range(len(expected) * 2), 2**53 - 1]:
         raw = state(blocks=[block], parts=[{"blockId": "a"}, {"text": ","}, {"blockId": "a"}], cycleIndex=position)
         result = resolve_prompt(raw)
-        assert result["prompt"] == expected[position % len(expected)] + "," + expected[(position + 1) % len(expected)]
+        assert result["prompt"] == ",".join([expected[position % len(expected)]] * 2)
         assert result == resolve_prompt(raw)
         assert VNCCS_PromptDesigner().execute(raw)["result"][0] == result["prompt"]
 
@@ -246,7 +247,7 @@ def test_conditions_match_the_sampled_variant_in_each_multi_output():
     condition = {"condition": {"blockId": "a", "operator": "equals", "value": "red", "then": {"text": "match\n"}}}
     parts = [condition, {"multiPrompt": {"variants": [[{"blockId": "a"}], [{"text": "second "}, {"blockId": "a"}]]}}]
     result = resolve_prompt(state(blocks=[block], parts=parts))
-    assert result["prompts"] == ["match\nred", "second blue"]
+    assert result["prompts"] == ["match\nred", "match\nsecond red"]
     assert resolve_prompt(state(blocks=[block], parts=parts)) == result
     assert VNCCS_PromptDesigner().execute(state(blocks=[block], parts=parts))["ui"]["prompts"] == result["prompts"]
 
@@ -256,10 +257,10 @@ def test_if_checks_the_nearest_insertion_on_the_left_without_resampling():
     def check(color):
         return {"condition": {"blockId": "a", "operator": "equals", "value": color,
                               "then": {"text": " matched "}, "else": {"text": " wrong "}}}
-    parts = [check("red"), {"blockId": "a"}, check("red"), {"blockId": "a"}, check("blue"), {"blockId": "a"}, check("green")]
-    assert resolve_prompt(state(blocks=[block], parts=parts))["prompt"] == " matched red matched blue matched green matched "
+    parts = [check("red"), {"blockId": "a"}, check("red"), {"blockId": "a"}, check("red"), {"blockId": "a"}, check("red")]
+    assert resolve_prompt(state(blocks=[block], parts=parts))["prompt"] == " matched red matched red matched red matched "
     multi = {"multiPrompt": {"variants": [[{"blockId": "a"}], [{"blockId": "a"}]]}}
-    assert resolve_prompt(state(blocks=[block], parts=[multi, check("red")]))["prompts"] == ["red matched ", "blue wrong "]
+    assert resolve_prompt(state(blocks=[block], parts=[multi, check("red")]))["prompts"] == ["red matched ", "red matched "]
 
 
 @pytest.mark.parametrize("extra", [{"mode": "invalid"}, {"mode": None}, {"color": "red"}, {"color": "#abc"}, {"color": "#٥٥٥٥٥٥"}, {"color": []}])
@@ -280,13 +281,13 @@ def test_condition_operators_compare_only_the_resolved_variant(operator, value, 
     assert resolve_prompt(raw)["prompt"] == ("matched" if expected else "")
 
 
-def test_conditions_reuse_the_checked_insertion_while_repeated_insertions_sample_independently():
+def test_conditions_reuse_the_checked_insertion_while_local_random_instances_sample_independently():
     blocks = [{"id": "gender", "name": "Gender", "text": "{~girl|boy}"},
               {"id": "clothes", "name": "Clothes", "text": "{~coat|dress}"}]
     parts = [{"condition": {"blockId": "gender", "operator": "contains", "value": "girl", "then": {"text": "beautiful-girl"}}},
              {"condition": {"blockId": "gender", "operator": "equals", "value": "boy", "then": {"text": "handsome-boy"}}},
-             {"text": "\n"}, {"blockId": "gender"}, {"text": ","}, {"blockId": "gender"}, {"text": "\n"},
-             {"condition": {"blockId": "gender", "operator": "not_contains", "value": "other", "then": {"blockId": "clothes"}}},
+             {"text": "\n"}, {"blockId": "gender"}, {"text": ","}, {"blockId": "gender", "random": True}, {"text": "\n"},
+             {"condition": {"blockId": "gender", "operator": "not_contains", "value": "other", "then": {"blockId": "clothes", "random": True}}},
              {"text": ","}, {"blockId": "clothes"}]
     seen, repeated_values, clothing_values = set(), set(), set()
     for seed in range(20):

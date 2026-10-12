@@ -26,7 +26,7 @@ export function mergeText(parts) {
             ...(part.condition.clauses === undefined ? {} : { clauses: part.condition.clauses.map(clause => ({ ...clause })) }),
             ...(part.condition.else === undefined ? {} : { else: part.condition.else.parts
                 ? { parts: mergeText(part.condition.else.parts) } : { ...part.condition.else } }) } });
-        else result.push({ blockId: part.blockId });
+        else result.push({ blockId: part.blockId, ...(part.random ? { random: true } : {}) });
     }
     return result;
 }
@@ -43,7 +43,7 @@ export function hasCycle(state) {
     };
     const cycles = part => {
         if ("text" in part) return cyclic(part.text);
-        if ("blockId" in part) return blockCycles(part.blockId);
+        if ("blockId" in part) return !part.random && blockCycles(part.blockId);
         if (part.multiPrompt) return part.multiPrompt.variants.some(variant => variant.some(cycles));
         const condition = part.condition;
         return [condition, ...(condition.clauses ?? [])].some(check => blockCycles(check.blockId))
@@ -105,8 +105,11 @@ export function normalizeState(raw = {}) {
     }
     const parts = raw.parts ?? (raw.blocks ? [] : defaults.parts);
     if (!Array.isArray(parts) || parts.length > 4096) throw new Error("The prompt contains too many fragments.");
-    const validOutput = part => part && typeof part === "object" && Object.keys(part).length === 1
-        && (typeof part.text === "string" || (typeof part.blockId === "string" && ids.has(part.blockId)));
+    const validOutput = part => part && typeof part === "object" && (
+        (Object.keys(part).length === 1 && typeof part.text === "string")
+        || (typeof part.blockId === "string" && ids.has(part.blockId)
+            && Object.keys(part).every(key => ["blockId", "random"].includes(key))
+            && (part.random === undefined || typeof part.random === "boolean")));
     const validThen = part => validOutput(part) || (part && Object.keys(part).length === 1 && Array.isArray(part.parts)
         && part.parts.length <= 4096 && part.parts.every(validOutput));
     const validCheck = check => check && typeof check.blockId === "string" && (check.blockId === "" || ids.has(check.blockId))
@@ -250,7 +253,8 @@ export function readEditor(root) {
         if (node.nodeType === 3) { parts.push({ text: node.textContent }); return; }
         if (node.nodeType !== 1) return;
         if (node.dataset?.pdCaretEnd) return;
-        if (node.dataset?.blockId) { parts.push({ blockId: node.dataset.blockId }); return; }
+        if (node.dataset?.blockId) { parts.push({ blockId: node.dataset.blockId,
+            ...(node.dataset.blockRandom === "true" ? { random: true } : {}) }); return; }
         if (node.dataset?.condition) { parts.push({ condition: JSON.parse(node.dataset.condition) }); return; }
         if (node.dataset?.multiPrompt) { parts.push({ multiPrompt: JSON.parse(node.dataset.multiPrompt) }); return; }
         if (node.tagName === "BR") { parts.push({ text: "\n" }); return; }

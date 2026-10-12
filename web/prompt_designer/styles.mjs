@@ -24,6 +24,8 @@ export function ensureStyles() {
 .vnccs-pd-editor-modes button.active { border-color:var(--pd-lavender); background:rgba(184,169,232,.2); }
 .vnccs-pd-card-panel label { display:flex; flex-direction:column; gap:6px; color:var(--pd-muted); }
 .vnccs-pd-card-panel :is(input,select) { width:100%; height:40px; flex-shrink:0; }
+.vnccs-pd-card-panel label.vnccs-pd-checkbox { flex-direction:row; align-items:center; }
+.vnccs-pd-card-panel input[type=checkbox] { width:18px; height:18px; }
 .vnccs-pd-card-panel input[type=color] { padding:4px; cursor:pointer; }
 .vnccs-pd-card-panel input[type=color]::-webkit-color-swatch-wrapper { padding:0; }
 .vnccs-pd-card-panel input[type=color]::-webkit-color-swatch { border:0; border-radius:4px; }
@@ -109,7 +111,7 @@ export function ensureStyles() {
 .vnccs-pd-condition-panel label { display:flex; flex-direction:column; gap:5px; margin-bottom:8px; color:var(--pd-muted); font-size:11px; }
 .vnccs-pd-condition-panel input,.vnccs-pd-condition-panel select,.vnccs-pd-condition-panel textarea { width:100%; color:var(--pd-text); }
 .vnccs-pd-condition-panel textarea { min-height:55px; resize:vertical; border:1px solid var(--pd-border); border-radius:7px; padding:7px 10px; background:var(--pd-raised); }
-.vnccs-pd-condition-panel .vnccs-pd-editor { min-height:64px; max-height:180px; padding:8px 10px; color:var(--pd-text); }
+.vnccs-pd-condition-panel .vnccs-pd-editor { flex:none; min-height:64px; max-height:none; overflow:visible; padding:8px 10px; color:var(--pd-text); }
 .vnccs-pd-condition-source { cursor:default; }
 .vnccs-pd-condition-source:empty::before { content:'Drop block here'; }
 .vnccs-pd-condition-panel button { margin-right:6px; }
@@ -122,7 +124,7 @@ export function ensureStyles() {
 .vnccs-pd-multi-head span { color:var(--pd-lavender); }
 .vnccs-pd-multi-head select { flex:1; }
 .vnccs-pd-multi-head :is(button,select) { height:34px; }
-.vnccs-pd-multi-panel .vnccs-pd-variant-editor { min-height:64px; max-height:120px; padding:8px 10px; }
+.vnccs-pd-multi-panel .vnccs-pd-variant-editor { flex:none; min-height:64px; max-height:none; overflow:visible; padding:8px 10px; }
 .vnccs-pd-status { color:#00d68f; font-size:11px; min-height:17px; }
 .vnccs-pd-status.error { color:#ff8f9a; }
 .vnccs-pd-preview { flex:0 0 auto; border-top:1px solid var(--pd-border); padding:12px 14px; }

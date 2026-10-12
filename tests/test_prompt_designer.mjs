@@ -58,7 +58,7 @@ test("prompt chips display names while keeping shared block text and references"
     widget.updateChips(block);
     assert.deepEqual(chips.map(chip => chip.textContent), ["Art style", "Art style", "Hair"]);
     assert.equal(chips[0].attributes["aria-label"], "Edit block: Art style");
-    assert.equal(chips[0].title, "Click to select. Double-click or press Enter to edit Art style. Drag to move.");
+    assert.equal(chips[0].title, "Click to select. Double-click or press Enter for instance settings. Drag to move.");
     assert.deepEqual(readEditor(widget.editor), [{ blockId: "artists" }, { blockId: "artists" }, { blockId: "hair" }]);
     assert.match(templateText(normalizeState(JSON.parse(JSON.stringify(widget.state)))), /\{~ink\|watercolor\}/);
     block.name = "";
