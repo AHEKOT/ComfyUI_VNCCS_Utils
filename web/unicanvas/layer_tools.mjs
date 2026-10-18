@@ -62,6 +62,7 @@ export const LAYER_MENU_ITEMS = Object.freeze([
 ]);
 
 export const PSD_SKIP_REASONS = Object.freeze({
+  mask: "layer/group mask",
   clipping: "clipping mask",
   adjustment: "adjustment layer",
   effects: "layer effects",
@@ -136,6 +137,12 @@ function psdEntryToCanvas(entry) {
 function collectPsdRasterLayers(entries, imported, skipped, hidden = false) {
   for (const entry of entries || []) {
     if (!entry || typeof entry !== "object") continue;
+    const name = entry.name || "Unnamed";
+    if ((entry.mask && !entry.mask.disabled) || (entry.realMask && !entry.realMask.disabled)
+        || (entry.vectorMask && !entry.vectorMask.disable)) {
+      skipped.push({ reason: PSD_SKIP_REASONS.mask, name });
+      continue;
+    }
     if (Array.isArray(entry.children)) {
       if (entry.clipped || entry.adjustment || Object.keys(entry.effects || {}).length
           || normalizePsdOpacity(entry.opacity ?? 1) !== 1
@@ -145,7 +152,6 @@ function collectPsdRasterLayers(entries, imported, skipped, hidden = false) {
       collectPsdRasterLayers(entry.children, imported, skipped, hidden || Boolean(entry.hidden));
       continue;
     }
-    const name = entry.name || "Unnamed";
     if (entry.clipped) {
       skipped.push({ reason: PSD_SKIP_REASONS.clipping, name });
       continue;

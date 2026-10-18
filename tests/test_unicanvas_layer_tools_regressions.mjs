@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { writePsd, readPsd, initializeCanvas } from "../web/vendor/ag-psd.bundle.mjs";
 
 const source = readFileSync(new URL("../web/unicanvas/layer_tools.mjs", import.meta.url), "utf8");
 const widgetSource = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
@@ -303,6 +304,51 @@ test("PSD children inherit hidden ancestors and unsupported group appearance is 
     const warnings = [];
     tools().collectPsdRasterLayers([{ blendMode: "pass through", children: [child] }], [], warnings);
     assert.equal(warnings.length, 0);
+});
+
+for (const group of [false, true]) {
+    test(`PSD import reports and skips a masked ${group ? "group" : "raster layer"}`, async () => {
+        initializeCanvas(undefined, undefined, (width, height) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }));
+        const imageData = { width: 1, height: 1, data: new Uint8ClampedArray([255, 0, 0, 255]) };
+        const mask = { left: 0, top: 0, right: 1, bottom: 1, defaultColor: 0,
+            imageData: { width: 1, height: 1, data: new Uint8ClampedArray([0, 0, 0, 255]) } };
+        const layer = { name: "Red", left: 0, top: 0, right: 1, bottom: 1, imageData };
+        const entry = group ? { name: "Masked", blendMode: "pass through", mask, children: [layer] } : { ...layer, name: "Masked", mask };
+        const bytes = writePsd({ width: 1, height: 1, imageData, children: [entry] });
+        const parsed = readPsd(bytes, { useImageData: true });
+        assert.ok(parsed.children[0].mask);
+        assert.equal((group ? parsed.children[0].children[0] : parsed.children[0]).imageData.data[3], 255,
+            "ag-psd keeps the hidden pixel opaque and returns its mask separately");
+        const created = [];
+        let status;
+        const uc = {
+            bbox: { x: 0, y: 0 }, origin: { x: 0, y: 0 }, loadAgPsd: async () => ({ readPsd }),
+            ensureWorldRectBounds: () => true, configureImageContext: value => value,
+            addLayer(type, name) { const result = { name, canvas: pixelCanvas() }; created.push(result); return result; },
+            invalidateLayerCaches() {}, renderLayerList() {}, requestRender() {}, syncLightStateToWidget() {}, scheduleFullSync() {},
+            setStatus(value) { status = value; },
+        };
+        const api = tools({ document: { createElement: () => pixelCanvas() },
+            ImageData: class { constructor(data) { this.data = data; } } });
+        await api.importPSDFile(uc, { arrayBuffer: async () => bytes });
+        assert.deepEqual(created, []);
+        assert.match(status, /PSD imported 0 raster layers; skipped 1: layer\/group mask "Masked"/);
+    });
+}
+
+test("PSD disabled masks leave layer and group pixels importable", () => {
+    for (const mask of [{ mask: { disabled: true } }, { realMask: { disabled: true } }, { vectorMask: { disable: true } }]) {
+        const child = { name: "Unmasked", canvas: {} }, imported = [], skipped = [];
+        tools().collectPsdRasterLayers([{ ...child, ...mask }, { ...mask, children: [child] }], imported, skipped);
+        assert.equal(imported.length, 2);
+        assert.equal(skipped.length, 0);
+    }
+    for (const mask of [{ realMask: {} }, { vectorMask: {} }]) {
+        const imported = [], skipped = [];
+        tools().collectPsdRasterLayers([{ name: "Masked", canvas: {}, ...mask }], imported, skipped);
+        assert.equal(imported.length, 0);
+        assert.match(skipped[0].reason, /mask/);
+    }
 });
 
 test("current PSD imports preserve stacking and inherited visibility", async () => {

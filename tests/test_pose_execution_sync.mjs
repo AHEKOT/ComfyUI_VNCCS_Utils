@@ -12,19 +12,85 @@ const syncSource = source.slice(source.indexOf("const waitForPoseStudioSyncIdle 
 function harness() {
     const handlers = new Map();
     const uploads = [];
+    const requestUrls = [];
     const node = { widgets: [{ name: "pose_data", value: "{}" }] };
     const context = {
         setTimeout, clearTimeout, console: { error() {} },
-        api: { addEventListener: (name, handler) => handlers.set(name, handler) },
+        api: {
+            addEventListener: (name, handler) => handlers.set(name, handler),
+            fetchApi: (route, options) => context.fetch(`/comfy/api${route}`, options),
+        },
         app: { graph: { getNodeById: id => String(id) === "703" ? node : null } },
-        fetch: async (_url, options) => {
+        fetch: async (url, options) => {
+            requestUrls.push(url);
             uploads.push(JSON.parse(options.body));
             return { ok: true };
         },
     };
     const Widget = vm.runInNewContext(widgetSource + "\nPoseStudioWidget", context);
     vm.runInNewContext(syncSource, context);
-    return { Widget, node, uploads, handlers, context };
+    return { Widget, node, uploads, requestUrls, handlers, context };
+}
+
+for (const eventName of ["vnccs_req_pose_sync", "vnccs_apply_sam3d_pose"]) {
+    for (const location of ["root", "nested subgraph", "root while browsing a subgraph"]) {
+        test(`${eventName} captures the execution node in ${location}`, async () => {
+            const { node, context, handlers, uploads, requestUrls } = harness();
+            node.studioWidget = {
+                viewer: { isInitialized: () => true, updateLights() {} },
+                exportParams: {}, lightParams: [],
+                ensureDebugLibraryReady: async () => {}, awaitReadyForCompositeCapture: async () => {},
+                applyEditorMode() {}, applyCapturedImageSize() {},
+                applySAM3DProportionsToPoseManager: async () => {}, setSkydomeFromCameraPrompt() {},
+                syncToNode(_fullCapture, options) {
+                    assert.equal(options.executionCapture, true);
+                    this._executionCaptureSnapshot = ["fresh-execution-capture"];
+                },
+                flushAnimationCacheUpload: async () => true,
+            };
+            let nodeId = "703";
+            if (location === "nested subgraph") {
+                const leafGraph = context.app.graph;
+                const middleGraph = { getNodeById: id => id === "92" ? { subgraph: leafGraph } : null };
+                context.app.rootGraph = { getNodeById: id => id === "91" ? { subgraph: middleGraph } : null };
+                nodeId = "91:92:703";
+            } else if (location === "root while browsing a subgraph") {
+                context.app.rootGraph = context.app.graph;
+                context.app.graph = { getNodeById: () => assert.fail("Current canvas is not the execution root") };
+            }
+            await handlers.get(eventName)({ detail: {
+                node_id: nodeId, sync_token: "fresh", pose_data: {}, apply_mode: "manager_proportions",
+            } });
+            assert.equal(uploads.length, 1);
+            assert.equal(uploads[0].node_id, `${nodeId}_fresh`);
+            assert.deepEqual(uploads[0].captured_images, ["fresh-execution-capture"]);
+            assert.deepEqual(requestUrls, ["/comfy/api/vnccs/pose_sync/upload_capture"]);
+        });
+    }
+
+    for (const missing of ["node", "studioWidget", "pose_data"]) {
+        test(`${eventName} reports a missing ${missing} without waiting for backend timeout`, async () => {
+            const { node, context, handlers, uploads, requestUrls } = harness();
+            if (missing === "node") context.app.graph.getNodeById = () => null;
+            if (missing === "pose_data") {
+                node.widgets = [];
+                node.studioWidget = {
+                    viewer: { isInitialized: () => true, updateLights() {} }, exportParams: {},
+                    ensureDebugLibraryReady: async () => {}, applyEditorMode() {}, syncToNode() {},
+                    applyCapturedImageSize() {}, applySAM3DProportionsToPoseManager: async () => {},
+                    setSkydomeFromCameraPrompt() {},
+                };
+            }
+            await handlers.get(eventName)({ detail: {
+                node_id: "703", sync_token: "missing", pose_data: {}, apply_mode: "manager_proportions",
+            } });
+            assert.equal(uploads.length, 1);
+            assert.equal(uploads[0].node_id, "703_missing");
+            assert.match(uploads[0].sync_error, /widget is unavailable/);
+            assert.equal(uploads[0].captured_images, undefined);
+            assert.deepEqual(requestUrls, ["/comfy/api/vnccs/pose_sync/upload_capture"]);
+        });
+    }
 }
 
 test("SAM manager execution waits for cards invalidated by current character state", async () => {

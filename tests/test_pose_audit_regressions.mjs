@@ -116,7 +116,7 @@ test("sampled FBX/video poses replace a deferred animation reference", () => {
 test("SAM animation execution uploads freshly captured frames", async () => {
     const s = createScene(), handlers = new Map(), uploads = [];
     useAnimation(s);
-    s.context.api = { addEventListener: (name, handler) => handlers.set(name, handler) };
+    s.context.api.addEventListener = (name, handler) => handlers.set(name, handler);
     s.context.app.graph.getNodeById = () => s.node;
     s.context.fetch = async (_url, options) => {
         uploads.push(JSON.parse(options.body)); return { ok: true };

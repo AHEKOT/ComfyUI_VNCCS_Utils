@@ -1690,7 +1690,7 @@ class UniCanvasWidget {
   }
 
   get editingBlocked() {
-    return Boolean(this._generationPreparing || this._generationLocked || this.drawInProgress || this._canvasOperation);
+    return Boolean(this._generationPreparing || this._generationLocked || this.drawInProgress || this._canvasOperation || this._queuePreparing);
   }
 
   get historyGestureActive() {
@@ -1742,8 +1742,9 @@ class UniCanvasWidget {
       if (this._interactionPreviousFocus?.isConnected && this.stopBtn?.contains(document.activeElement)) this._interactionPreviousFocus.focus({ preventScroll: true });
       this._interactionPreviousFocus = null;
     }
-    this.showStopButton(locked && !this._canvasOperation);
-    if (locked && !this._canvasOperation && this.isInteractionBlocked({ target: document.activeElement })) this.stopBtn?.focus({ preventScroll: true });
+    const generating = Boolean(this._generationPreparing || this._generationLocked || this.drawInProgress) && !this._canvasOperation;
+    this.showStopButton(generating);
+    if (generating && this.isInteractionBlocked({ target: document.activeElement })) this.stopBtn?.focus({ preventScroll: true });
   }
 
   createEmptyCanvasState() {
@@ -8675,15 +8676,24 @@ class UniCanvasWidget {
 
   async preparePanoramaForQueue() {
     if (this._isRestoring || this.isPointerDown || this.historyGestureActive || this.transformDraft) throw new Error("Finish the UniCanvas edit before queueing");
+    const loadRevision = this._stateLoadRevision;
+    const checkDocument = () => {
+      if (this._disposed || this._isRestoring || loadRevision !== this._stateLoadRevision) {
+        throw new Error("The UniCanvas document changed while preparing the queue. Queue again.");
+      }
+    };
     if (this.layers.some(layer => layer.type === "pose")) await this.poseEditor?.flush();
+    checkDocument();
     this.panorama?.commit();
     this.panorama?.endCamera();
     // Copy a frozen document before naming its flattened output, and refresh raster bounds.
     const saved = await this.flushStateUpload();
+    checkDocument();
     this.syncToNode();
     if (!this.panorama && saved === false) throw new Error("UniCanvas state could not be saved; queue stopped to protect the latest edits");
     // Both document modes export the bbox composite; large source layers never need server decoding.
     if (await this.uploadOutputSnapshot() === false) throw new Error("The canvas output could not be sent; queue stopped");
+    checkDocument();
     if (saved === false) this.setStatus("The panorama layers are too large to save on the server; the output was sent, but reopening this workflow may lose edits", true);
   }
 
@@ -9639,11 +9649,45 @@ app.registerExtension({
     if (typeof queuePrompt !== "function") return;
     app._vnccsUniCanvasPanoramaQueueSync = true;
     app.queuePrompt = async function () {
-      for (const node of app.graph?._nodes || []) {
-        if (node.mode === 2 || node.mode === 4) continue;
-        await node.uniCanvasWidget?.preparePanoramaForQueue();
+      const widgets = [...new Set((app.graph?._nodes || [])
+        .filter(node => node.mode !== 2 && node.mode !== 4)
+        .map(node => node.uniCanvasWidget).filter(Boolean))];
+      const revisions = new Map(widgets.map(widget => [widget, widget._stateLoadRevision]));
+      const draws = widgets.filter(widget => widget.drawInProgress && widget._drawViaQueue);
+      const locked = [];
+      try {
+        for (const widget of widgets) {
+          if (widget._disposed || widget._isRestoring || widget._canvasOperation || widget.isPointerDown
+              || widget.historyGestureActive || widget.transformDraft || widget.poseEditor?.isGestureActive?.()) {
+            throw new Error("Finish the UniCanvas edit before queueing");
+          }
+        }
+        // Hold every document until graph serialization, including while another widget saves.
+        for (const widget of widgets) {
+          if (!widget._queuePreparing) {
+            widget.closeColorMatchPreview?.(true);
+            widget.poseEditor?.studio?.animationTimeline?.stopPlayback?.();
+            if (widget.poseEditor?.studio) widget.poseEditor.studio._libraryLoadToken = (widget.poseEditor.studio._libraryLoadToken || 0) + 1;
+            widget._importRevision = (widget._importRevision || 0) + 1;
+          }
+          widget._queuePreparing = (widget._queuePreparing || 0) + 1;
+          locked.push(widget);
+          widget.syncInteractionLock();
+        }
+        for (const widget of widgets) await widget.preparePanoramaForQueue();
+        if (widgets.some(widget => widget._disposed || widget._isRestoring || revisions.get(widget) !== widget._stateLoadRevision)) {
+          throw new Error("The UniCanvas document changed while preparing the queue. Queue again.");
+        }
+        if (draws.some(widget => widget._stopRequested)) {
+          throw Object.assign(new Error("Generation stopped"), { cancelled: true });
+        }
+        return await queuePrompt.apply(this, arguments);
+      } finally {
+        for (const widget of locked) {
+          widget._queuePreparing--;
+          widget.syncInteractionLock();
+        }
       }
-      return queuePrompt.apply(this, arguments);
     };
   },
   async beforeRegisterNodeDef(nodeType, nodeData) {

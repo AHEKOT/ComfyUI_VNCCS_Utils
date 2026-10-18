@@ -1333,8 +1333,8 @@ export class PromptDesignerWidget {
                 if ("text" in part) continue;
                 const cards = lists.map(list => list.shift()).filter(Boolean);
                 if (part.blockId) {
-                    const number = (counts.get(part.blockId) ?? 0) + 1;
-                    counts.set(part.blockId, number);
+                    const number = part.random ? (counts.get(part.blockId) ?? 1) + 1 : 1;
+                    if (part.random) counts.set(part.blockId, number);
                     const block = this.state.blocks.find(block => block.id === part.blockId);
                     for (const card of cards) {
                         card.dataset.blockInstance = String(number);

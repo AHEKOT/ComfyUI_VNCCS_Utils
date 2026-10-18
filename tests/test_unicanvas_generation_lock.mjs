@@ -189,7 +189,7 @@ for (const gesture of ["pointer", "transform", "pose"]) {
   });
 }
 
-for (const flag of ["_generationPreparing", "_generationLocked", "drawInProgress", "_canvasOperation"]) {
+for (const flag of ["_generationPreparing", "_generationLocked", "drawInProgress", "_canvasOperation", "_queuePreparing"]) {
   test(`${flag} prevents pointer changes, Undo, Redo and late layer edits`, () => {
     let edits = 0;
     const { w } = widget({ [flag]: true, tool: "sam", layers: [], origin: { x: 0, y: 0 },
@@ -278,6 +278,22 @@ test("canvas operations block all controls without adding a banner or showing St
   w.syncInteractionLock();
   assert.equal(w.left.inert, false);
   assert.deepEqual(w.container.children, originalChildren);
+});
+
+test("ordinary queue preparation locks edits without showing Stop or blocking settings", () => {
+  const { w } = widget({ _queuePreparing: 1 });
+  const settings = new Element("input");
+  w.container.append(settings);
+  w.syncInteractionLock();
+  assert.equal(w.drawBtn.inert, true);
+  assert.equal(settings.inert, false);
+  assert.equal(w.stopBtn.hidden, true);
+  w.drawInProgress = true;
+  w.syncInteractionLock();
+  assert.equal(w.stopBtn.hidden, false, "a queued Generate keeps its existing Stop control");
+  w._queuePreparing = 0;
+  w.syncInteractionLock();
+  assert.equal(w.drawBtn.inert, true, "ending queue preparation must retain the generation lock");
 });
 
 test("the event gate blocks document edits and allows safe UI events during generation", () => {
@@ -435,7 +451,7 @@ test("fullscreen capture listeners let safe controls receive key events during g
   }
 });
 
-for (const flag of ["_generationPreparing", "_generationLocked", "drawInProgress"]) {
+for (const flag of ["_generationPreparing", "_generationLocked", "drawInProgress", "_queuePreparing"]) {
   for (const gesture of ["middle", "pan-tool", "alt-move", "zoom-drag"]) {
     test(`${flag} permits ${gesture} navigation without changing layers or bbox`, () => {
       const { w } = widget({ [flag]: true, tool: gesture === "pan-tool" ? "pan" : gesture === "alt-move" ? "move" : "brush",

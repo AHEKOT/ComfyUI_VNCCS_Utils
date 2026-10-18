@@ -21,9 +21,9 @@ class Request:
         self.offset = 0
         self.content = self
 
-    async def read(self, size):
+    async def read(self, size=-1):
         # Exercise the body bound across partial network reads.
-        end = self.offset + min(size, 17)
+        end = len(self.raw) if size < 0 else self.offset + min(size, 17)
         value = self.raw[self.offset:end]
         self.offset += len(value)
         return value

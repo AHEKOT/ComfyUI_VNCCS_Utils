@@ -118,6 +118,30 @@ class PoseOutputLimitTests(unittest.TestCase):
                 node.generate(json.dumps({"captured_images": ["old"]}), unique_id="42")
         self.assertGreater(waits[0]["timeout"], 120)
 
+    def test_live_and_sam_sync_requests_target_the_executing_browser(self):
+        events = []
+        server = types.SimpleNamespace(PromptServer=types.SimpleNamespace(
+            instance=types.SimpleNamespace(client_id="executing-browser",
+                send_sync=lambda event, payload, sid=None: events.append((event, payload, sid)))))
+        sam = types.SimpleNamespace(
+            process_image_to_pose_json=lambda _image: '{"bones": {}}',
+            progress=types.SimpleNamespace(start_task=lambda *_args: None,
+                task_context=lambda *_args: contextlib.nullcontext(), update=lambda *_args: None))
+        node = POSE_STUDIO.VNCCS_PoseStudio()
+        node._wait_for_frontend_sync = lambda *_args, **_kwargs: {"sync_error": "widget unavailable"}
+        with patch.dict(sys.modules, {"server": server,
+                "vnccs_pose_limit_testpkg.vnccs_sam3d": sam}):
+            with self.assertRaisesRegex(RuntimeError, "widget unavailable"):
+                node.generate("{}", unique_id="91:703")
+            self.assertEqual(node._apply_pose_image_via_frontend([object()], "91:703"),
+                {"sync_error": "widget unavailable"})
+        self.assertEqual([event for event, _payload, _sid in events],
+            ["vnccs_req_pose_sync", "vnccs_apply_sam3d_pose"])
+        for _event, payload, sid in events:
+            self.assertEqual(sid, "executing-browser")
+            self.assertEqual(payload["node_id"], "91:703")
+            self.assertTrue(payload["sync_token"])
+
     def test_sparse_animation_export_preserves_imported_duration(self):
         fps = POSE_STUDIO._animation_frame_rate({"animation": {"fps": 600 / 7200}})
         self.assertAlmostEqual(600 / fps, 7200)

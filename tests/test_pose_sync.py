@@ -95,7 +95,7 @@ class PoseSyncTests(unittest.TestCase):
 
         self.assertEqual(
             [path for path, _handler in app.router.posts],
-            ["/vnccs/pose_sync/upload_capture", "/vnccs/debug/upload_capture"],
+            ["/vnccs/pose_sync/upload_capture", "/api/vnccs/pose_sync/upload_capture", "/vnccs/debug/upload_capture"],
         )
         self.assertTrue(all(handler is POSE_SYNC.upload_pose_sync for _path, handler in app.router.posts))
 

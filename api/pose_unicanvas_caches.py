@@ -1,4 +1,7 @@
 """HTTP adapters for Pose captures, Pose animation and UniCanvas state caches, plus build identity."""
+import asyncio
+import json
+
 from ..nodes.posestudio import caches as pose_cache
 from ..nodes.unicanvas import cache as canvas_cache, build_info, documents
 from ..nodes.shared.paths import _vnccs_safe_id
@@ -140,12 +143,9 @@ def _vnccs_register_unicanvas_state_cache():
     from .unicanvas_documents import register_routes
     register_routes(PromptServer.instance.routes)
 
-    @PromptServer.instance.routes.post("/vnccs/unicanvas_state_upload")
-    async def vnccs_unicanvas_state_upload(request):
+    def upload_state(raw):
         try:
-            if not _vnccs_content_length_ok(request, canvas_cache._UNICANVAS_STATE_CACHE_MAX_TOTAL_CHARS + 1024 * 1024):
-                return web.json_response({"error": "unicanvas state payload is too large"}, status=413)
-            data = await request.json()
+            data = json.loads(raw)
             if not isinstance(data, dict):
                 return web.json_response({"error": "request body must be an object"}, status=400)
             state_id = data.get("state_id")
@@ -220,32 +220,36 @@ def _vnccs_register_unicanvas_state_cache():
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
-    @PromptServer.instance.routes.post("/vnccs/unicanvas_state_delete")
-    async def vnccs_unicanvas_state_delete(request):
+    @PromptServer.instance.routes.post("/vnccs/unicanvas_state_upload")
+    async def vnccs_unicanvas_state_upload(request):
         try:
-            if not _vnccs_content_length_ok(request, 1024):
-                return web.json_response({"error": "cache deletion payload is too large"}, status=413)
-            try:
-                data = await request.json()
-            except (ValueError, TypeError) as exc:
-                return web.json_response({"error": str(exc)}, status=400)
+            if not _vnccs_content_length_ok(request, canvas_cache._UNICANVAS_STATE_CACHE_MAX_TOTAL_CHARS + 1024 * 1024):
+                return web.json_response({"error": "unicanvas state payload is too large"}, status=413)
+            return await asyncio.to_thread(upload_state, await request.read())
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    def delete_state(data):
+        try:
             if not isinstance(data, dict) or not isinstance(data.get("state_id"), str) or not data["state_id"]:
                 return web.json_response({"error": "missing state_id"}, status=400)
             revision = data.get("revision")
             if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
                 return web.json_response({"error": "revision must be a non-negative integer"}, status=400)
             state_id = _vnccs_safe_id(data["state_id"], "unicanvas")
-            if "base_revision" in data or state_id.startswith("vnccs_unicanvas_standalone_"):
-                base_revision = data.get("base_revision")
-                if isinstance(base_revision, bool) or not isinstance(base_revision, int) or base_revision < -1:
-                    return web.json_response({"error": "base_revision must be an integer at least -1"}, status=400)
-                previous = canvas_cache.VNCCS_UNICANVAS_STATE_CACHE.get(state_id)
-                if previous is None:
-                    previous = canvas_cache._vnccs_read_unicanvas_state_cache_file(state_id)
-                previous_revision = previous.get("revision", -1) if isinstance(previous, dict) else -1
-                if base_revision != previous_revision:
-                    return web.json_response({"error": "Canvas changed in another tab; reload before clearing it"}, status=409)
             with documents.LOCK:
+                if "base_revision" in data or state_id.startswith("vnccs_unicanvas_standalone_"):
+                    base_revision = data.get("base_revision")
+                    if isinstance(base_revision, bool) or not isinstance(base_revision, int) or base_revision < -1:
+                        return web.json_response({"error": "base_revision must be an integer at least -1"}, status=400)
+                    previous = canvas_cache.VNCCS_UNICANVAS_STATE_CACHE.get(state_id)
+                    if previous is None:
+                        previous = canvas_cache._vnccs_read_unicanvas_state_cache_file(state_id)
+                    previous_revision = previous.get("revision", -1) if isinstance(previous, dict) else -1
+                    if base_revision != previous_revision:
+                        return web.json_response({"error": "Canvas changed in another tab; reload before clearing it"}, status=409)
                 documents.validate_unmanaged_state(state_id)
                 if state_id.endswith("_out"):
                     documents.validate_unmanaged_state(state_id[:-4])
@@ -257,22 +261,39 @@ def _vnccs_register_unicanvas_state_cache():
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
 
+    @PromptServer.instance.routes.post("/vnccs/unicanvas_state_delete")
+    async def vnccs_unicanvas_state_delete(request):
+        try:
+            if not _vnccs_content_length_ok(request, 1024):
+                return web.json_response({"error": "cache deletion payload is too large"}, status=413)
+            try:
+                data = await request.json()
+            except (ValueError, TypeError) as exc:
+                return web.json_response({"error": str(exc)}, status=400)
+            return await asyncio.to_thread(delete_state, data)
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
     @PromptServer.instance.routes.get("/vnccs/unicanvas/build_info")
     async def vnccs_unicanvas_build_info(request):
         return web.json_response(build_info._vnccs_unicanvas_build_info())
 
+    def get_state(state_id):
+        with documents.LOCK:
+            entry = canvas_cache.VNCCS_UNICANVAS_STATE_CACHE.get(state_id)
+            if not entry:
+                entry = canvas_cache._vnccs_read_unicanvas_state_cache_file(state_id)
+            if not entry:
+                return web.json_response({"error": "not found"}, status=404)
+            if state_id in canvas_cache.VNCCS_UNICANVAS_STATE_CACHE:
+                del canvas_cache.VNCCS_UNICANVAS_STATE_CACHE[state_id]
+            canvas_cache.VNCCS_UNICANVAS_STATE_CACHE[state_id] = entry
+            while len(canvas_cache.VNCCS_UNICANVAS_STATE_CACHE) > canvas_cache._UNICANVAS_STATE_CACHE_MAX:
+                oldest = next(iter(canvas_cache.VNCCS_UNICANVAS_STATE_CACHE))
+                del canvas_cache.VNCCS_UNICANVAS_STATE_CACHE[oldest]
+            return web.json_response(entry)
+
     @PromptServer.instance.routes.get("/vnccs/unicanvas_state/{state_id}")
     async def vnccs_unicanvas_state_get(request):
         state_id = _vnccs_safe_id(request.match_info["state_id"], "unicanvas")
-        entry = canvas_cache.VNCCS_UNICANVAS_STATE_CACHE.get(state_id)
-        if not entry:
-            entry = canvas_cache._vnccs_read_unicanvas_state_cache_file(state_id)
-        if not entry:
-            return web.json_response({"error": "not found"}, status=404)
-        if state_id in canvas_cache.VNCCS_UNICANVAS_STATE_CACHE:
-            del canvas_cache.VNCCS_UNICANVAS_STATE_CACHE[state_id]
-        canvas_cache.VNCCS_UNICANVAS_STATE_CACHE[state_id] = entry
-        while len(canvas_cache.VNCCS_UNICANVAS_STATE_CACHE) > canvas_cache._UNICANVAS_STATE_CACHE_MAX:
-            oldest = next(iter(canvas_cache.VNCCS_UNICANVAS_STATE_CACHE))
-            del canvas_cache.VNCCS_UNICANVAS_STATE_CACHE[oldest]
-        return web.json_response(entry)
+        return await asyncio.to_thread(get_state, state_id)

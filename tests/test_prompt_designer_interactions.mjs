@@ -57,8 +57,8 @@ test("copying mixed prompt text and cards into multi-prompt rows preserves refer
     const editors = widget.multiRows.querySelectorAll(".vnccs-pd-variant-editor");
     for (const editor of editors) bubble(editor, "paste", { clipboardData });
     assert.deepEqual(widget.state.parts[0].multiPrompt.variants, [parts, parts]);
-    assert.deepEqual(editors[0].querySelectorAll("[data-block-id]").map(chip => chip.textContent), ["Artists 1", "Artists 2", "Clothing 1"]);
-    assert.deepEqual(editors[1].querySelectorAll("[data-block-id]").map(chip => chip.textContent), ["Artists 3", "Artists 4", "Clothing 2"]);
+    assert.deepEqual(editors[0].querySelectorAll("[data-block-id]").map(chip => chip.textContent), ["Artists 2", "Artists 1", "Clothing 1"]);
+    assert.deepEqual(editors[1].querySelectorAll("[data-block-id]").map(chip => chip.textContent), ["Artists 3", "Artists 1", "Clothing 1"]);
     assert.deepEqual(JSON.parse(widget.node.widgets[0].value).parts, widget.state.parts);
     assert.equal(selection.getRangeAt(0).startContainer, editors[1]);
     assert.equal(selection.getRangeAt(0).startOffset, editors[1].childNodes.length);
@@ -66,6 +66,9 @@ test("copying mixed prompt text and cards into multi-prompt rows preserves refer
     widget.state = saved; widget.render();
     widget.editMultiPrompt(widget.editor.querySelector("[data-multi-prompt]"));
     assert.deepEqual(widget.multiRows.querySelectorAll(".vnccs-pd-variant-editor").map(readEditor), [parts, parts]);
+    assert.deepEqual(widget.multiRows.querySelectorAll(".vnccs-pd-variant-editor").map(editor =>
+        editor.querySelectorAll("[data-block-id]").map(chip => chip.textContent)),
+    [["Artists 2", "Artists 1", "Clothing 1"], ["Artists 3", "Artists 1", "Clothing 1"]]);
 });
 
 test("selected card copy and cut retain the whole card, and importing conflicting IDs preserves the current block", t => {
@@ -123,8 +126,12 @@ test("double-click edits only the numbered instance, persists immediately, resto
     widget.editMultiPrompt(multi); widget.multiPanel.scrollTop = 120;
     const editor = widget.multiRows.querySelector(".vnccs-pd-variant-editor"), card = editor.querySelector("[data-block-id]");
     emit(editor, "dblclick", { target: card });
-    assert.equal(widget.instanceName.textContent, "Artists 2");
+    assert.equal(widget.instanceName.textContent, "Artists 1");
     widget.instanceRandom.checked = true; emit(widget.instanceRandom, "input");
+    assert.equal(widget.instanceName.textContent, "Artists 2");
+    assert.equal(card.textContent, "Artists 2");
+    assert.equal(main.textContent, "Artists 1");
+    assert.equal(widget.multiRows.children[1].querySelector("[data-block-id]").textContent, "Artists 1");
     assert.deepEqual(widget.state.parts[1].multiPrompt.variants, [[{ blockId: "artists", random: true }], [{ blockId: "artists" }]]);
     assert.deepEqual(JSON.parse(widget.node.widgets[0].value).parts, widget.state.parts);
     assert.equal(JSON.stringify(widget.state.blocks), shared);
@@ -137,13 +144,53 @@ test("double-click edits only the numbered instance, persists immediately, resto
     const restoredEditor = widget.multiRows.querySelector(".vnccs-pd-variant-editor");
     emit(restoredEditor, "dblclick", { target: restoredEditor.querySelector("[data-block-id]") });
     assert.equal(widget.instanceRandom.checked, true);
+    assert.equal(widget.instanceName.textContent, "Artists 2");
     widget.moveHistory("undo");
     assert.equal(widget.state.parts[1].multiPrompt.variants[0][0].random, undefined);
+    widget.editMultiPrompt(widget.editor.querySelector("[data-multi-prompt]"));
+    assert.deepEqual(widget.multiRows.querySelectorAll("[data-block-id]").map(chip => chip.textContent), ["Artists 1", "Artists 1"]);
     widget.moveHistory("redo");
     assert.equal(widget.state.parts[1].multiPrompt.variants[0][0].random, true);
+    widget.editMultiPrompt(widget.editor.querySelector("[data-multi-prompt]"));
+    assert.deepEqual(widget.multiRows.querySelectorAll("[data-block-id]").map(chip => chip.textContent), ["Artists 2", "Artists 1"]);
     widget.openBlock("artists");
     assert.equal(widget.inspectorPanel, widget.cardPanel);
     assert.equal(widget.state.activeTab, "artists");
+});
+
+test("shared instance labels span main text, If branches and variants; only random copies get new numbers", t => {
+    const { widget } = setup(t);
+    widget.state.parts = [{ blockId: "artists" }, { blockId: "artists", random: false },
+        { condition: { blockId: "artists", operator: "contains", value: "watercolor",
+            then: { parts: [{ blockId: "artists" }, { blockId: "artists" }] }, else: { blockId: "artists" } } },
+        { multiPrompt: { variants: [[{ blockId: "artists" }], [{ blockId: "artists" }]] } }];
+    widget.render(); widget.commit(null, false);
+    const condition = widget.editor.querySelector("[data-condition]");
+    const labels = editor => editor.querySelectorAll("[data-block-id]").map(chip => chip.textContent);
+    assert.deepEqual(labels(condition.conditionControls.output), ["Artists 1", "Artists 1"]);
+    assert.deepEqual(labels(condition.conditionControls.elseOutput), ["Artists 1"]);
+    widget.editCondition(condition);
+    assert.deepEqual(labels(widget.conditionOutput), ["Artists 1", "Artists 1"]);
+    const card = widget.conditionOutput.querySelectorAll("[data-block-id]")[1];
+    emit(widget.conditionOutput, "dblclick", { target: card });
+    widget.instanceRandom.checked = true; emit(widget.instanceRandom, "input");
+    assert.equal(widget.instanceName.textContent, "Artists 2");
+    assert.deepEqual(labels(condition.conditionControls.output), ["Artists 1", "Artists 2"]);
+    assert.deepEqual(labels(widget.conditionOutput), ["Artists 1", "Artists 2"]);
+    widget.closeBlockInstance();
+    widget.editMultiPrompt(widget.editor.querySelector("[data-multi-prompt]"));
+    assert.deepEqual(labels(widget.multiRows), ["Artists 1", "Artists 1"]);
+    const editor = widget.multiRows.children[1].querySelector(".vnccs-pd-variant-editor");
+    emit(editor, "dblclick", { target: editor.querySelector("[data-block-id]") });
+    widget.instanceRandom.checked = true; emit(widget.instanceRandom, "input");
+    assert.equal(widget.instanceName.textContent, "Artists 3");
+    assert.deepEqual(labels(widget.multiRows), ["Artists 1", "Artists 3"]);
+    widget.instanceRandom.checked = false; emit(widget.instanceRandom, "input");
+    assert.equal(widget.instanceName.textContent, "Artists 1");
+    assert.deepEqual(labels(widget.multiRows), ["Artists 1", "Artists 1"]);
+    assert.deepEqual(JSON.parse(widget.node.widgets[0].value).parts, widget.state.parts);
+    assert.deepEqual(widget.editor.querySelectorAll("[data-block-instance]").map(chip => chip.textContent),
+        ["Artists 1", "Artists 1", "Artists 1", "Artists 2", "Artists 1"]);
 });
 
 test("paste stays inside Prompt Designer while plain text and native fields remain editable", t => {

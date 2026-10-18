@@ -5,13 +5,12 @@ import os
 import re
 import stat
 import tempfile
-import threading
 import uuid
 from datetime import datetime, timezone
 
 from . import cache
 
-LOCK = threading.RLock()
+LOCK = cache.LOCK
 _STATE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _CANVAS_ID = re.compile(r"[a-f0-9]{32}\Z")
 

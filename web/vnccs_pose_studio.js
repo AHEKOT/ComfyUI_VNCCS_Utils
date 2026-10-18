@@ -11701,23 +11701,40 @@ class PoseStudioWidget {
 
     async refreshLibrary(forceFull = false) {
         if (this._disposed) return;
+        // Metadata refreshes must not cancel a full load awaited by execution.
+        if (this._libraryFullRefreshPromise) return this._libraryFullRefreshPromise;
         const token = this._libraryRefreshToken = (this._libraryRefreshToken || 0) + 1;
+        const refresh = (async () => {
+            try {
+                const res = await fetch(`/vnccs/pose_library/list?full=${forceFull === true}`);
+                const data = await res.json();
+                if (this._disposed || token !== this._libraryRefreshToken) return;
+                if (!res.ok || !Array.isArray(data?.poses)) {
+                    throw new Error(data?.error || "Library items could not be loaded.");
+                }
+                const cached = new Map((this.libraryPoses || []).map(item => [this.getLibraryPoseId(item), item]));
+                this.libraryPoses = data.poses.map(item => {
+                    const previous = cached.get(this.getLibraryPoseId(item));
+                    return !forceFull && !item.data && previous?.data
+                        && previous.preview_mtime === item.preview_mtime
+                        ? { ...item, data: previous.data } : item;
+                });
+                this.renderLibrary();
+            } catch (err) {
+                if (this._disposed || token !== this._libraryRefreshToken) return;
+                console.error("Failed to load library:", err);
+                if (this.libraryGrid) {
+                    if (this.libraryPoses?.length) this.showMessage(`Failed to load library: ${err?.message || err}`, true);
+                    else this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">Failed to load library.</div>';
+                }
+                return { error: String(err?.message || err) };
+            }
+        })();
+        if (forceFull) this._libraryFullRefreshPromise = refresh;
         try {
-            const res = await fetch(`/vnccs/pose_library/list?full=${forceFull === true}`);
-            const data = await res.json();
-            if (this._disposed || token !== this._libraryRefreshToken) return;
-            if (!res.ok || !Array.isArray(data?.poses)) {
-                throw new Error(data?.error || "Library items could not be loaded.");
-            }
-            this.libraryPoses = data.poses; // Cache for random selection
-            this.renderLibrary();
-        } catch (err) {
-            if (this._disposed || token !== this._libraryRefreshToken) return;
-            console.error("Failed to load library:", err);
-            if (this.libraryGrid) {
-                if (this.libraryPoses?.length) this.showMessage(`Failed to load library: ${err?.message || err}`, true);
-                else this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">Failed to load library.</div>';
-            }
+            return await refresh;
+        } finally {
+            if (this._libraryFullRefreshPromise === refresh) this._libraryFullRefreshPromise = null;
         }
     }
 
@@ -15180,7 +15197,8 @@ class PoseStudioWidget {
     async ensureDebugLibraryReady() {
         if (!this.exportParams.debugMode || this.isAnimationMode()) return;
         if (this.getDebugLibraryPoseCandidates().length > 0) return;
-        await this.refreshLibrary(true);
+        const result = await this.refreshLibrary(true);
+        if (result?.error) throw new Error(`Debug Mode could not load the pose library: ${result.error}`);
         if (this.getDebugLibraryPoseCandidates().length === 0) {
             throw new Error("Debug Mode requires at least one fully loaded library pose.");
         }
@@ -15474,6 +15492,7 @@ class PoseStudioWidget {
                 : null;
             if (fullCapture) {
                 const originalTab = this.activeTab;
+                const previousSAMProjection = this.viewer._samProjectionCameraFrame || null;
                 const previousCaptures = this.poseCaptures.slice();
                 const previousPrompts = this.lightingPrompts.slice();
                 let captureBatchStarted = false;
@@ -15486,8 +15505,32 @@ class PoseStudioWidget {
                         }
 
                         if (isDebugExecution) {
-                            this.viewer.setPose(capturePoses[i], true);
+                            const asset = capturePoses[i];
+                            const scenePose = extractActivePoseFromSceneAsset(asset);
+                            const pose = scenePose || asset;
+                            this.validateImportedPose(pose);
+                            const savedFraming = pose.cameraParams && typeof pose.cameraParams === "object"
+                                ? pose.cameraParams : null;
+                            const sceneTransform = scenePose
+                                ? extractActiveCharacterTransformFromSceneAsset(asset) : null;
+                            const transform = sceneTransform || (savedFraming
+                                ? cameraFramingToCharacterTransform(savedFraming, this.viewer.sceneCameraTarget)
+                                : null);
+                            const poseCamera = transform ? {
+                                yaw_deg: Number(savedFraming?.yaw_deg ?? asset.camera?.yaw_deg ?? 0),
+                                pitch_deg: Number(savedFraming?.pitch_deg ?? asset.camera?.pitch_deg ?? 0),
+                            } : currentCaptureCamera;
+                            if (![poseCamera.yaw_deg, poseCamera.pitch_deg].every(Number.isFinite)) {
+                                throw new TypeError("Pose framing requires finite camera angles.");
+                            }
+                            const projection = normalizeSAMProjectionFrame(
+                                pose.sam_projection ?? asset.sam_projection ?? asset.camera?.sam_projection,
+                            );
+                            this.viewer.setPose(this.stripSceneCameraFromPose(pose), true);
                             this.updateCharacterScene({ poseIndex: originalTab });
+                            // Apply saved framing only to the temporary render, preserving authored state.
+                            if (transform) this.viewer.setActiveCharacterAppearance({ transform });
+                            this.viewer.setSAMProjectionCameraFrame(projection);
                             const captureLights = debugLightingMode === "original"
                                 ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
                                 : debugLightingMode === "manual" ? userLights : debugLights;
@@ -15499,8 +15542,8 @@ class PoseStudioWidget {
                                 bg,
                                 currentCaptureCamera.offset_x,
                                 currentCaptureCamera.offset_y,
-                                currentCaptureCamera.yaw_deg,
-                                currentCaptureCamera.pitch_deg,
+                                poseCamera.yaw_deg,
+                                poseCamera.pitch_deg,
                             ), true);
                             this.lightingPrompts[i] = this.generatePromptFromLights(
                                 isOriginalLighting ? [] : captureLights,
@@ -15551,6 +15594,7 @@ class PoseStudioWidget {
                     this.activeTab = originalTab;
                     try {
                         // Restore original state and UI
+                        if (isDebugExecution) this.viewer.setSAMProjectionCameraFrame(previousSAMProjection);
                         this.viewer.updateLights(
                             isOriginalLighting
                                 ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
@@ -16255,6 +16299,17 @@ app.registerExtension({
             }
         };
 
+        const findPoseStudioSyncNode = (nodeId) => {
+            let graph = app.rootGraph ?? app.graph;
+            let node;
+            for (const id of String(nodeId).split(":")) {
+                node = graph?.getNodeById?.(id);
+                if (!node) return null;
+                graph = node.subgraph;
+            }
+            return node;
+        };
+
         const poseStudioSyncGuard = (node) => {
             const widget = node.studioWidget;
             const restoreToken = widget._poseDataRestoreToken;
@@ -16272,7 +16327,7 @@ app.registerExtension({
 
         const uploadPoseStudioSync = async (node, nodeId, syncToken = "") => {
             const poseWidget = node.widgets.find(w => w.name === "pose_data");
-            if (!poseWidget) return;
+            if (!poseWidget) throw new Error("Pose Studio pose_data widget is unavailable. Reload the workflow and retry.");
             const widget = node.studioWidget;
             const assertCurrent = poseStudioSyncGuard(node);
             const widgetData = JSON.parse(poseWidget.value);
@@ -16301,7 +16356,7 @@ app.registerExtension({
                 lighting_prompts: capturedLightingPrompts
             };
 
-            return fetch('/vnccs/pose_sync/upload_capture', {
+            return api.fetchApi('/vnccs/pose_sync/upload_capture', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -16322,7 +16377,7 @@ app.registerExtension({
         const reportPoseStudioSyncFailure = async (nodeId, syncToken, error) => {
             const syncFileId = syncToken ? `${nodeId}_${syncToken}` : nodeId;
             try {
-                await fetch('/vnccs/pose_sync/upload_capture', {
+                const response = await api.fetchApi('/vnccs/pose_sync/upload_capture', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -16331,14 +16386,17 @@ app.registerExtension({
                         sync_error: String(error?.message || error || "Pose Studio sync failed").slice(0, 2048),
                     }),
                 });
-            } catch (_) { }
+                await requirePoseStudioSyncResponse(response);
+            } catch (error) {
+                console.error("[VNCCS] Failed to report Pose Studio sync error:", error);
+            }
         };
 
         api.addEventListener("vnccs_req_pose_sync", async (event) => {
             const nodeId = event.detail.node_id;
             const cameraPrompt = String(event.detail.camera_prompt ?? "");
             const syncToken = String(event.detail.sync_token ?? "");
-            const node = app.graph.getNodeById(nodeId);
+            const node = findPoseStudioSyncNode(nodeId);
             if (node && node.studioWidget) {
                 try {
                     const widget = node.studioWidget;
@@ -16380,6 +16438,9 @@ app.registerExtension({
                     await reportPoseStudioSyncFailure(nodeId, syncToken, e);
                     console.error("[VNCCS] Batch Sync Error:", e);
                 }
+            } else {
+                await reportPoseStudioSyncFailure(nodeId, syncToken,
+                    new Error("Pose Studio widget is unavailable. Keep the executing workflow open and reload ComfyUI before retrying."));
             }
         });
 
@@ -16389,8 +16450,13 @@ app.registerExtension({
             const cameraPrompt = String(event.detail.camera_prompt ?? "");
             const applyMode = String(event.detail.apply_mode ?? "pose");
             const syncToken = String(event.detail.sync_token ?? "");
-            const node = app.graph.getNodeById(nodeId);
-            if (!node?.studioWidget || !poseData) return;
+            const node = findPoseStudioSyncNode(nodeId);
+            if (!node?.studioWidget || !poseData) {
+                await reportPoseStudioSyncFailure(nodeId, syncToken,
+                    new Error(!poseData ? "SAM 3D Body pose data is unavailable."
+                        : "Pose Studio widget is unavailable. Keep the executing workflow open and reload ComfyUI before retrying."));
+                return;
+            }
 
             try {
                 const widget = node.studioWidget;
