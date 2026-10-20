@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "playwright test",
-    "evidence": "node evidence.mjs"
+    "evidence": "node evidence.mjs",
+    "cg-creator": "node ../browser/cg_creator.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0"

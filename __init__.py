@@ -6,6 +6,7 @@ from .nodes.vncss_config import VNCCS_Config
 from .nodes.prompt_designer import VNCCS_PromptDesigner
 from .nodes.factory3d import VNCCS_3DFactory
 from .nodes.factory3d.render import VNCCS_FactoryRender, VNCCS_FactoryMask
+from .nodes.cg_creator import VNCCS_CGCreator
 
 NODE_CLASS_MAPPINGS = {
     "VNCCS_PositionControl": VNCCS_PositionControl,
@@ -18,6 +19,7 @@ NODE_CLASS_MAPPINGS = {
     "VNCCS_3DFactory": VNCCS_3DFactory,
     "VNCCS_FactoryRender": VNCCS_FactoryRender,
     "VNCCS_FactoryMask": VNCCS_FactoryMask,
+    "VNCCS_CGCreator": VNCCS_CGCreator,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -31,6 +33,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_3DFactory": "VNCCS 3D Factory",
     "VNCCS_FactoryRender": "VNCCS Factory Render",
     "VNCCS_FactoryMask": "VNCCS Factory Mask",
+    "VNCCS_CGCreator": "VNCCS CG Creator",
 }
 
 WEB_DIRECTORY = "./web"
@@ -217,3 +220,15 @@ def _vnccs_register_3d_factory():
         print(f"[VNCCS] Failed to register 3D Factory API: {exc}")
 
 _vnccs_register_3d_factory()
+
+
+def _vnccs_register_cg_creator():
+    try:
+        from server import PromptServer
+        from .api.cg_creator_workspace import register_routes
+        register_routes(PromptServer.instance.routes)
+    except Exception as exc:
+        print(f"[VNCCS] Failed to register CG Creator API: {exc}")
+
+
+_vnccs_register_cg_creator()

@@ -84,3 +84,26 @@ pairs. Run `node evidence.mjs --topic <topic> --phase after` (workdir `tests/e2e
 
 After a code change or a container restart the browser keeps the OLD extension bundle: always
 hard-reload (Ctrl+Shift+R) before judging a fix on the live instance.
+
+## CG Creator visual feedback
+
+The owner requires browser evidence after every CG Creator UI change. Use the standalone
+browser harness adapted from the main VNCCS project:
+
+    cd tests/e2e
+    npm install                           # first setup only
+    npx playwright install chromium       # first setup only
+    cd ../..
+    node tests/browser/cg_creator.mjs
+
+An optional first argument selects an installed Chromium executable; the second selects an
+output directory. The default output is `tests/e2e/evidence/cg-creator/`. The harness imports
+the current production extension, styles and Gaussian viewport into a fresh Chromium context;
+only ComfyUI services, saved scene data and inference are fixtures. It does not require a
+running ComfyUI or model weights, and it never edits the user's scene library.
+
+After each UI edit, run the harness and inspect `after.png` (and affected dialog/state captures).
+Embed the latest relevant After image directly in the chat response. Keep the fixture/runtime
+distinction explicit: this proves browser layout and interaction, not real GPU inference or
+ComfyUI graph integration. Do not substitute a generated mockup or a stale capture. Keep only
+After evidence. If the browser check fails, fix the failure or report it with the actual image.

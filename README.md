@@ -70,6 +70,24 @@ assets through the bundled SparkJS viewport.
 
 👉 **[Setup and workflow guide](docs/VNCCS_3D_FACTORY.md)**
 
+## VNCCS CG Creator
+
+The standalone model and camera editor is registered as **VNCCS CG Creator**
+(`VNCCS_CGCreator`). Select an existing background and source variant, reconstruct
+it with TripoSplat, compose the camera, and use **Save view** to refine the capture
+with QI2. Finished CG cards appear on the right and restore their camera and frame.
+The viewport toolbar contains FOV, Save view and Recenter. A normal workflow run
+returns only the selected finished CG; reconstruction and refinement run locally
+inside the widget.
+
+Background creation, upload, wizard and variant generation belong to
+[ComfyUI_VNCCS](https://github.com/AHEKOT/ComfyUI_VNCCS). This node reads existing
+`output/VNCCS/scenes/NAME/NAME.json` libraries independently. It appends model/CG
+assets and saves only its own settings, preserving background prompts, variants
+and generator metadata. The old Background Creator node ID is not registered by
+Utils. See [CG Creator](docs/VNCCS_CG_CREATOR.md).
+
+
 ## VNCCS UniCanvas
 
 <p align="center">

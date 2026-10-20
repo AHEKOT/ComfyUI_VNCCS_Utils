@@ -715,6 +715,13 @@ def _generate_object(
                 show_progress=False,
                 callback=callback,
             )
+            source_camera = None
+            if settings.get("capture_source_camera"):
+                from .source_camera import decode_source_camera
+
+                source_camera = decode_source_camera(
+                    latent["camera"].detach().float().cpu().numpy(), image.size,
+                )
             _check_cancel(job)
             del conditioning
             if pipeline._device.type == "cuda" and torch.cuda.is_available():
@@ -855,6 +862,7 @@ def _generate_object(
             "name": object_name,
             "created_at": backend._now(),
             "transform": normalize_transform({}),
+            **({"source_camera": source_camera} if source_camera is not None else {}),
             **normalize_object_editor_properties({}),
             "gaussians": gaussian_count,
             "seed": seed,
