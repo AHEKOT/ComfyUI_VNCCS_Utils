@@ -1,11 +1,13 @@
 # Version 0.7.1
 
-## Audit Fixes for Pose Studio, UniCanvas, and Prompt Designer
+## Editor Reliability and Prompt Designer Updates
 
 ### Pose Studio: Bug Fixes
 
 #### Workflow State, Animation, and Imports
 
+* **Viewer initialization**: Model loading waits for Three.js initialization before restoring poses or preparing execution captures. Early camera restoration no longer reads `enableDamping` from missing orbit controls. Initialization failures retain their original cause and reach the frontend sync response instead of being hidden behind later readiness errors.
+* **Execution sync routing**: Capture and SAM pose events target the browser client running the workflow. Node lookup starts at the root graph and follows nested subgraph IDs, including when the browser is viewing another subgraph. Capture uploads use ComfyUI's API URL handling; missing nodes or widgets return an explicit sync error instead of silently leaving the backend waiting.
 * **Pose validation before state changes**: Single poses, pose sets, character scenes, library items, workflows, and animation base poses reject invalid rotations or joint coordinates before replacing the current scene. Failed restoration retains authored workflow bytes, Undo/Redo history, and SAM camera state; valid partial poses and finite numeric strings remain supported.
 * **Mesh, background, and light restoration**: Malformed mesh values, background colors, and light entries are checked before restoring controls or clearing history. This prevents exceptions such as `mesh.weight: null`, `export.bg_color: null`, and `lights: [null]` from partially replacing the scene. Legacy numeric strings are normalized, and unknown mesh metadata survives restoration and saving.
 * **Animation preflight**: Library and workflow clips are normalized before mutation, including every character's tracks and pending animation payloads. Invalid animation arrays or malformed tracks cannot clear the current clip, history, or camera state.
@@ -20,6 +22,8 @@
 
 * **Character-scene prompt editing**: Editing a library item's prompt updates the active character's selected pose, animation base pose, and per-pose prompt list. Invalid saved tab indices fall back to an existing pose, so reloading the item uses the edited prompt.
 * **Preview replacement races**: Save is disabled while an uploaded preview is being prepared. Only the newest selection can replace the preview; stale reads and failed replacements retain the last valid image or animation preview.
+* **Debug library readiness**: Concurrent executions share the pending full library load. Metadata refreshes cannot cancel that load or discard unchanged pose data; deleted and updated items lose their obsolete cached data. Failed library requests report their cause and allow a later retry.
+* **Debug pose framing**: Random library captures use the selected asset's active pose, character placement, camera angles, and SAM projection. The editor's camera and placement are restored afterward; failed captures also retain previous successful outputs.
 
 #### Interaction, Captures, and Resource Cleanup
 
@@ -37,6 +41,7 @@
 #### Saving, Native Pixels, and Exports
 
 * **Durable cache writes**: Canvas cache files are flushed and synchronized before atomic replacement; the containing directory is synchronized on POSIX. A successful save no longer depends only on buffered writes surviving shutdown.
+* **Concurrent cache operations**: Cache migration, writes, deletion, and document operations share a lock, preventing an older migration from replacing a newer save. Cache request processing runs outside the server event loop. Clearing a standalone canvas rejects an obsolete revision instead of deleting another tab's newer state.
 * **Native-only layer persistence**: High-resolution layers retain their pixels when the backing canvas has no alpha crop. Serialization includes their native PNGs, and compact workflow metadata marks them as cached so restoration does not treat them as empty.
 * **CPU native rendering**: Rendering saved layers without a ready output cache uses native pixels and world coordinates, including layers outside the backing canvas. When both native and clipped backing images exist, native pixels take precedence. Only the generation-box intersection is resampled; nonintersecting native images are not decoded, and opacity and blend modes remain applied.
 * **Generation-box composites**: Standalone and queued composites render the requested world rectangle directly instead of cropping an incomplete backing image. Native pixels beyond backing bounds remain visible, raster-content checks include them, and small exports retain their requested dimensions down to one pixel instead of being enlarged to 64 pixels.
@@ -49,6 +54,7 @@
 * **Flatten data-loss safeguard**: Flatten rejects visible native layers that extend outside the current backing area before changing history or pixels. Move those layers inside the canvas before flattening; expanding the master to support this case remains a known limitation.
 * **Color Match strength and transparency**: Matched RGB is blended once at the selected strength while retaining the target layer's alpha. Semi-transparent pixels receive the full correction at Strength 10 instead of a second alpha reduction; Strength 0, intermediate previews, and one undo per gesture are preserved.
 * **CPU blend boundaries**: Color Dodge keeps a black backdrop black when the source is white, and Color Burn keeps a white backdrop white when the source is black. Saved-layer rendering now handles these boundary cases correctly, including partially transparent layers.
+* **PSD masks**: Layers and groups with enabled raster or vector masks are skipped with an explicit import warning, preventing their unmasked pixels from being imported as if the original appearance were preserved.
 
 #### Gestures and Undo/Redo
 
@@ -58,8 +64,19 @@
 * **Brush HUD history**: Radial size, opacity, hardness, and color edits store only tool settings rather than a whole-document snapshot. Undo/Redo preserves current layers and unaccepted generation results. Lost capture completes the gesture, while callbacks from an older document or restoration cannot apply settings or history to the replacement.
 * **Hardness slider history**: Hardness updates continuously and commits one tool-settings command on completion. It no longer restores obsolete document pixels or staging through Undo/Redo; unchanged values and stale document callbacks do not add history.
 
-### Prompt Designer: Bug Fixes
+#### Queue Preparation and Models
 
+* **Queue preparation lock**: Enabled UniCanvas documents stay locked through saving, output upload, and graph serialization, including while another canvas is preparing. Active edits block queueing; pending imports and pose-library callbacks are invalidated, and pose animation playback stops. Replacing or removing a document during preparation cancels the queue request, and all preparation locks are released on success or failure.
+* **Stop during preparation**: Stop remains available while generation is preparing, and receives focus when the previously focused document control becomes blocked. Ordinary canvas-management operations no longer show a generation Stop button.
+* **DynamicVRAM and LoRA**: LoRA preparation clones the native model patcher without converting it to a static delegate, preserving DynamicVRAM residency and avoiding unnecessary weight reloads.
+* **Separate CLIP strength**: LoRAs supplied through VNCSS Config retain their independent CLIP strength, including entries with zero model strength and nonzero CLIP strength.
+
+### Prompt Designer: Features and Bug Fixes
+
+* **Shared block results**: Repeated copies of a block share its sampled result by default within one generation. Multi-prompt outputs retain shared draws while resolving variable-dependent text in each output's scope.
+* **Block instance settings**: Double-click a prompt block or press Enter to open its instance settings. Enable **Randomize this instance** for an independent random draw without changing the shared block. Instance labels distinguish shared and independent copies, and the setting survives dragging, saving, and restoration.
+* **Prompt clipboard**: Copy, cut, and paste preserve block cards, conditions, multi-prompt fragments, and instance settings. Pasting restores the referenced blocks and categories; copying also provides a plain-text template for other applications. Text-and-block-only fields reject unsupported structured fragments before changing the document.
+* **Condition and multi-prompt editors**: Branch and variant fields grow with their contents instead of clipping longer text inside a fixed-height editor.
 * **Damaged recovery drafts**: A corrupt browser draft combined with an empty constructor placeholder and unavailable disk recovery no longer restores a blank document. Original recovery data is retained, restoration reports an error, and destructive saves or queueing stay blocked until valid authored state is recovered.
 * **Preview restoration races**: Starting workflow restoration invalidates and aborts pending prompt and block previews, cancels scheduled preview work, and advances both preview revisions. Scheduling is blocked while the widget restores or remains inert, so stale responses cannot replace the restored preview or status.
 * **Variant-row editing**: Typing a choice separator rebuilds the rows to match the authored source immediately, including when adding a new variant. Focus, caret position, and formatted editor content are retained; row rebuilding waits until IME composition ends.
@@ -67,12 +84,15 @@
 * **Forward conditional checks**: Conditions checking a later block evaluate it with the unconditional variable definitions that precede its insertion. The sampled insertion is reserved and reused without an extra random draw; unselected conditional branches remain lazy, and temporary variable scopes do not leak across checks or prompt outputs.
 * **Cyclic wrapped expressions**: Cycle periods account for both wrapper and inner streams, including different lengths and very large saved queue positions. Wrapped expressions use the native wrapper-capable sampler while their inner choices retain cyclic behavior, preserving seeded results, source text, and queue progression.
 
-### Compatibility and Validation
+### 3D Factory: Bug Fixes
+
+* **Failed scene restoration**: Load and snapshot-replay failures preserve the saved workflow state instead of silently creating a replacement scene. Editing and saving remain blocked until the scene is successfully restored or another scene is explicitly loaded.
+* **Imports preserve current edits**: PLY and 3D-model imports save pending scene changes before starting and merge edits made while the import is running. Late responses cannot replace a reopened scene or a removed editor, and the merged scene is saved after a successful import.
+
+### Compatibility
 
 * **Frontend cache refresh**: Pose Studio module queries and UniCanvas entry, local imports, and standalone theme use refreshed cache stamps. Hard-reload with Ctrl+Shift+R after updating before checking the live installation.
-* **Regression coverage**: Added regressions for the corrected persistence, import validation, async ownership, realtime gestures, history isolation, native rendering, blending, prompt sampling, and resource cleanup paths. Existing workflow formats and public node identifiers are retained.
-* **Automated checks**: The audited implementation passed 1,332 JavaScript tests with VM-module coverage enabled, plus 922 Python tests and 251 subtests in an isolated environment without PyTorch; 15 Python tests were skipped. Collection completed without errors. The security scanner, its 10 integrity checks, edited-file syntax checks, and diff checks also passed.
-* **Runtime verification scope**: Live ComfyUI interaction, browser rendering, GPU inference, SAM/model execution, model downloads, and video codecs were not verified by these automated checks.
+* **Workflow compatibility**: Existing workflow formats and public node identifiers are retained.
 
 # Version 0.7.0
 ## New Prompt Designer Node, Multi-Document UniCanvas, and Editor Bug Fixes
