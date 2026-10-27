@@ -1125,6 +1125,7 @@ export class PoseViewerCore {
         this._samProjectionCameraFrame = null;
 
         this.initialized = false;
+        this.initializationError = null;
 
         // Undo/Redo History
         this.history = [];
@@ -1321,6 +1322,7 @@ export class PoseViewerCore {
     }
 
     async waitForCaptureReady() {
+        if (this.initializationError) throw this.initializationError;
         while (!this._disposed) {
             const skin = this._skinTexturePromise;
             const reference = this._referenceTexturePromise;
@@ -1460,6 +1462,8 @@ export class PoseViewerCore {
 
             this.requestRender(); // Initial render
         } catch (e) {
+            this.initialized = false;
+            this.initializationError = new Error(`Pose Studio viewer initialization failed: ${e?.message || e}`);
             console.error('Pose Studio: Init failed', e);
         }
     }
@@ -4750,6 +4754,8 @@ export class PoseViewerCore {
     }
 
     snapToCaptureCamera(width, height, zoom = 1.0, offsetX = 0, offsetY = 0, yawDeg = 0, pitchDeg = 0) {
+        // Workflow controls can restore before the asynchronous viewer setup finishes.
+        if (!this.orbit || !this.camera || !this.captureCamera) return;
         this.updateCaptureCamera(width, height, zoom, offsetX, offsetY, yawDeg, pitchDeg);
 
         // Disable damping for hard reset

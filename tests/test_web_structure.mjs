@@ -13,7 +13,7 @@ test("web root contains only the ComfyUI extension entry points", async () => {
         if ((await stat(new URL(name, web))).isFile()) rootFiles.push(name);
     }
     assert.deepEqual(rootFiles.sort(), [
-        "vnccs_3d_factory.js", "vnccs_camera_control.js", "vnccs_cg_creator.js", "vnccs_config.js",
+        "vnccs_3d_factory.js", "vnccs_camera_control.js", "vnccs_config.js",
         "vnccs_pose_studio.js", "vnccs_prompt_designer.js", "vnccs_unicanvas.js",
     ]);
     for (const name of rootFiles) {

@@ -14303,13 +14303,18 @@ class PoseStudioWidget {
         this._modelLoadKey = requestKey;
         if (showOverlay && this.loadingOverlay) this.loadingOverlay.style.display = "flex";
 
-        // Sync skin type to viewer before loading
-        if (this.viewer) {
-            this.viewer.setSkinMode(this.exportParams.skin_type || "naked");
-            this.applyMeshProportionsToViewer(this.meshParams);
-        }
-
-        const promise = this.requestStaticMorphModel().then((message) => {
+        const load = async () => {
+            if (this._viewerInitPromise) await this._viewerInitPromise;
+            if (this._disposed) return null;
+            if (this.viewer?.initializationError) throw this.viewer.initializationError;
+            // A buffered mesh is not ready for pose restoration or execution capture.
+            if (this.viewer) {
+                this.viewer.setSkinMode(this.exportParams.skin_type || "naked");
+                this.applyMeshProportionsToViewer(this.meshParams);
+            }
+            return this.requestStaticMorphModel();
+        };
+        const promise = load().then((message) => {
             if (this._disposed) return false;
             const currentKey = `${String(this.activeCharacterId || "")}\u0000${JSON.stringify(this.meshParams || {})}`;
             if (currentKey !== requestKey) return false;
