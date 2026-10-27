@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
 import { PanoramaOrbitControl, orbitPoint, orbitDrag, drawPanoramaOrbit } from "../web/unicanvas/panorama_orbit.mjs";
-import { normalizePanorama } from "../web/unicanvas/panorama.mjs";
+import { normalizePanorama, PanoramaDocument, trimPanoramaHistory } from "../web/unicanvas/panorama.mjs";
+import { createCanvasDocument, deleteCanvasDocument, openCanvasDocument } from "../web/unicanvas/documents.mjs";
 
 const camera = extra => normalizePanorama({ projection: "equirectangular", width: 4096, height: 2048, ...extra });
 class OrbitCanvas {
@@ -36,6 +39,59 @@ function setup(extra = {}, scale = 1) {
   const control = new PanoramaOrbitControl(canvas);
   control.update(doc);
   return { control, canvas, doc, calls };
+}
+
+for (const release of ["pointerup", "pointercancel", "lostpointercapture"]) {
+  test(`held orbit blocks history, generation and document changes until ${release} commits once`, async () => {
+    const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+    const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension("))
+      + "\nUniCanvasWidget.prototype", { trimPanoramaHistory, HISTORY_LIMIT: 20, clearTimeout });
+    const { control, canvas, doc, calls } = setup();
+    let runs = 0;
+    const entry = { kind: "panoramaCamera", before: { yaw: -10 }, after: { yaw: 0 } };
+    const w = Object.assign(Object.create(prototype), {
+      panorama: doc, panoramaOrbit: control, tool: "move", layers: [], undoStack: [entry], redoStack: [entry],
+      undoBtn: {}, redoBtn: {}, drawBtn: {}, _documentRevision: 4, _importRevision: 7,
+      setStatus() {}, requestRender() {}, syncLightStateToWidget() {}, scheduleFullSync() {}, syncInteractionLock() {},
+      captureGenerationSettings: () => ({}), runGeneration: async () => { runs++; },
+      applyHistoryEntry(value, direction) { Object.assign(doc.settings, direction === "undo" ? value.before : value.after); },
+      promptInWidget() { assert.fail("An active orbit cannot open the canvas naming dialog"); },
+      confirmInWidget() { assert.fail("An active orbit cannot open document confirmation"); },
+    });
+    doc.widget = w;
+    doc.beginCamera = () => { calls.push("begin"); doc.cameraStart = { yaw: 0, pitch: 0, roll: 0, fov: 90 }; return true; };
+    doc.commit = doc.project = doc.flushCamera = () => {};
+    doc.endCamera = () => { calls.push("end"); PanoramaDocument.prototype.endCamera.call(doc); };
+    canvas.fire("pointerdown", canvas.point(0, 0));
+    canvas.fire("pointermove", canvas.point(.2, -.1));
+    const held = { ...doc.settings };
+    w.undo(); w.redo();
+    assert.deepEqual(doc.settings, held, "history cannot override the live orbit camera");
+    assert.equal(w.undoStack.length, 1); assert.equal(w.redoStack.length, 1);
+    assert.equal(w.undoBtn.disabled, true); assert.equal(w.redoBtn.disabled, true);
+    await w.draw();
+    assert.equal(runs, 0); assert.equal(w._documentRevision, 4);
+    await assert.rejects(w.preparePanoramaForQueue(), /Finish the UniCanvas edit/);
+    assert.equal(await createCanvasDocument(w), false);
+    assert.equal(await openCanvasDocument(w, { canvas_id: "other", state_id: "other" }), false);
+    assert.equal(await deleteCanvasDocument(w, { canvas_id: "other", state_id: "other" }), false);
+    assert.equal(calls.includes("end"), false, "a refused operation leaves the gesture active");
+    canvas.fire("pointermove", canvas.point(.4, -.2));
+    assert.ok(Math.abs(doc.settings.yaw + 56) < 1e-8, "the newest held camera remains visible");
+    const completed = { ...doc.settings };
+    canvas.fire(release); canvas.fire("pointerup");
+    assert.equal(control.gesture, null); assert.equal(canvas.captured.size, 0);
+    assert.equal(calls.filter(value => value === "end").length, 1);
+    assert.equal(w.undoStack.length, 2); assert.equal(w.redoStack.length, 0);
+    assert.equal(w.undoBtn.disabled, false);
+    assert.deepEqual(doc.settings, completed, "release preserves the last preview camera");
+    await w.draw(); assert.equal(runs, 1); assert.equal(w.editingBlocked, false);
+    canvas.fire("pointermove", canvas.point(.8, -.4));
+    assert.deepEqual(doc.settings, completed, "movement after generation cannot revive the completed drag");
+    w.undo(); assert.equal(doc.settings.yaw, 0);
+    w.redo(); assert.equal(doc.settings.yaw, completed.yaw);
+    control.dispose();
+  });
 }
 
 test("sphere drag updates both axes and visual orientation before release", () => {

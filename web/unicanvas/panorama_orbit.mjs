@@ -154,6 +154,7 @@ export class PanoramaOrbitControl {
     if (!this.document.beginCamera()) return false;
     this.settings = { ...(this.document.pendingCamera || this.document.settings) };
     this.gesture = { kind };
+    this.document.widget?.updateHistoryButtons?.();
     return true;
   }
 
@@ -216,6 +217,7 @@ export class PanoramaOrbitControl {
     clearTimeout(this.timer); this.timer = null;
     const pointerId = this.gesture?.pointerId;
     this.gesture = null;
+    this.document?.widget?.updateHistoryButtons?.();
     if (pointerId !== undefined && this.canvas.hasPointerCapture(pointerId)) this.canvas.releasePointerCapture(pointerId);
     this.canvas.style.cursor = "grab";
   }

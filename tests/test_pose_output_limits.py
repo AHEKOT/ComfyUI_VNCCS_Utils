@@ -46,6 +46,22 @@ POSE_STUDIO = _load_pose_studio_module()
 
 
 class PoseOutputLimitTests(unittest.TestCase):
+    def test_pose_image_changes_invalidate_cache_for_every_pixel_and_dimension(self):
+        def changed(array):
+            tensor = types.SimpleNamespace(numpy=lambda: array)
+            tensor.detach = lambda: tensor
+            tensor.cpu = lambda: tensor
+            return POSE_STUDIO.VNCCS_PoseStudio.IS_CHANGED(pose_image=tensor)
+
+        image = POSE_STUDIO.np.zeros((1, 64, 64, 3), dtype=POSE_STUDIO.np.float32)
+        original = changed(image)
+        self.assertEqual(changed(image.copy()), original)
+        edited = image.copy()
+        edited.flat[1] = 1
+        self.assertNotEqual(changed(edited), original)
+        self.assertNotEqual(changed(image.reshape(1, 32, 128, 3)), original)
+        self.assertNotEqual(changed(image.astype(POSE_STUDIO.np.int32)), original)
+
     def test_pending_animation_tracks_are_available_before_cache_acknowledgement(self):
         animation = {"fps": 24, "tracks": {"head": {"keys": [{"frame": 0, "value": [0, 0, 0, 1]}]}}}
         data = {"animation": {"storage": "server_cache", "cacheId": "pending", "pendingAnimation": animation}}
@@ -101,6 +117,30 @@ class PoseOutputLimitTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Live capture timed out"):
                 node.generate(json.dumps({"captured_images": ["old"]}), unique_id="42")
         self.assertGreater(waits[0]["timeout"], 120)
+
+    def test_live_and_sam_sync_requests_target_the_executing_browser(self):
+        events = []
+        server = types.SimpleNamespace(PromptServer=types.SimpleNamespace(
+            instance=types.SimpleNamespace(client_id="executing-browser",
+                send_sync=lambda event, payload, sid=None: events.append((event, payload, sid)))))
+        sam = types.SimpleNamespace(
+            process_image_to_pose_json=lambda _image: '{"bones": {}}',
+            progress=types.SimpleNamespace(start_task=lambda *_args: None,
+                task_context=lambda *_args: contextlib.nullcontext(), update=lambda *_args: None))
+        node = POSE_STUDIO.VNCCS_PoseStudio()
+        node._wait_for_frontend_sync = lambda *_args, **_kwargs: {"sync_error": "widget unavailable"}
+        with patch.dict(sys.modules, {"server": server,
+                "vnccs_pose_limit_testpkg.vnccs_sam3d": sam}):
+            with self.assertRaisesRegex(RuntimeError, "widget unavailable"):
+                node.generate("{}", unique_id="91:703")
+            self.assertEqual(node._apply_pose_image_via_frontend([object()], "91:703"),
+                {"sync_error": "widget unavailable"})
+        self.assertEqual([event for event, _payload, _sid in events],
+            ["vnccs_req_pose_sync", "vnccs_apply_sam3d_pose"])
+        for _event, payload, sid in events:
+            self.assertEqual(sid, "executing-browser")
+            self.assertEqual(payload["node_id"], "91:703")
+            self.assertTrue(payload["sync_token"])
 
     def test_sparse_animation_export_preserves_imported_duration(self):
         fps = POSE_STUDIO._animation_frame_rate({"animation": {"fps": 600 / 7200}})

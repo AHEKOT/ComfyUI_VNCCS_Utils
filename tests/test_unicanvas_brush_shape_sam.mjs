@@ -18,6 +18,7 @@ class Element {
   setAttribute(name, value) { this.attributes[name] = value; }
   addEventListener(type, callback) { this.events[type] = callback; }
   querySelectorAll() { return []; }
+  querySelector() { return null; }
 }
 
 class Path {
@@ -62,6 +63,9 @@ class Canvas {
 
 const context = { console, clearTimeout, Path2D: Path, MASK_OVERLAY_COLOR: maskColor, HISTORY_LIMIT: 20,
   trimPanoramaHistory() {}, document: { createElement: () => new Canvas() }, window: { devicePixelRatio: 1 },
+  normalizeTransformMode: value => value || "free",
+  uid: () => "mask-layer",
+  serializePose: value => value,
 };
 const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", context);
 
@@ -90,6 +94,197 @@ function widget(values = {}) {
 }
 
 const event = (x = 2, y = 3) => ({ clientX: x, clientY: y, pointerId: 1, button: 0, pointerType: "mouse", preventDefault() {}, stopPropagation() {} });
+
+for (const release of ["pointerup", "pointercancel", "lostpointercapture"]) {
+  test(`a replaced document cannot receive the radial HUD snapshot on ${release}`, t => {
+    globalThis.HTMLInputElement = class {};
+    t.after(() => { delete globalThis.HTMLInputElement; });
+    const w = widget({ toolSettings: new Element(), settings: {}, stagingItems: [],
+      _documentRevision: 4, _stateLoadRevision: 6, setTool(tool) { this.tool = tool; },
+      updateSnapButton() {}, syncPromptControls() {}, updatePanoramaControls() {},
+    });
+    installUniCanvasInputTools(w);
+    w.canvas.events.pointerdown({ ...event(0, 0), button: 2 });
+    w.canvas.events.pointermove(event(10, -30));
+    assert.equal(w.brushSize, 30, "the first held value is visible before release");
+    const replacement = { id: "replacement", type: "raster", visible: true, canvas: new Canvas() };
+    w.layers = [replacement]; w.activeLayerId = replacement.id;
+    w._documentRevision++; w._stateLoadRevision++;
+    w.canvas.events[release]?.(event());
+    w.undo();
+    assert.equal(w.activeLayer.id, "replacement", "Undo after the old HUD release must retain the replacement document");
+    assert.equal(w.undoStack.length, 0); assert.equal(w.redoStack.length, 0);
+    assert.equal(w._vnccsInputTools.gesture, null);
+    w.canvas.events.pointermove(event(50, -60)); assert.equal(w.brushSize, 30);
+  });
+}
+
+test("radial HUD commits one brush settings command and Undo preserves a layer removed during the gesture", t => {
+  globalThis.HTMLInputElement = class {};
+  t.after(() => { delete globalThis.HTMLInputElement; });
+  const w = widget({ toolSettings: new Element(), settings: {}, stagingItems: [],
+    size: { width: 16, height: 16 }, _documentRevision: 4, _stateLoadRevision: 6 });
+  w.layers.push({ id: "keep", type: "raster", visible: true, canvas: new Canvas() });
+  installUniCanvasInputTools(w);
+  w.canvas.events.pointerdown({ ...event(0, 0), button: 2 });
+  w.canvas.events.pointermove(event(10, -30)); assert.equal(w.brushSize, 30);
+  w.deleteLayer("image");
+  const layers = w.layers, settings = w.settings, origin = w.origin;
+  w.canvas.events.pointermove(event(20, -50)); assert.equal(w.brushSize, 40);
+  w.canvas.events.pointerup(event()); w.canvas.events.pointerup(event());
+  assert.equal(w.undoStack.length, 2, "one delete and one completed brush settings command");
+  assert.equal(w.undoStack.at(-1).kind, "toolSettings");
+  assert.deepEqual(Object.keys(w.undoStack.at(-1).before).sort(), ["brushHardness", "brushSize", "fg", "opacity"]);
+  w.undo(); assert.equal(w.brushSize, 20);
+  assert.equal(w.layers, layers); assert.equal(w.settings, settings); assert.equal(w.origin, origin);
+  assert.equal(w.layers.some(layer => layer.id === "image"), false, "tool Undo cannot resurrect the deleted raster");
+  w.redo(); assert.equal(w.brushSize, 40); assert.equal(w.layers, layers);
+  assert.equal(w._documentRevision, 4, "brush settings history never rewrites document state");
+});
+
+test("Hardness slider Undo preserves results completed after the settings gesture", t => {
+  globalThis.HTMLInputElement = class {};
+  t.after(() => { delete globalThis.HTMLInputElement; });
+  let frames = 0;
+  const w = widget({ toolSettings: new Element(), settings: {}, stagingItems: [],
+    _generationLocked: true, _documentRevision: 4, _stateLoadRevision: 6,
+    setTool(tool) { this.tool = tool; }, updateSnapButton() {}, syncPromptControls() {}, updatePanoramaControls() {},
+    updateToolPreviewOverlay() { frames++; },
+  });
+  installUniCanvasInputTools(w);
+  const input = Object.assign(new HTMLInputElement(), { dataset: { control: "brushHardness" }, value: "0.5" });
+  w.toolSettings.events.input({ target: input });
+  assert.equal(w.brushHardness, .5);
+  input.value = "0.2";
+  w.toolSettings.events.input({ target: input });
+  assert.equal(w.brushHardness, .2);
+  assert.equal(frames, 2, "held slider values preview before release");
+  assert.equal(w.undoStack.length, 0, "the settings command is recorded after the gesture");
+  w.toolSettings.events.change?.({ target: input });
+  w.toolSettings.events.change?.({ target: input });
+  w._generationLocked = false;
+  w.stagingItems.push({ id: "completed result" });
+  w.settings.positive = "next generation prompt";
+  const layers = w.layers, staging = w.stagingItems, settings = w.settings;
+  w.undo();
+  assert.equal(w.brushHardness, 1);
+  assert.equal(w.stagingItems, staging, "tool Undo must preserve the completed generation result");
+  assert.equal(w.stagingItems.length, 1);
+  assert.equal(w.layers, layers, "tool Undo must preserve current document layers");
+  assert.equal(w.settings, settings); assert.equal(w.settings.positive, "next generation prompt");
+  assert.equal(w.redoStack.length, 1, "one completed settings gesture adds one command");
+  assert.equal(w.redoStack[0].kind, "toolSettings");
+  w.redo(); assert.equal(w.brushHardness, .2); assert.equal(w.stagingItems, staging);
+  assert.equal(w._documentRevision, 4);
+});
+
+for (const retire of ["document", "restore", "dispose", "unchanged"]) {
+  test(`Hardness slider rejects stale completion after ${retire}`, t => {
+    globalThis.HTMLInputElement = class {};
+    t.after(() => { delete globalThis.HTMLInputElement; });
+    const w = widget({ toolSettings: new Element(), _documentRevision: 4, _stateLoadRevision: 6 });
+    installUniCanvasInputTools(w);
+    const input = Object.assign(new HTMLInputElement(), { dataset: { control: "brushHardness" }, value: "0.5" });
+    w.toolSettings.events.input({ target: input });
+    if (retire === "document") w._documentRevision++;
+    if (retire === "restore") w._stateLoadRevision++;
+    if (retire === "dispose") w._disposed = true;
+    if (retire === "unchanged") {
+      input.value = "1";
+      w.toolSettings.events.input({ target: input });
+    }
+    w.toolSettings.events.change({ target: input });
+    assert.equal(w.undoStack.length, 0);
+    if (retire !== "dispose") {
+      input.value = "0.25";
+      w.toolSettings.events.input({ target: input });
+      w.toolSettings.events.change({ target: input });
+      assert.equal(w.undoStack.length, 1, "a later keyboard or pointer adjustment starts a fresh settings command");
+      w.undo(); assert.equal(w.brushHardness, retire === "unchanged" ? 1 : .5);
+      w.redo(); assert.equal(w.brushHardness, .25);
+    }
+  });
+}
+
+for (const retire of ["move", "dispose", "restore"]) {
+  test(`radial HUD rejects ${retire} after its document lineage ends`, t => {
+    globalThis.HTMLInputElement = class {};
+    t.after(() => { delete globalThis.HTMLInputElement; });
+    const w = widget({ toolSettings: new Element(), settings: {}, stagingItems: [], _documentRevision: 4 });
+    installUniCanvasInputTools(w);
+    w.canvas.events.pointerdown({ ...event(0, 0), button: 2 });
+    w.canvas.events.pointermove(event(10, -30)); assert.equal(w.brushSize, 30);
+    if (retire === "move") w._documentRevision++;
+    if (retire === "dispose") w._disposed = true;
+    if (retire === "restore") w._isRestoring = true;
+    w.canvas.events.pointermove(event(20, -50)); w.canvas.events.pointerup(event());
+    assert.equal(w.brushSize, 30); assert.equal(w.undoStack.length, 0);
+    assert.equal(w._vnccsInputTools.gesture, null);
+  });
+}
+
+for (const direction of ["undo", "redo"]) {
+  test(`${direction} cannot change pixels or history under a held brush gesture`, () => {
+    const previous = { kind: "layerPixels", layerId: "image", before: { pixels: [1] }, after: { pixels: [1, 2] } };
+    const w = widget({
+      createLayerPixelSnapshot: layer => ({ pixels: [...layer.canvas.pixels] }),
+      restoreLayerPixelSnapshot: (layer, snapshot) => { layer.canvas.pixels = [...snapshot.pixels]; },
+      scheduleDeferredCanvasCommit() {},
+    });
+    w.activeLayer.canvas.pixels = direction === "undo" ? [1, 2] : [1];
+    w[`${direction}Stack`] = [previous];
+    w.activeLayer.canvas.ctx.stroke = () => w.activeLayer.canvas.pixels.push(w.activeLayer.canvas.path.at(-1)[1]);
+    w.onPointerDown(event(3, 3));
+    const before = [...w.activeLayer.canvas.pixels];
+    const handleShortcut = vm.runInNewContext(modes.slice(modes.indexOf("export function handleUniCanvasShortcut("), modes.indexOf("\nfunction installUniCanvasShortcuts(")).replace("export ", "") + "\nhandleUniCanvasShortcut", {
+      isUniCanvasTextTarget: () => false, isUniCanvasModalOpen: () => false,
+      isUniCanvasCanvasFocused: (widget, e) => e.target === widget.canvas,
+      consumeUniCanvasShortcut: e => { e.preventDefault(); e.stopPropagation(); },
+    });
+    let consumed = false;
+    assert.equal(handleShortcut(w, { key: direction === "undo" ? "z" : "y", ctrlKey: true, target: w.canvas,
+      preventDefault() { consumed = true; }, stopPropagation() {} }), true);
+    assert.equal(consumed, true, "history keys must not reach ComfyUI graph history");
+    assert.deepEqual(w.activeLayer.canvas.pixels, before, "the held stroke keeps every visible pixel");
+    assert.equal(w[`${direction}Stack`].length, 1);
+    assert.equal(w.undoBtn.disabled, true); assert.equal(w.redoBtn.disabled, true);
+    w.onPointerMove(event(4, 3));
+    w.onPointerUp(event(4, 3));
+    const completed = [...before, 4];
+    assert.deepEqual(w.activeLayer.canvas.pixels, completed);
+    assert.equal(w.undoStack.length, direction === "undo" ? 2 : 1, "release adds one stroke command");
+    assert.equal(w.undoBtn.disabled, false);
+    w.undo();
+    assert.deepEqual(w.activeLayer.canvas.pixels, direction === "undo" ? [1, 2] : [1]);
+    w.redo();
+    assert.deepEqual(w.activeLayer.canvas.pixels, completed);
+    assert.equal(w.isPointerDown, false);
+  });
+}
+
+for (const pointerMode of ["pan", "zoom-drag", "idle"]) {
+  test(`${pointerMode} keeps history available during a non-mutating pointer gesture`, () => {
+    const entry = { kind: "layerPixels", layerId: "image", before: { pixels: "before" }, after: { pixels: "after" } };
+    const w = widget({ isPointerDown: true, pointerMode, undoStack: [entry] });
+    w.activeLayer.canvas.pixels = "after";
+    w.updateHistoryButtons();
+    assert.equal(w.undoBtn.disabled, false);
+    w.undo(); assert.equal(w.activeLayer.canvas.pixels, "before");
+    w.redo(); assert.equal(w.activeLayer.canvas.pixels, "after");
+  });
+}
+
+test("pointer cancellation commits the held brush once and unlocks history", () => {
+  const w = widget({ scheduleDeferredCanvasCommit() {} });
+  w.onPointerDown(event(3, 3));
+  assert.equal(w.undoBtn.disabled, true);
+  w.onPointerUp({ ...event(3, 3), type: "pointercancel" });
+  assert.equal(w.isPointerDown, false);
+  assert.equal(w.undoStack.length, 1);
+  assert.equal(w.undoBtn.disabled, false);
+  w.onPointerUp(event(3, 3));
+  assert.equal(w.undoStack.length, 1);
+});
 
 test("Mask Brush is absent from the toolbar; old tool selections and M choose Brush", () => {
   const toolbar = source.slice(source.indexOf('      ["move", "Move layer"]'), source.indexOf("].forEach(([tool, title])"));

@@ -295,9 +295,10 @@ class VNCCS_PoseStudio:
             return change_key
         try:
             tensor = pose_image.detach().cpu()
-            arr = tensor.numpy()
-            sample = arr.flat[::max(1, arr.size // 1000)]
-            digest = hashlib.sha256(bytes(sample)).hexdigest()
+            arr = np.ascontiguousarray(tensor.numpy())
+            image_hash = hashlib.sha256(f"{arr.shape}|{arr.dtype}".encode("utf-8"))
+            image_hash.update(memoryview(arr))
+            digest = image_hash.hexdigest()
             return f"{change_key}|pose_image:{digest}"
         except Exception:
             return f"{change_key}|pose_image:{id(pose_image)}"
@@ -373,7 +374,10 @@ class VNCCS_PoseStudio:
             }
             if image_size is not None:
                 event_payload["image_width"], event_payload["image_height"] = image_size
-            PromptServer.instance.send_sync("vnccs_apply_sam3d_pose", event_payload)
+            PromptServer.instance.send_sync(
+                "vnccs_apply_sam3d_pose", event_payload,
+                getattr(PromptServer.instance, "client_id", None),
+            )
             synced = self._wait_for_frontend_sync(
                 unique_id,
                 start_time,
@@ -454,7 +458,7 @@ class VNCCS_PoseStudio:
                         "node_id": unique_id,
                         "camera_prompt": camera_prompt or "",
                         "sync_token": sync_token,
-                    })
+                    }, getattr(PromptServer.instance, "client_id", None))
                     # Frontend scene readiness allows 120 seconds before capture.
                     sync_timeout = 150.0
                     if export_settings.get("editor_mode", export_settings.get("content_mode")) == "animation":
@@ -473,7 +477,10 @@ class VNCCS_PoseStudio:
                         else:
                             data = _hydrate_cached_pose_animation(synced)
                     else:
-                        sync_error_message = "Live capture timed out; old captures cannot be used."
+                        sync_error_message = (
+                            "Live capture timed out; old captures cannot be used. "
+                            "Keep the executing workflow open in the browser and hard-reload ComfyUI before retrying."
+                        )
                 except Exception as e:
                     sync_error_message = str(e)
                 if sync_error_message:

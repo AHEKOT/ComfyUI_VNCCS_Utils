@@ -1,4 +1,4 @@
-import { defaultState, normalizeState, mergeText, readEditor, removeBlock, promptId, randomSeed, EditHistory, CONDITION_OPERATORS, MAX_PROMPT_OUTPUTS, hasCycle } from "./state.mjs";
+import { defaultState, normalizeState, mergeText, readEditor, removeBlock, promptId, randomSeed, EditHistory, CONDITION_OPERATORS, MAX_PROMPT_OUTPUTS, MAX_STATE_CHARS, hasCycle, templateText } from "./state.mjs";
 import { ensureStyles } from "./styles.mjs";
 import { installCustomSelects } from "../shared/custom_select.mjs";
 import { DocumentStorage } from "./storage.mjs";
@@ -9,6 +9,7 @@ import { promptSnapshot, promptSignature, openPromptState, mergeCategories } fro
 import { LibraryActions } from "./library_actions.mjs";
 
 const CARD_SELECTOR = "[data-block-id], [data-condition], [data-multi-prompt]";
+const PROMPT_CLIPBOARD = "application/x-vnccs-prompt-parts";
 
 function libraryCardKey(block, legacy = false) {
     const mode = block.mode ?? (/^\s*\{\s*@/.test(block.text) ? "cycle" : "random");
@@ -102,7 +103,7 @@ export class PromptDesignerWidget {
         this.main = element("div", "vnccs-pd-doc");
         this.main.id = `vnccs-pd-main-${promptId()}`;
         this.main.setAttribute("role", "tabpanel");
-        this.main.append(element("div", "vnccs-pd-hint", "Main prompt · Double-click a block or press Enter to open its tab"));
+        this.main.append(element("div", "vnccs-pd-hint", "Main prompt · Double-click a block or press Enter for instance settings"));
         this.editor = element("div", "vnccs-pd-editor");
         this.editor.contentEditable = "true";
         this.editor.spellcheck = false;
@@ -166,9 +167,6 @@ export class PromptDesignerWidget {
             this.on(editor, "pointerup", () => {
                 const selection = window.getSelection();
                 if (selection?.rangeCount && editor.contains(selection.anchorNode)) editor.savedCaret = selection.getRangeAt(0).cloneRange();
-            });
-            this.on(editor, "paste", event => {
-                event.preventDefault(); this.insertNode(document.createTextNode(event.clipboardData.getData("text/plain")), editor);
             });
             this.on(editor, "beforeinput", event => {
                 if (["insertParagraph", "insertLineBreak"].includes(event.inputType)) {
@@ -265,6 +263,19 @@ export class PromptDesignerWidget {
             field("Category", this.blockCategory), field("Card color", this.blockColor),
             this.button("Use category color", () => this.setBlockPreference("color", undefined)),
             this.categoryColorField, field("Search variants", this.blockSearch));
+        this.instancePanel = element("div", "vnccs-pd-card-panel"); this.instancePanel.hidden = true;
+        this.instanceName = element("div", "vnccs-pd-heading");
+        this.instanceRandom = element("input"); this.instanceRandom.type = "checkbox";
+        const randomInstance = field("Randomize this instance", this.instanceRandom);
+        randomInstance.className = "vnccs-pd-checkbox";
+        this.instanceReturn = this.button("Done", () => this.closeBlockInstance());
+        this.instancePanel.append(this.instanceName, randomInstance,
+            element("div", "vnccs-pd-hint", "Copies share the same result by default. Enable to give this instance an independent random draw."),
+            this.button("Edit shared block", () => {
+                const id = this.editingBlockInstance?.chip.dataset.blockId;
+                if (id) this.openBlock(id);
+            }), this.instanceReturn);
+        this.on(this.instanceRandom, "input", () => this.setBlockInstanceRandom());
         this.promptPanel = element("div", "vnccs-pd-card-panel"); this.promptPanel.hidden = true;
         this.promptName = element("input"); this.promptName.maxLength = 128; this.promptName.placeholder = "Prompt name";
         this.promptCategory = element("select");
@@ -275,7 +286,7 @@ export class PromptDesignerWidget {
         this.promptDelete.hidden = true;
         this.promptPanel.append(field("Name", this.promptName), field("Category", this.promptCategory), field("Prompt color", this.promptColor),
             this.promptSave, this.promptSaveCopy, this.promptDelete);
-        this.inspector.append(inspectorHead, this.cardPanel, this.conditionPanel, this.multiPanel, this.promptPanel);
+        this.inspector.append(inspectorHead, this.cardPanel, this.instancePanel, this.conditionPanel, this.multiPanel, this.promptPanel);
         workspace.append(library, editing, this.inspector);
         const preview = element("section", "vnccs-pd-preview");
         const previewHead = element("div", "vnccs-pd-preview-head");
@@ -320,7 +331,7 @@ export class PromptDesignerWidget {
         footer.append(seedLabel, afterLabel, shuffle);
         this.container.append(workspace, preview, footer);
         this.on(this.list, "scroll", () => this.savePanelScroll(this.list));
-        for (const panel of [this.cardPanel, this.conditionPanel, this.multiPanel, this.promptPanel]) {
+        for (const panel of [this.cardPanel, this.instancePanel, this.conditionPanel, this.multiPanel, this.promptPanel]) {
             this.on(panel, "scroll", () => {
                 if (!panel.hidden && !this.inspector.hidden) this.savePanelScroll(panel, this.inspectorScrollKey);
             });
@@ -368,10 +379,6 @@ export class PromptDesignerWidget {
             if (event.key === "Enter") { event.preventDefault(); this.addCategory(); }
         });
         this.installPromptInteractions(this.editor);
-        this.on(this.editor, "paste", event => {
-            event.preventDefault();
-            this.insertNode(document.createTextNode(event.clipboardData.getData("text/plain")));
-        });
         this.on(this.editor, "beforeinput", event => {
             if (event.inputType === "insertParagraph" || event.inputType === "insertLineBreak") {
                 event.preventDefault();
@@ -405,7 +412,7 @@ export class PromptDesignerWidget {
                 if (event.key === "Enter") this.openSelectedCard();
                 else this.deleteSelectedCard();
             } else if (event.target.dataset?.blockId && event.key === "Enter") {
-                event.preventDefault(); this.openBlock(event.target.dataset.blockId);
+                event.preventDefault(); this.editBlockInstance(event.target, event.target.closest(".vnccs-pd-editor"));
             }
         });
         this.on(this.container, "paste", event => event.stopPropagation());
@@ -452,7 +459,10 @@ export class PromptDesignerWidget {
         const card = this.selectedCard;
         if (card?.dataset.multiPrompt) this.editMultiPrompt(card);
         else if (card?.dataset.condition) this.editCondition(card);
-        else if (card?.dataset.blockId) this.openBlock(card.dataset.blockId);
+        else if (card?.dataset.blockId) {
+            if (this.selectedEditor?.contentEditable === "true") this.editBlockInstance(card, this.selectedEditor);
+            else this.openBlock(card.dataset.blockId);
+        }
     }
 
     savePromptEditor(editor) {
@@ -519,9 +529,65 @@ export class PromptDesignerWidget {
         });
     }
 
+    copyPrompt(event, editor, cut = false) {
+        if (event.target.closest?.("input, textarea, select")) return;
+        const selection = window.getSelection();
+        const card = this.selectedEditor === editor && editor.contains(this.selectedCard) ? this.selectedCard : null;
+        let range;
+        if (card) { range = document.createRange(); range.selectNode(card); }
+        else if (selection?.rangeCount && !selection.isCollapsed && editor.contains(selection.anchorNode) && editor.contains(selection.focusNode)) {
+            range = selection.getRangeAt(0).cloneRange();
+            for (const boundary of ["start", "end"]) {
+                const node = range[`${boundary}Container`];
+                let atomic = (node.nodeType === 1 ? node : node.parentElement)?.closest(CARD_SELECTOR);
+                if (!atomic || !editor.contains(atomic)) continue;
+                while (atomic.parentElement?.closest(CARD_SELECTOR) && editor.contains(atomic.parentElement.closest(CARD_SELECTOR))) {
+                    atomic = atomic.parentElement.closest(CARD_SELECTOR);
+                }
+                if (boundary === "start") range.setStartBefore(atomic); else range.setEndAfter(atomic);
+            }
+        }
+        if (!range || !event.clipboardData) return;
+        event.preventDefault(); event.stopPropagation();
+        try {
+            const parts = card ? readEditor({ childNodes: [card] }) : readEditor(range.cloneContents());
+            const snapshot = promptSnapshot({ ...this.state, parts });
+            event.clipboardData.setData(PROMPT_CLIPBOARD, JSON.stringify(snapshot));
+            event.clipboardData.setData("text/plain", templateText(snapshot));
+            if (cut) {
+                this.clearCardSelection(); range.deleteContents(); range.collapse(true);
+                this.selectRange(range);
+                if (editor === this.editor) this.caret = range.cloneRange(); else editor.savedCaret = range.cloneRange();
+                this.savePromptEditor(editor);
+            }
+        } catch (error) { this.setStatus(error.message, true); }
+    }
+
+    pastePrompt(event, editor) {
+        if (event.target.closest?.("input, textarea, select")) return;
+        event.preventDefault(); event.stopPropagation();
+        const raw = event.clipboardData?.getData(PROMPT_CLIPBOARD);
+        if (!raw) { this.insertNode(document.createTextNode(event.clipboardData?.getData("text/plain") ?? ""), editor); return; }
+        try {
+            if (raw.length > MAX_STATE_CHARS) throw new Error("The copied prompt is too large.");
+            const snapshot = promptSnapshot(normalizeState(JSON.parse(raw)));
+            if (editor !== this.editor && snapshot.parts.some(part => part.condition || part.multiPrompt)) {
+                throw new Error("This field accepts text and blocks only.");
+            }
+            const imported = openPromptState(this.state, snapshot);
+            this.state.blocks = imported.blocks; this.state.categories = imported.categories;
+            const fragment = document.createDocumentFragment();
+            fragment.append(...imported.parts.map(part => this.partNode(part)));
+            this.insertNode(fragment, editor);
+            this.renderLibrary();
+        } catch (error) { this.setStatus(`Cannot paste prompt cards: ${error.message}`, true); }
+    }
+
     installPromptInteractions(editor) {
         this.syncEditorLineEnd(editor);
         this.on(editor, "input", () => this.syncEditorLineEnd(editor));
+        for (const type of ["copy", "cut"]) this.on(editor, type, event => this.copyPrompt(event, editor, type === "cut"));
+        this.on(editor, "paste", event => this.pastePrompt(event, editor));
         const cardAt = target => {
             const card = (target.nodeType === 1 ? target : target.parentElement)?.closest(CARD_SELECTOR);
             return card && editor.contains(card) ? card : null;
@@ -638,7 +704,8 @@ export class PromptDesignerWidget {
                 last = node.lastChild;
             } else {
                 const id = event.dataTransfer.getData("application/x-vnccs-prompt-block");
-                node = this.state.blocks.some(block => block.id === id) ? this.chip(id)
+                const copied = this.promptDrag?.card ? readEditor({ childNodes: [this.promptDrag.card] })[0] : {};
+                node = this.state.blocks.some(block => block.id === id) ? this.chip(id, copied)
                     : document.createTextNode(event.dataTransfer.getData("text/plain"));
                 last = node;
             }
@@ -1080,6 +1147,13 @@ export class PromptDesignerWidget {
 
     invalidateRestore() {
         this.libraryActions?.close(false);
+        this.revision++;
+        this.blockRevision = (this.blockRevision ?? 0) + 1;
+        this.request?.abort();
+        this.blockRequest?.abort();
+        if (this.previewFrame) cancelAnimationFrame(this.previewFrame);
+        this.previewFrame = null;
+        clearTimeout(this.blockTimer);
         this.restoreRevision = (this.restoreRevision ?? 0) + 1;
         for (const key of ["savedPromptLoadRevision", "promptLibraryRevision", "diskLibraryRevision", "bundledLibraryRevision"]) {
             this[key] = (this[key] ?? 0) + 1;
@@ -1216,10 +1290,9 @@ export class PromptDesignerWidget {
         this.closeMultiPrompt(false);
         this.conditionSuggestion.hidden = true;
         const scrollTop = this.editor.scrollTop;
-        this.editor.replaceChildren(...this.state.parts.map(part => "text" in part
-            ? document.createTextNode(part.text) : part.condition ? this.conditionChip(part.condition)
-                : part.multiPrompt ? this.multiPromptChip(part.multiPrompt) : this.chip(part.blockId)));
+        this.editor.replaceChildren(...this.state.parts.map(part => this.partNode(part)));
         this.syncEditorLineEnd(this.editor);
+        this.refreshInstanceLabels();
         this.editor.scrollTop = scrollTop;
         this.caret = null;
         this.seed.value = this.state.seed;
@@ -1229,23 +1302,94 @@ export class PromptDesignerWidget {
         this.rendering = false;
     }
 
-    chip(id) {
+    partNode(part) {
+        return "text" in part ? document.createTextNode(part.text) : part.condition ? this.conditionChip(part.condition)
+            : part.multiPrompt ? this.multiPromptChip(part.multiPrompt) : this.chip(part.blockId, part);
+    }
+
+    chip(id, part = {}) {
         const block = this.state.blocks.find(item => item.id === id);
         const chip = element("span", "vnccs-pd-chip", block.name || "Untitled block");
         chip.contentEditable = "false";
         chip.draggable = true;
         chip.dataset.blockId = id;
+        if (part.random) chip.dataset.blockRandom = "true";
         chip.tabIndex = 0;
         chip.setAttribute("role", "button");
         chip.setAttribute("aria-label", `Edit block: ${block.name}`);
-        chip.title = `Click to select. Double-click or press Enter to edit ${block.name}. Drag to move.`;
+        chip.title = "Click to select. Double-click or press Enter for instance settings. Drag to move.";
         chip.style.setProperty("--pd-chip-color", this.cardColor(block));
         return chip;
     }
 
+    refreshInstanceLabels() {
+        const counts = new Map();
+        const visit = (parts, editors = []) => {
+            const lists = editors.map(editor => [...editor.querySelectorAll(CARD_SELECTOR)].filter(card => {
+                const outer = card.parentElement?.closest(CARD_SELECTOR);
+                return !outer || !editor.contains(outer);
+            }));
+            for (const part of parts) {
+                if ("text" in part) continue;
+                const cards = lists.map(list => list.shift()).filter(Boolean);
+                if (part.blockId) {
+                    const number = part.random ? (counts.get(part.blockId) ?? 1) + 1 : 1;
+                    if (part.random) counts.set(part.blockId, number);
+                    const block = this.state.blocks.find(block => block.id === part.blockId);
+                    for (const card of cards) {
+                        card.dataset.blockInstance = String(number);
+                        const label = `${block?.name || "Untitled block"} ${number}`;
+                        if (card.textContent !== label) card.textContent = label;
+                        card.setAttribute("aria-label", `Instance settings: ${card.textContent}`);
+                        card.title = `Double-click or press Enter for instance settings. ${part.random ? "Independent random draw." : "Shares the block result."} Drag to move.`;
+                    }
+                } else if (part.multiPrompt) {
+                    part.multiPrompt.variants.forEach((variant, index) => visit(variant, cards.includes(this.editingMultiPrompt)
+                        ? [this.multiRows.children[index]?.querySelector(".vnccs-pd-variant-editor")].filter(Boolean) : []));
+                } else if (part.condition) {
+                    for (const [branch, control] of [["then", "output"], ["else", "elseOutput"]]) {
+                        const value = part.condition[branch];
+                        if (!value) continue;
+                        const outputs = cards.map(card => card.conditionControls?.[control]).filter(Boolean);
+                        if (cards.includes(this.editingCondition)) outputs.push(branch === "then" ? this.conditionOutput : this.conditionElseOutput);
+                        visit(value.parts ?? [value], outputs);
+                    }
+                }
+            }
+        };
+        visit(this.state.parts, [this.editor]);
+        if (this.editingBlockInstance) this.instanceName.textContent = this.editingBlockInstance.chip.textContent;
+    }
+
+    editBlockInstance(chip, editor) {
+        if (!editor || editor.contentEditable !== "true" || !editor.contains(chip)) return;
+        this.instanceName.textContent = chip.textContent;
+        this.instanceRandom.checked = chip.dataset.blockRandom === "true";
+        this.instanceReturn.textContent = this.editingMultiPrompt ? "Back to multi-prompt" : this.editingCondition ? "Back to condition" : "Done";
+        this.showInspector(this.instancePanel, chip, "Inspector · Block instance");
+        this.editingBlockInstance = { chip, editor };
+    }
+
+    setBlockInstanceRandom() {
+        const target = this.editingBlockInstance;
+        if (!target || !target.editor.contains(target.chip)) return;
+        if (this.instanceRandom.checked) target.chip.dataset.blockRandom = "true";
+        else delete target.chip.dataset.blockRandom;
+        this.savePromptEditor(target.editor);
+    }
+
+    closeBlockInstance() {
+        const target = this.editingBlockInstance;
+        this.hideInspector();
+        if (this.editingMultiPrompt) this.editMultiPrompt(this.editingMultiPrompt);
+        else if (this.editingCondition) this.editCondition(this.editingCondition);
+        else target?.chip.focus({ preventScroll: true });
+    }
+
     showInspector(panel, key, title) {
         if (!this.inspector) return;
-        const scrollKey = typeof key === "string" ? `card:${key}` : panel === this.conditionPanel
+        const scrollKey = typeof key === "string" ? `card:${key}` : panel === this.instancePanel
+            ? `instance:${key.dataset.blockId}:${key.dataset.blockInstance}` : panel === this.conditionPanel
             ? `condition:${[...this.editor.querySelectorAll("[data-condition]")].indexOf(key)}`
             : `multi:${[...this.editor.querySelectorAll("[data-multi-prompt]")].indexOf(key)}`;
         const changed = this.inspectorKey !== key || this.inspectorPanel !== panel;
@@ -1255,7 +1399,7 @@ export class PromptDesignerWidget {
             this.inspectorPanel = panel;
         }
         this.inspectorScrollKey = scrollKey;
-        for (const item of [this.cardPanel, this.conditionPanel, this.multiPanel, this.promptPanel]) item.hidden = item !== panel;
+        for (const item of [this.cardPanel, this.instancePanel, this.conditionPanel, this.multiPanel, this.promptPanel]) item.hidden = item !== panel;
         this.inspectorTitle.textContent = title;
         this.inspector.hidden = false;
         this.workspace.classList.add("has-inspector");
@@ -1273,6 +1417,7 @@ export class PromptDesignerWidget {
             this.inspectorScroll ??= new Map();
             this.inspectorScroll.set(this.inspectorKey, { top: this.inspectorPanel.scrollTop, left: this.inspectorPanel.scrollLeft });
             this.inspectorPanel.hidden = true;
+            if (this.inspectorPanel === this.instancePanel) this.editingBlockInstance = null;
         }
         this.inspectorPanel = null;
         this.inspectorKey = null;
@@ -1334,9 +1479,8 @@ export class PromptDesignerWidget {
             ...this.conditionSource.querySelectorAll("[data-block-id]"), ...this.conditionOutput.querySelectorAll("[data-block-id]"),
             ...this.conditionElseOutput.querySelectorAll("[data-block-id]"), ...this.conditionExtraRows.querySelectorAll("[data-block-id]")]) {
             if (chip.dataset.blockId !== block.id) continue;
-            chip.textContent = block.name || "Untitled block";
-            chip.title = `Click to select. Double-click or press Enter to edit ${block.name}. Drag to move.`;
-            chip.setAttribute("aria-label", `Edit block: ${block.name}`);
+            chip.textContent = `${block.name || "Untitled block"}${chip.dataset.blockInstance ? ` ${chip.dataset.blockInstance}` : ""}`;
+            chip.setAttribute("aria-label", chip.dataset.blockInstance ? `Instance settings: ${chip.textContent}` : `Edit block: ${block.name}`);
             chip.style.setProperty("--pd-chip-color", this.cardColor(block));
         }
         for (const chip of this.editor.querySelectorAll("[data-condition]")) this.labelCondition(chip, JSON.parse(chip.dataset.condition));
@@ -1376,9 +1520,6 @@ export class PromptDesignerWidget {
             editor.setAttribute("aria-label", `${label} text and blocks`);
             this.installPromptInteractions(editor);
             this.on(editor, "input", () => { this.clearCardSelection(); this.saveInlineCondition(chip); });
-            this.on(editor, "paste", event => {
-                event.preventDefault(); this.insertNode(document.createTextNode(event.clipboardData.getData("text/plain")), editor);
-            });
             this.on(editor, "beforeinput", event => {
                 if (["insertParagraph", "insertLineBreak"].includes(event.inputType)) {
                     event.preventDefault(); this.insertNode(document.createTextNode("\n"), editor);
@@ -1441,7 +1582,7 @@ export class PromptDesignerWidget {
         for (const [editor, branch] of [[output, condition.then], [elseOutput, condition.else ?? { text: "" }]]) {
             const parts = mergeText(branch.parts ?? [branch]);
             if (JSON.stringify(readEditor(editor)) !== JSON.stringify(parts)) {
-                editor.replaceChildren(...parts.map(part => "text" in part ? document.createTextNode(part.text) : this.chip(part.blockId)));
+                editor.replaceChildren(...parts.map(part => this.partNode(part)));
                 this.syncEditorLineEnd(editor);
                 editor.savedCaret = null;
             }
@@ -1484,7 +1625,7 @@ export class PromptDesignerWidget {
             this.conditionOperator.value = condition.operator; this.conditionValue.value = condition.value;
             this.syncConditionClauses(this.conditionExtraRows, clauses);
             for (const [editor, inlineEditor] of [[this.conditionOutput, output], [this.conditionElseOutput, elseOutput]]) {
-                editor.replaceChildren(...readEditor(inlineEditor).map(part => "text" in part ? document.createTextNode(part.text) : this.chip(part.blockId)));
+                editor.replaceChildren(...readEditor(inlineEditor).map(part => this.partNode(part)));
                 this.syncEditorLineEnd(editor);
                 editor.savedCaret = null;
             }
@@ -1601,13 +1742,13 @@ export class PromptDesignerWidget {
         this.conditionValue.value = condition.value;
         this.conditionExtraRows.replaceChildren(...(condition.clauses ?? []).map(clause => this.conditionClauseRow(clause)));
         for (const [editor, branch] of [[this.conditionOutput, condition.then], [this.conditionElseOutput, condition.else ?? { text: "" }]]) {
-            editor.replaceChildren(...(branch.parts ?? [branch]).map(part => "text" in part
-                ? document.createTextNode(part.text) : this.chip(part.blockId)));
+            editor.replaceChildren(...(branch.parts ?? [branch]).map(part => this.partNode(part)));
             this.syncEditorLineEnd(editor);
             editor.savedCaret = null;
         }
         this.conditionPanel.hidden = false;
         this.showInspector(this.conditionPanel, chip, "Inspector · If");
+        this.refreshInstanceLabels();
         this.conditionSuggestion.hidden = true;
         this.conditionValue.focus({ preventScroll: true });
     }
@@ -1687,7 +1828,7 @@ export class PromptDesignerWidget {
             editor.contentEditable = "true"; editor.spellcheck = false;
             editor.setAttribute("role", "textbox"); editor.setAttribute("aria-multiline", "true");
             editor.setAttribute("aria-label", `Text and blocks for prompt${index + 1}`);
-            editor.append(...variant.map(part => "text" in part ? document.createTextNode(part.text) : this.chip(part.blockId)));
+            editor.append(...variant.map(part => this.partNode(part)));
             const remove = this.button("Remove variant", () => this.removeMultiVariant(index));
             remove.className = "vnccs-pd-multi-remove";
             remove.disabled = multi.variants.length <= 2;
@@ -1700,9 +1841,6 @@ export class PromptDesignerWidget {
                 if (selection?.rangeCount && editor.contains(selection.anchorNode)) editor.savedCaret = selection.getRangeAt(0).cloneRange();
             };
             this.on(editor, "keyup", remember); this.on(editor, "pointerup", remember);
-            this.on(editor, "paste", event => {
-                event.preventDefault(); this.insertNode(document.createTextNode(event.clipboardData.getData("text/plain")), editor);
-            });
             this.on(editor, "beforeinput", event => {
                 if (["insertParagraph", "insertLineBreak"].includes(event.inputType)) {
                     event.preventDefault(); this.insertNode(document.createTextNode("\n"), editor);
@@ -1713,6 +1851,7 @@ export class PromptDesignerWidget {
             this.installPromptInteractions(editor);
         });
         while (this.multiRows.children.length > multi.variants.length) this.multiRows.lastElementChild.remove();
+        this.refreshInstanceLabels();
         this.multiPanel.scrollTop = top;
         this.multiPanel.scrollLeft = left;
     }
@@ -1993,7 +2132,7 @@ export class PromptDesignerWidget {
         this.blockRequest?.abort();
         this.blockRevision++;
         const block = this.activeBlock();
-        if (!block || this.disposed) return;
+        if (!block || this.disposed || this.restoring || this.container.inert) return;
         if (this.variants.dataset.blockId !== block.id) {
             this.variants.replaceChildren();
             this.variants.dataset.blockId = block.id;
@@ -2086,7 +2225,7 @@ export class PromptDesignerWidget {
                     const current = blockRows(active.text);
                     let source, ranges;
                     if (current.wrapped) {
-                        const end = active.text.lastIndexOf("}");
+                        const end = current.rows.at(-1).choiceEnd;
                         source = active.text.slice(0, end) + "|" + value + active.text.slice(end);
                         ranges = [...this.blockEditRanges, { start: end + 1, end: end + 1 + value.length, text: value }];
                     } else {
@@ -2097,6 +2236,10 @@ export class PromptDesignerWidget {
                             { start, end: start + value.length, text: value }];
                     }
                     if (!this.saveBlockSource(source)) return;
+                    if (!event.isComposing && blockRows(source).rows.length !== ranges.length) {
+                        this.refreshVariantRows(content, ranges.at(-1).start);
+                        return;
+                    }
                     draft = false; delete content.dataset.placeholder;
                     this.blockEditRanges = ranges;
                     this.blockVariants = { variants: ranges.map(item => item.text) };
@@ -2124,9 +2267,10 @@ export class PromptDesignerWidget {
                 }
                 const range = this.blockEditRanges[index];
                 const source = active.text.slice(0, range.start) + value + active.text.slice(range.end);
-                const changed = blockRows(source).rows.length !== this.blockEditRanges.length;
+                const changed = !event.isComposing && blockRows(source).rows.length !== this.blockEditRanges.length;
                 const delta = value.length - (range.end - range.start);
-                if (this.saveBlockSource(source, changed) && !changed) {
+                if (this.saveBlockSource(source)) {
+                    if (changed) { this.refreshVariantRows(content, range.start); return; }
                     this.blockEditRanges = this.blockEditRanges.map((item, position) => position > index
                         ? { ...item, start: item.start + delta, end: item.end + delta }
                         : position === index ? { ...item, end: item.end + delta, text: value } : item);
@@ -2155,6 +2299,34 @@ export class PromptDesignerWidget {
         this.blockStatus.textContent = query ? rows.length ? `${rows.length} of ${result.variants.length} variants match`
             : "No matches · Try another search or clear the field"
             : result.variants.length ? `${result.variants.length} variants` : "Empty block";
+    }
+
+    refreshVariantRows(content, start) {
+        let offset;
+        if (document.activeElement === content) {
+            const selection = window.getSelection();
+            const range = selection?.rangeCount && content.contains(selection.focusNode) ? selection.getRangeAt(0).cloneRange() : null;
+            if (range) { range.setStart(content, 0); offset = start + range.toString().length; }
+            else offset = start + readEditor(content).map(part => part.text ?? "").join("").length;
+        }
+        this.renderBlockVariants();
+        if (offset === undefined) return;
+        const index = this.blockEditRanges.findIndex(row => offset <= row.end);
+        const position = index < 0 ? this.blockEditRanges.length - 1 : index;
+        const editor = [...this.variants.children].find(row => Number(row.children[0].textContent) === position + 1)?.children[1];
+        if (!editor) return;
+        let remaining = Math.max(0, offset - this.blockEditRanges[position].start);
+        const caret = document.createRange();
+        const place = node => {
+            if (node.nodeType === 3) {
+                if (remaining <= node.textContent.length) { caret.setStart(node, remaining); return true; }
+                remaining -= node.textContent.length;
+            }
+            return [...(node.childNodes ?? [])].some(place);
+        };
+        if (place(editor)) caret.collapse(true);
+        else { caret.selectNodeContents(editor); caret.collapse(false); }
+        editor.focus({ preventScroll: true }); this.selectRange(caret);
     }
 
     async previewBlock() {
@@ -2318,6 +2490,8 @@ export class PromptDesignerWidget {
     }
 
     insertNode(node, editor = this.editor) {
+        const last = node.nodeType === 11 ? node.lastChild : node;
+        if (!last) return;
         this.clearCardSelection();
         let range = editor === this.editor ? this.caret : editor.savedCaret;
         const selection = window.getSelection();
@@ -2327,7 +2501,7 @@ export class PromptDesignerWidget {
         }
         range.deleteContents();
         range.insertNode(node);
-        range.setStartAfter(node); range.collapse(true);
+        range.setStartAfter(last); range.collapse(true);
         if (editor === this.editor) this.caret = range.cloneRange(); else editor.savedCaret = range.cloneRange();
         editor.focus({ preventScroll: true });
         this.selectRange(range);
@@ -2364,6 +2538,7 @@ export class PromptDesignerWidget {
         const before = this.saved;
         const value = this.persist();
         if (!value) return false;
+        this.refreshInstanceLabels();
         if (record && before && value !== before) this.history.record(before, value, group);
         this.undo.disabled = !this.history.undoStack.length;
         this.redo.disabled = !this.history.redoStack.length;
@@ -2449,6 +2624,7 @@ export class PromptDesignerWidget {
     }
 
     schedulePreview() {
+        if (this.disposed || this.restoring || this.container?.inert) return;
         this.revision++;
         this.copy.disabled = true;
         if (this.restoreError) { this.setStatus(`Could not restore state: ${this.restoreError.message}`, true); return; }

@@ -38,8 +38,10 @@ fails if `draw.py`, `draw_request.py`, `draw_pipeline.py`, `generation.py`,
 `latents.py`, `sampling.py` or `loras.py` mention a family key or compare
 `.key`. Add a hook with a generic default instead.
 
-All families share native ComfyUI model residency: clone the non-dynamic ModelPatcher,
-apply native LoRA nodes, and finish every node call with ComfyUI's post-node lifecycle.
+All families share native ComfyUI model residency: use the loaded ModelPatcher's
+`clone()` to preserve DynamicVRAM, apply native LoRA nodes, and finish every node call
+with ComfyUI's post-node lifecycle. Do not request a non-dynamic delegate: it reloads
+the weights into a separate model and adds static pinned-memory pressure.
 `decode_samples` decodes one batch item at a time and collects CPU images; families
 select full or tiled decoding with `decode_tiled` and customize `decode_sample` when
 needed (for example, the first frame of each H3 video). Never manually move model

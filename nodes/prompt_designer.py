@@ -12,6 +12,12 @@ MAX_PROMPT_OUTPUTS = 16
 MAX_EXPANSION_STEPS = 16 * 1024
 
 
+def valid_block_reference(part, library):
+    return (isinstance(part, dict) and set(part) <= {"blockId", "random"}
+            and isinstance(part.get("blockId"), str) and part["blockId"] in library
+            and ("random" not in part or type(part["random"]) is bool))
+
+
 def prompt_template(node_state):
     if not isinstance(node_state, str) or len(node_state) > MAX_STATE_CHARS:
         raise ValueError("Prompt Designer state is too large or is not JSON text.")
@@ -88,7 +94,7 @@ def prompt_template(node_state):
             raise ValueError("Invalid prompt fragment.")
         if set(part) == {"text"} and isinstance(part["text"], str):
             text = part["text"]
-        elif set(part) == {"blockId"} and isinstance(part["blockId"], str) and part["blockId"] in library:
+        elif valid_block_reference(part, library):
             text = library[part["blockId"]]
         elif set(part) == {"multiPrompt"}:
             multi = part["multiPrompt"]
@@ -103,8 +109,7 @@ def prompt_template(node_state):
                 for item in variant:
                     if isinstance(item, dict) and set(item) == {"text"} and isinstance(item["text"], str):
                         values.append(item["text"])
-                    elif (isinstance(item, dict) and set(item) == {"blockId"} and isinstance(item["blockId"], str)
-                          and item["blockId"] in library):
+                    elif valid_block_reference(item, library):
                         values.append(library[item["blockId"]])
                     else:
                         raise ValueError("Multi-prompt variants accept text and existing blocks only.")
@@ -140,15 +145,14 @@ def prompt_template(node_state):
                     raise ValueError("Invalid condition output.")
                 if set(output) == {"text"} and isinstance(output["text"], str):
                     outputs.append(output["text"])
-                elif set(output) == {"blockId"} and isinstance(output["blockId"], str) and output["blockId"] in library:
+                elif valid_block_reference(output, library):
                     outputs.append(library[output["blockId"]])
                 elif set(output) == {"parts"} and isinstance(output["parts"], list) and len(output["parts"]) <= 4096:
                     values = []
                     for item in output["parts"]:
                         if isinstance(item, dict) and set(item) == {"text"} and isinstance(item["text"], str):
                             values.append(item["text"])
-                        elif (isinstance(item, dict) and set(item) == {"blockId"} and isinstance(item["blockId"], str)
-                              and item["blockId"] in library):
+                        elif valid_block_reference(item, library):
                             values.append(library[item["blockId"]])
                         else:
                             raise ValueError("Condition output accepts text and existing blocks only.")
@@ -252,7 +256,7 @@ def resolve_prompt(node_state):
         context = bounded_sampling_context(seed)
     except ImportError as exc:
         raise RuntimeError("Prompt Designer requires dynamicprompts. Install the VNCCS Utils requirements.") from exc
-    # Each insertion samples separately; checks reuse the selected insertion.
+    # Copies share a block's draw; local random instances and checks retain insertion identity.
     try:
         def join_bounded(fragments):
             values, length = [], 0
@@ -263,11 +267,11 @@ def resolve_prompt(node_state):
                 values.append(text)
             return "".join(values)
 
-        def sample(text, method=None, offset=0):
+        def sample(text, method=None):
             nonlocal context
             if not text:
                 return ""
-            position = max(0, state.get("cycleIndex", -1)) + offset
+            position = max(0, state.get("cycleIndex", -1))
             context.reset_budget(position)
             command = parse(text) if isinstance(text, str) else text
             if method is not None:
@@ -290,9 +294,9 @@ def resolve_prompt(node_state):
         modes = {block["id"]: block["mode"] for block in state.get("blocks", []) if "mode" in block}
         selected = [{} for _ in range(count)]
         contexts = [context] * count
-        values, scopes, random_states, reservations, offsets, occurrences = {}, {}, {}, {}, {}, {}
+        values, scopes, random_states, reservations = {}, {}, {}, {}
 
-        def sample_once(text, key, method=None, offset=0):
+        def sample_once(text, key, method=None):
             nonlocal context
             if key not in values:
                 before = context.variables
@@ -302,7 +306,7 @@ def resolve_prompt(node_state):
                 if random_state is not None:
                     context.rand.setstate(random_states.setdefault(key[0], random_state))
                 try:
-                    values[key] = sample(text, method, offset)
+                    values[key] = sample(text, method)
                     scopes[key] = before, context.variables
                 finally:
                     if replaying:
@@ -313,41 +317,55 @@ def resolve_prompt(node_state):
                     {name: value for name, value in after.items() if before.get(name) != value})
             return values[key]
 
-        def block_value(block_id, key, output):
-            cache = reservations.setdefault((key, output), (key, id(context.variables) if "${" in library[block_id] else None))
+        def block_value(part, key, output):
+            block_id = part["blockId"]
+            sample_key = key if part.get("random") else ("block", block_id)
+            cache = reservations.setdefault((key, output), (sample_key, id(context.variables) if "${" in library[block_id] else None))
             if cache not in values:
-                mode = modes.get(block_id)
+                mode = "random" if part.get("random") else modes.get(block_id)
                 method = None if mode is None else SamplingMethod.CYCLICAL if mode == "cycle" else SamplingMethod.RANDOM
-                if key not in offsets:
-                    offsets[key] = occurrences.get(block_id, 0)
-                    occurrences[block_id] = offsets[key] + 1
-                offset = offsets[key]
-                value = sample_once(block_command(parse(library[block_id])), cache, method, offset)
+                value = sample_once(block_command(parse(library[block_id])), cache, method)
             else:
                 value = sample_once(None, cache)
             selected[output][block_id] = value
             return value
 
         def checked_value(block_id, key, output):
+            nonlocal context
             if block_id in selected[output]:
                 return selected[output][block_id]
             # A forward check reserves the next insertion, without choosing it again later.
+            definitions = []
             for position in range(key[0] + 1, len(parts)):
                 part = parts[position]
-                if part.get("blockId") == block_id:
-                    return block_value(block_id, (position,), output)
                 if "multiPrompt" in part:
                     variants = part["multiPrompt"]["variants"]
-                    for index, item in enumerate(variants[output] if output < len(variants) else []):
-                        if item.get("blockId") == block_id:
-                            return block_value(block_id, (position, output, index), output)
-            return block_value(block_id, (*key, "check", block_id), output)
+                    items = variants[output] if output < len(variants) else []
+                else:
+                    items = [part]
+                for index, item in enumerate(items):
+                    insertion = (position, output, index) if "multiPrompt" in part else (position,)
+                    if item.get("blockId") == block_id:
+                        before, previous = context, selected[output].copy()
+                        try:
+                            # Replay only unconditional definitions; an unselected branch stays lazy.
+                            for definition, definition_key in definitions:
+                                fragment(definition, definition_key, output)
+                            value = block_value(item, insertion, output)
+                        finally:
+                            context, selected[output] = before, previous
+                        selected[output][block_id] = value
+                        return value
+                    if "${" in item.get("text", library.get(item.get("blockId"), "")):
+                        definitions.append((item, insertion))
+            return block_value({"blockId": block_id}, (*key, "check", block_id), output)
 
         def fragment(part, key, output):
             if "text" in part:
-                return sample_once(part["text"], (key, id(context.variables) if "${" in part["text"] else None))
+                cache = reservations.setdefault((key, output), (key, id(context.variables) if "${" in part["text"] else None))
+                return sample_once(part["text"], cache)
             if "blockId" in part:
-                return block_value(part["blockId"], key, output)
+                return block_value(part, key, output)
             condition = part["condition"]
             checks = [condition, *condition.get("clauses", [])]
             if any(not check["blockId"] or not check["operator"] or not check["value"].strip() for check in checks):
@@ -405,7 +423,7 @@ def cycle_period(command, context, position):
     """Bound the native cycle period so old workflows never require replaying every past queue."""
     from collections import Counter
     from math import factorial, lcm
-    from dynamicprompts.commands import SequenceCommand, VariantCommand
+    from dynamicprompts.commands import SequenceCommand, VariantCommand, WrapCommand
     from dynamicprompts.commands.variable_commands import VariableAccessCommand, VariableAssignmentCommand
     from dynamicprompts.enums import SamplingMethod
 
@@ -430,6 +448,9 @@ def cycle_period(command, context, position):
                 else:
                     lengths.append(period(token, variables, method, visiting))
             return min(position + 1, lcm(*lengths))
+        if isinstance(value, WrapCommand):
+            return min(position + 1, lcm(period(value.wrapper, variables, method, visiting),
+                                         period(value.inner, variables, method, visiting)))
         if isinstance(value, VariantCommand):
             command = value.adjust_range()
             length = lcm(*(period(item, variables, method, visiting) for item in command.values))
@@ -453,11 +474,16 @@ def cycle_period(command, context, position):
 
 def choice_mode(value, method):
     """Change parsed choice modes while retaining bounds, weights and separators."""
+    from dynamicprompts.commands import WrapCommand
+    from dynamicprompts.enums import SamplingMethod
+
     if isinstance(value, list):
         return [choice_mode(item, method) for item in value]
     if not is_dataclass(value):
         return value
-    return replace(value, **{field.name: method if field.name == "sampling_method"
+    # The native random sampler joins wrapping streams; the cyclic sampler cannot wrap.
+    sampling_method = SamplingMethod.RANDOM if isinstance(value, WrapCommand) and method == SamplingMethod.CYCLICAL else method
+    return replace(value, **{field.name: sampling_method if field.name == "sampling_method"
                             else choice_mode(getattr(value, field.name), method) for field in fields(value)})
 
 

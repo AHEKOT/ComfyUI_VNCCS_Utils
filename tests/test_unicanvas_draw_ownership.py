@@ -24,18 +24,40 @@ FAMILIES = ("sdxl", "anima", "flux_klein", "z_image", "krea2_edit", "minimax_h3"
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.parametrize("dynamic", [False, True])
-def test_every_family_clones_the_native_static_patcher(family, dynamic):
-    cloned_model, cloned_clip = object(), object()
-    native = types.SimpleNamespace(clone=mock.Mock(return_value=cloned_model))
-    model = types.SimpleNamespace(is_dynamic=lambda: dynamic, get_non_dynamic_delegate=mock.Mock(return_value=native),
-                                  clone=mock.Mock(return_value=cloned_model))
-    clip = types.SimpleNamespace(clone=mock.Mock(return_value=cloned_clip))
+def test_every_family_preserves_native_weights_and_isolates_draw_patches(family, dynamic):
+    class NativePatcher:
+        def __init__(self, weights, dynamic):
+            self.model = weights
+            self.dynamic = dynamic
+            self.patches = {}
+            self.model_options = {"transformer_options": {}}
+
+        def is_dynamic(self):
+            return self.dynamic
+
+        def clone(self):
+            cloned = copy.copy(self)
+            cloned.patches = self.patches.copy()
+            cloned.model_options = copy.deepcopy(self.model_options)
+            return cloned
+
+        def get_non_dynamic_delegate(self):
+            # ComfyUI reloads weights when first creating a static delegate.
+            return NativePatcher(object(), False)
+
+    model, clip = NativePatcher(object(), dynamic), NativePatcher(object(), False)
     module = unicanvas.models.registry._get_unicanvas_model_module(family)
-    assert module.clone_assets(model, clip) == (cloned_model, cloned_clip)
-    assert model.get_non_dynamic_delegate.call_count == int(dynamic)
-    assert native.clone.call_count == int(dynamic)
-    assert model.clone.call_count == int(not dynamic)
-    clip.clone.assert_called_once_with()
+    for _ in range(3):
+        cloned_model, cloned_clip = module.clone_assets(model, clip)
+        for original, cloned in ((model, cloned_model), (clip, cloned_clip)):
+            assert cloned is not original
+            assert cloned.model is original.model, "a draw must not allocate a second set of weights"
+            assert cloned.is_dynamic() == original.is_dynamic()
+            assert cloned.patches == {} and cloned.model_options == {"transformer_options": {}}
+            cloned.patches["outpaint"] = object()
+            cloned.model_options["transformer_options"]["attention"] = "pytorch"
+            assert original.patches == {}
+            assert original.model_options == {"transformer_options": {}}
 
 
 @pytest.mark.parametrize("family", FAMILIES)

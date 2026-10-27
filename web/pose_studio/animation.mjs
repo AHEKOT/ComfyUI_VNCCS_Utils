@@ -2272,6 +2272,7 @@ export class PoseAnimationTimeline {
         this.stopPlayback();
         this._timingBaseline = null;
         this.state = state;
+        this._activeKeyDragCancel?.();
         this._clearSelection();
         this.render();
     }
@@ -2325,6 +2326,7 @@ export class PoseAnimationTimeline {
         this.element.classList.toggle("visible", !!visible);
         if (!visible) {
             this.stopPlayback();
+            this._activeKeyDragCancel?.();
             this._finishMarqueeSelection(true);
             this.onTrackHover(null);
         } else {
@@ -2679,6 +2681,7 @@ export class PoseAnimationTimeline {
             this.element.focus({ preventScroll: true });
             const originalFrame = aggregate.frame;
             if (event.ctrlKey || event.metaKey || event.shiftKey) return;
+            this.stopPlayback();
             const anySelected = aggregate.members.some(({ trackName, key }) => this._isSelected(trackName, key.id));
             if (!anySelected) {
                 this._clearSelection();
@@ -2693,6 +2696,11 @@ export class PoseAnimationTimeline {
                 frame: item.key.frame,
             }));
             const originalFrames = new Map(originalSelections.map(item => [this._selectionId(item.trackName, item.keyId), item.frame]));
+            const dragState = this.state;
+            const originalTracks = new Map(originalSelections.map(item => [item.trackName, cloneJSON(dragState.tracks[item.trackName])]));
+            const restoreTracks = () => {
+                for (const [name, track] of originalTracks) dragState.tracks[name] = cloneJSON(track);
+            };
             const minimumFrame = Math.min(...originalSelections.map(item => item.frame));
             const maximumFrame = Math.max(...originalSelections.map(item => item.frame));
             let deltaFrame = 0;
@@ -2702,6 +2710,10 @@ export class PoseAnimationTimeline {
                 const destinationFrame = this._frameFromPointer(moveEvent, lane);
                 deltaFrame = clamp(destinationFrame - originalFrame, -minimumFrame, this.state.frameCount - 1 - maximumFrame);
                 if (deltaFrame) dragged = true;
+                // Preview from the gesture baseline so crossing another key cannot delete it until commit.
+                restoreTracks();
+                moveKeyframeSelection(dragState, originalSelections, deltaFrame);
+                this.onFrameChange(dragState.currentFrame, { transient: true });
                 this._dragPreview = { frames: originalFrames, delta: deltaFrame };
                 this._scheduleKeyLaneDraw();
                 lane.title = `Move ${originalSelections.length} key${originalSelections.length === 1 ? "" : "s"} by ${deltaFrame} frame${Math.abs(deltaFrame) === 1 ? "" : "s"}`;
@@ -2714,18 +2726,20 @@ export class PoseAnimationTimeline {
                 if (this._activeKeyDragCancel === cancel) this._activeKeyDragCancel = null;
                 this._dragPreview = null;
                 const cancelled = endEvent.type === "pointercancel";
+                restoreTracks();
                 if (!cancelled && dragged && deltaFrame) {
                     const result = moveKeyframeSelection(this.state, originalSelections, deltaFrame);
                     const primaryId = aggregate.members[0]?.key.id;
                     this._setSelection(result.selections, result.selections.find(item => item.keyId === primaryId));
-                    const movedPrimary = result.selections.find(item => item.keyId === primaryId);
-                    if (movedPrimary) this.setFrame(movedPrimary.frame);
                     this.onStateChange({ type: "moveKeys", count: result.selections.length, delta: result.delta });
                     this._suppressKeyClick = true;
                     setTimeout(() => { this._suppressKeyClick = false; }, 0);
                 } else if (!cancelled && dragged) {
                     this._suppressKeyClick = true;
                     setTimeout(() => { this._suppressKeyClick = false; }, 0);
+                }
+                if ((cancelled || !deltaFrame) && this.state === dragState) {
+                    this.onFrameChange(dragState.currentFrame, { transient: true });
                 }
                 this.renderTracks();
                 this.updateToolbar();

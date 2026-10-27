@@ -9,6 +9,101 @@ const noop = () => {};
 const source = await fs.readFile(new URL("../web/vnccs_pose_studio.js", import.meta.url), "utf8");
 const settle = async () => { for (let index = 0; index < 12; index++) await Promise.resolve(); };
 
+for (const outcome of ["network error", "HTTP error", "empty response", "invalid pose", "invalid animation", "invalid framing"]) {
+    test(`library ${outcome} preserves the current SAM camera and mesh`, async () => {
+        const { w, viewer, node, context } = createScene({ skinned: true });
+        viewer.setPose({ bones: { head: [20, 0, 0] } }, true);
+        w.syncToNode(false, { skipCaptureUpload: true });
+        const frame = { fov: 35, cameraPosition: { x: 0, y: 10, z: 40 } };
+        const poseData = { source: "current SAM pose" };
+        const meshData = { source: "current SAM mesh" };
+        viewer.setSAMProjectionCameraFrame(frame);
+        w._samCamStoredProjectionFrame = frame;
+        w._samCameraModeActive = true;
+        w._samCamBannerVisible = true;
+        w._lastSAM3DPoseData = poseData;
+        w._lastSAM3DMeshData = meshData;
+        w.showMessage = noop;
+        context.console = { ...console, error: noop };
+        let finish, fail;
+        context.fetch = () => new Promise((resolve, reject) => { finish = resolve; fail = reject; });
+        const saved = node.widgets[0].value;
+        const pose = JSON.stringify(viewer.getPose());
+        const animation = JSON.stringify(w.animationState);
+        const history = viewer.history.length;
+        const loading = w.loadFromLibrary("Unavailable pose");
+        assert.equal(viewer._samProjectionCameraFrame, frame, "pending load keeps the current view visible");
+        if (outcome === "network error") fail(new Error("network failure"));
+        else finish({ ok: outcome !== "HTTP error", status: 404,
+            json: async () => outcome === "invalid pose" ? { pose: "invalid" }
+                : outcome === "invalid animation" ? { pose: { animation: [] } }
+                : outcome === "invalid framing" ? { pose: { bones: {}, cameraParams: { zoom: 3, offset_x: "bad", offset_y: 0 } } }
+                : outcome === "empty response" ? {} : { error: "Pose not found" } });
+        await loading;
+        assert.equal(viewer._samProjectionCameraFrame, frame);
+        assert.equal(w._samCamStoredProjectionFrame, frame);
+        assert.equal(w._samCameraModeActive, true);
+        assert.equal(w._samCamBannerVisible, true);
+        assert.equal(w._lastSAM3DPoseData, poseData);
+        assert.equal(w._lastSAM3DMeshData, meshData);
+        assert.equal(JSON.stringify(viewer.getPose()), pose);
+        assert.equal(JSON.stringify(w.animationState), animation);
+        assert.equal(viewer.history.length, history);
+        assert.equal(node.widgets[0].value, saved);
+    });
+}
+
+test("a successfully loaded library pose clears the previous SAM camera", async () => {
+    const { w, viewer, context } = createScene();
+    const frame = { fov: 35, cameraPosition: { x: 0, y: 10, z: 40 } };
+    viewer.setSAMProjectionCameraFrame(frame);
+    w._samCamStoredProjectionFrame = frame;
+    w._samCameraModeActive = true;
+    context.fetch = async () => ({ ok: true, json: async () => ({ pose: { bones: {}, prompt: "loaded pose" } }) });
+    await w.loadFromLibrary("Available pose");
+    assert.equal(viewer._samProjectionCameraFrame, null);
+    assert.equal(w._samCamStoredProjectionFrame, null);
+    assert.equal(w._samCameraModeActive, false);
+    assert.equal(w.getPosePrompt(), "loaded pose");
+});
+
+for (const format of ["FBX", "HMR2", "OpenPose"]) {
+    test(`failed ${format} file import preserves SAM view and character placement`, async () => {
+        const { w, viewer, node, context } = createScene();
+        w.exportParams.cam_zoom = 2;
+        w.exportParams.cam_offset_x = 5;
+        w.persistActivePoseCameraParams();
+        w.syncToNode(false, { skipCaptureUpload: true });
+        const frame = { fov: 35, cameraPosition: { x: 0, y: 10, z: 40 } };
+        viewer.setSAMProjectionCameraFrame(frame);
+        w._samCamStoredProjectionFrame = frame;
+        w._samCameraModeActive = true;
+        w.showMessage = noop;
+        context.console = { ...console, error: noop };
+        const transform = JSON.stringify(w.getActiveCharacter().transform);
+        const saved = node.widgets[0].value;
+        let reader, fail;
+        context.FileReader = class { constructor() { reader = this; } readAsText() {} };
+        context.importMixamoFBXAnimation = () => new Promise((_resolve, reject) => { fail = reject; });
+        context.detectAndParseJSON = () => ({ joints: {} });
+        context.convertOpenPoseToPose = () => null;
+        const input = { files: [{ name: format === "FBX" ? "bad.fbx" : "bad.json", type: "application/json" }], value: "bad" };
+        w.handleFileImport({ target: input });
+        if (format === "FBX") {
+            assert.equal(JSON.stringify(w.getActiveCharacter().transform), transform, "pending parsing keeps the current placement");
+            fail(new Error("The FBX file does not contain any animation clips."));
+            await settle();
+        } else await reader.onload({ target: { result: JSON.stringify(format === "HMR2"
+            ? { version: "hmr2_3d_v1", people: [] } : { people: [] }) } });
+        assert.equal(viewer._samProjectionCameraFrame, frame);
+        assert.equal(w._samCamStoredProjectionFrame, frame);
+        assert.equal(w._samCameraModeActive, true);
+        assert.equal(JSON.stringify(w.getActiveCharacter().transform), transform);
+        assert.equal(node.widgets[0].value, saved);
+        assert.equal(input.value, "");
+    });
+}
+
 function restorableScene() {
     const scene = createScene();
     scene.w.hydrateCharacterSceneModels = async () => true;

@@ -5,22 +5,23 @@ import vm from "node:vm";
 
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const tools = readFileSync(new URL("../web/unicanvas/layer_tools.mjs", import.meta.url), "utf8");
+const editCropSource = tools.slice(tools.indexOf("function layerEditCrop("), tools.indexOf("\nfunction layerImageCanvas("));
 const removeSource = tools.slice(tools.indexOf("async function removeLayerBackground("), tools.indexOf("\nfunction buildColorMatchReference("));
 const rect = { x: 0, y: 0, width: 8, height: 8 };
 
 function harness() {
-  let resolve;
+  let resolve, uploaded;
   const canvas = () => ({ width: 8, height: 8, pixels: "original", getContext() {
     return { save() {}, restore() {}, drawImage: () => { this.pixels += ":masked"; } };
   } });
   const context = {
     console, performance, setInterval, clearInterval,
-    fetch: () => new Promise((done) => { resolve = done; }),
+    fetch: (_url, options) => { uploaded = JSON.parse(options.body); return new Promise((done) => { resolve = done; }); },
     document: { createElement: canvas },
     resolveRemoveBgSelection: () => ({ method: "rembg" }), REMOVE_BG_ROUTE: "/unused",
   };
   const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", context);
-  const remove = vm.runInNewContext(removeSource + "\nremoveLayerBackground", context);
+  const remove = vm.runInNewContext(editCropSource + removeSource + "\nremoveLayerBackground", context);
   const a = { id: "A", type: "raster", canvas: canvas() };
   const b = { id: "B", type: "raster", canvas: canvas() };
   const history = [];
@@ -42,6 +43,7 @@ function harness() {
     pushHistoryEntry: (entry) => history.push(entry),
   });
   return { uc, a, b, history, remove, snapshots: () => snapshots,
+    uploaded: () => uploaded,
     resolve: () => resolve({ ok: true, json: async () => ({ mask: "mask", alpha: "alpha" }) }),
   };
 }
@@ -131,4 +133,82 @@ test("background removal captures undo only when the unchanged result is applied
   assert.equal(h.history[0].before.pixels, "original");
   assert.equal(h.history[0].after.pixels, "original:masked");
   assert.equal(h.b.canvas.pixels, "original");
+});
+
+test("background removal sends complete native pixels and places its mask after backing expansion", async () => {
+  const h = harness(), draws = [];
+  h.a.hiresCanvas = { toDataURL: () => "complete native pixels" };
+  h.a.hiresRect = { x: -4, y: -3, width: 12, height: 10 };
+  h.a.canvas.getContext = () => ({ save() {}, restore() {}, drawImage: (...args) => draws.push(args) });
+  h.uc.materializeRasterLayerForEditing = () => {
+    h.uc.origin = { x: -4, y: -3 }; h.a.canvas.width = 12; h.a.canvas.height = 10;
+    h.a.hiresCanvas = null; h.a.hiresRect = null;
+  };
+  const pending = h.remove(h.uc, h.a);
+  assert.equal(h.uploaded().image, "complete native pixels");
+  h.resolve(); await pending;
+  assert.deepEqual(draws[0].slice(5), [0, 0, 12, 10]);
+  assert.equal(h.history.length, 1);
+  assert.equal(h.b.canvas.pixels, "original");
+});
+
+test("SAM keeps its selected crop in world coordinates when materialization grows the backing", async () => {
+  const h = harness(), draws = [];
+  const pending = h.uc.segmentSamMask(); h.resolve(); await pending;
+  h.a.canvas.getContext = () => ({ save() {}, restore() {}, drawImage: (...args) => draws.push(args) });
+  h.uc.materializeRasterLayerForEditing = () => { h.uc.origin = { x: -4, y: -3 }; };
+  h.uc.clampCanvasBounds = crop => crop;
+  h.uc.applySamMask();
+  assert.deepEqual(draws[0].slice(5), [4, 3, 8, 8]);
+  assert.equal(h.history.length, 1);
+});
+
+for (const crop of [null, { x: 0, y: 0, width: 8, height: 7 }]) {
+  for (const edit of ["unchanged", "generation", "paint"]) {
+    test(`SAM sends full native pixels and scaled points with ${crop ? "partial" : "no"} backing overlap (${edit})`, async () => {
+      const h = harness(), draws = [];
+      h.a.hiresCanvas = { width: 240, height: 100, toDataURL: () => "complete native pixels" };
+      h.a.hiresRect = { x: -12, y: -3, width: 12, height: 10 };
+      h.uc.getLayerAlphaBounds = () => crop;
+      h.uc.expandCanvasCrop = value => value;
+      h.uc.sam.points = [{ x: -9, y: 2, label: 1 }, { x: -6, y: 4, label: 0 }];
+      const pending = h.uc.segmentSamMask();
+      if (edit === "generation") h.uc._generationPreparing = true;
+      if (edit === "paint") changes.paint(h);
+      if (h.uploaded()) h.resolve();
+      await pending;
+      assert.equal(h.uploaded()?.image, "complete native pixels");
+      assert.deepEqual(h.uploaded().points, [{ x: 60, y: 50, label: 1 }, { x: 120, y: 70, label: 0 }]);
+      if (edit !== "unchanged") {
+        assert.equal(h.uc.sam.maskCanvas, null);
+        assert.equal(h.history.length, 0);
+        return;
+      }
+      assert.deepEqual({ ...h.uc.sam.crop }, h.a.hiresRect);
+      assert.equal(h.uc.sam.maskCanvas.width, 12);
+      assert.equal(h.uc.sam.maskCanvas.height, 10);
+      h.a.canvas.getContext = () => ({ save() {}, restore() {}, drawImage: (...args) => draws.push(args) });
+      h.uc.materializeRasterLayerForEditing = () => {
+        h.uc.origin = { x: -12, y: -3 }; h.a.canvas.width = 12; h.a.canvas.height = 10;
+        h.a.hiresCanvas = null; h.a.hiresRect = null;
+      };
+      h.uc.clampCanvasBounds = value => value;
+      h.uc.applySamMask();
+      assert.deepEqual(draws[0].slice(5), [0, 0, 12, 10]);
+      assert.equal(h.history.length, 1);
+      assert.equal(h.b.canvas.pixels, "original");
+    });
+  }
+}
+
+test("background removal and SAM leave history unchanged when native backing expansion fails", async () => {
+  for (const operation of ["remove", "sam"]) {
+    const h = harness();
+    h.uc.materializeRasterLayerForEditing = () => false;
+    const pending = operation === "remove" ? h.remove(h.uc, h.a) : h.uc.segmentSamMask();
+    h.resolve(); await pending;
+    if (operation === "sam") h.uc.applySamMask();
+    assert.equal(h.history.length, 0);
+    assert.equal(h.a.canvas.pixels, "original");
+  }
 });

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { writePsd, readPsd, initializeCanvas } from "../web/vendor/ag-psd.bundle.mjs";
 
 const source = readFileSync(new URL("../web/unicanvas/layer_tools.mjs", import.meta.url), "utf8");
 const widgetSource = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
@@ -26,6 +27,7 @@ function previewHarness(context = {}) {
     });
     const blends = [];
     const ctx = { save() {}, restore() {}, clearRect() {}, drawImage(image) {
+        image = image?.image ?? image;
         layer.pixels = image;
         if (image !== "original") blends.push({ image, alpha: this.globalAlpha });
     } };
@@ -34,6 +36,9 @@ function previewHarness(context = {}) {
         origin: { x: 0, y: 0 }, layers: [layer], histories: [],
         loadImage: async image => image, configureImageContext: value => value,
         materializeRasterLayerForEditing() {},
+        cloneCanvas(image) { return { image, width: 1, height: 1, getContext: () => ({
+            getImageData: () => ({ data: new Uint8ClampedArray(0) }), putImageData() {},
+        }) }; },
         markLayerPixelsChanged(value) { value._pixelRevision++; },
         createLayerPixelSnapshot: value => ({ pixels: value.pixels }),
         restoreLayerPixelSnapshot(value, snapshot) { value.pixels = snapshot.pixels; value._pixelRevision++; },
@@ -106,6 +111,104 @@ test("color match previews each frame and commits once per gesture, then Cancel 
     h.api.closeColorMatchPreview(h.uc, false);
     assert.equal(h.layer.pixels, "original");
     assert.equal(h.uc.histories.length, 2, "cancellation is undoable");
+});
+
+function pixelCanvas(pixel = [0, 0, 0, 0]) {
+    const canvas = { width: 1, height: 1, pixels: [...pixel] }, stack = [];
+    const ctx = {
+        globalAlpha: 1, globalCompositeOperation: "source-over",
+        save() { stack.push([this.globalAlpha, this.globalCompositeOperation]); },
+        restore() { [this.globalAlpha, this.globalCompositeOperation] = stack.pop(); },
+        clearRect() { canvas.pixels = [0, 0, 0, 0]; },
+        drawImage(image) {
+            const source = image.pixels, backdrop = canvas.pixels;
+            const sourceAlpha = source[3] / 255 * this.globalAlpha, backdropAlpha = backdrop[3] / 255;
+            if (this.globalCompositeOperation === "source-atop") {
+                canvas.pixels = source.slice(0, 3).map((value, i) => value * sourceAlpha + backdrop[i] * (1 - sourceAlpha));
+                canvas.pixels.push(backdrop[3]);
+            } else {
+                const alpha = sourceAlpha + backdropAlpha * (1 - sourceAlpha);
+                canvas.pixels = source.slice(0, 3).map((value, i) => alpha ?
+                    (value * sourceAlpha + backdrop[i] * backdropAlpha * (1 - sourceAlpha)) / alpha : 0);
+                canvas.pixels.push(alpha * 255);
+            }
+        },
+        getImageData: () => ({ data: new Uint8ClampedArray(canvas.pixels) }),
+        putImageData(image) { canvas.pixels = [...image.data]; },
+    };
+    canvas.getContext = () => ctx;
+    return canvas;
+}
+
+for (const alpha of [64, 128, 255]) {
+    test(`color match Strength blends RGB once and preserves alpha ${alpha}`, async () => {
+        const h = previewHarness(), original = [200, 40, 20, alpha], matched = [20, 60, 220, alpha];
+        h.layer.canvas = pixelCanvas(original);
+        h.preview.targetBase = pixelCanvas(original);
+        h.preview.editState = h.uc.captureLayerEditState(h.layer);
+        h.preview.dragging = true;
+        h.uc.cloneCanvas = image => { const copy = pixelCanvas(); copy.getContext().drawImage(image); return copy; };
+        const pending = h.api.loadColorMatchMethod(h.uc, h.preview, "local_lab");
+        h.finish(pixelCanvas(matched));
+        await pending;
+        for (const strength of [0, 5, 10]) {
+            h.preview.strength = strength;
+            h.api.scheduleColorMatchPreview(h.uc, h.preview); h.frame();
+            assert.deepEqual(h.layer.canvas.pixels.map(Math.round), original.map((value, i) =>
+                i === 3 ? alpha : Math.round(value + (matched[i] - value) * strength / 10)));
+            assert.equal(h.uc.histories.length, 0, "held slider values update before the gesture commits");
+        }
+        h.api.commitColorMatchPreview(h.uc, h.preview);
+        assert.equal(h.uc.histories.length, 1);
+    });
+}
+
+test("color match keeps its crop in world coordinates after native backing expansion", () => {
+    const h = previewHarness(), draws = [];
+    h.preview.crop = { x: -4, y: -3, width: 14, height: 13 };
+    h.layer.canvas.getContext = () => ({ save() {}, restore() {}, clearRect() {}, drawImage: (...args) => draws.push(args) });
+    h.uc.materializeRasterLayerForEditing = () => { h.uc.origin = { x: -4, y: -3 }; };
+    h.preview.matched.set("local_lab", "match");
+    h.api.scheduleColorMatchPreview(h.uc, h.preview);
+    h.api.commitColorMatchPreview(h.uc, h.preview);
+    assert.deepEqual(draws.map(args => args.slice(1)), [[0, 0, 14, 13], [0, 0, 14, 13]]);
+    assert.equal(h.uc.histories.length, 1);
+    h.api.scheduleColorMatchPreview(h.uc, h.preview); h.frame();
+    assert.deepEqual(draws.at(-1).slice(1), [0, 0, 14, 13], "later frames retain the same placement");
+});
+
+test("color match cannot record a pixel edit when native backing expansion fails", () => {
+    const h = previewHarness();
+    h.uc.materializeRasterLayerForEditing = () => false;
+    h.preview.matched.set("local_lab", "match");
+    h.api.scheduleColorMatchPreview(h.uc, h.preview);
+    h.api.commitColorMatchPreview(h.uc, h.preview);
+    assert.equal(h.layer.pixels, "original");
+    assert.equal(h.uc.histories.length, 0);
+    assert.equal(h.preview.closed, true);
+});
+
+test("color match prepares complete native pixels and the same world rectangle for its reference", async () => {
+    const controls = new Map(), references = [];
+    const element = { style: {}, remove() {}, querySelector(selector) {
+        if (!controls.has(selector)) controls.set(selector, { style: {}, addEventListener() {} });
+        return controls.get(selector);
+    } };
+    const h = previewHarness({ document: { createElement: tag => tag === "div" ? element : { getContext: () => ({ save() {}, restore() {} }) } },
+        installCustomSelects() {} });
+    h.uc._vnccsColorMatch = null;
+    h.layer.type = "raster"; h.layer.hiresCanvas = {}; h.layer.hiresRect = { x: -4, y: -3, width: 14, height: 13 };
+    h.uc.layers.push({ id: "below", type: "raster", visible: true });
+    Object.assign(h.uc, { container: { appendChild() {} }, getLayerAlphaBounds: () => h.preview.crop,
+        cloneCanvas: source => { assert.equal(source, h.layer.hiresCanvas); return "complete native pixels"; },
+        drawRasterLayerToWorldRect: (_ctx, _layer, rect) => references.push({ ...rect }),
+    });
+    h.api.openColorMatchPopover(h.uc, h.layer);
+    assert.equal(h.uc._vnccsColorMatch.targetBase, "complete native pixels");
+    assert.deepEqual({ ...h.uc._vnccsColorMatch.crop }, h.layer.hiresRect);
+    assert.deepEqual(references, [h.layer.hiresRect]);
+    h.api.closeColorMatchPreview(h.uc, false);
+    h.finish("stale match"); await new Promise(resolve => setImmediate(resolve));
 });
 
 test("returning to a cached color method invalidates an older request", async () => {
@@ -201,6 +304,51 @@ test("PSD children inherit hidden ancestors and unsupported group appearance is 
     const warnings = [];
     tools().collectPsdRasterLayers([{ blendMode: "pass through", children: [child] }], [], warnings);
     assert.equal(warnings.length, 0);
+});
+
+for (const group of [false, true]) {
+    test(`PSD import reports and skips a masked ${group ? "group" : "raster layer"}`, async () => {
+        initializeCanvas(undefined, undefined, (width, height) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }));
+        const imageData = { width: 1, height: 1, data: new Uint8ClampedArray([255, 0, 0, 255]) };
+        const mask = { left: 0, top: 0, right: 1, bottom: 1, defaultColor: 0,
+            imageData: { width: 1, height: 1, data: new Uint8ClampedArray([0, 0, 0, 255]) } };
+        const layer = { name: "Red", left: 0, top: 0, right: 1, bottom: 1, imageData };
+        const entry = group ? { name: "Masked", blendMode: "pass through", mask, children: [layer] } : { ...layer, name: "Masked", mask };
+        const bytes = writePsd({ width: 1, height: 1, imageData, children: [entry] });
+        const parsed = readPsd(bytes, { useImageData: true });
+        assert.ok(parsed.children[0].mask);
+        assert.equal((group ? parsed.children[0].children[0] : parsed.children[0]).imageData.data[3], 255,
+            "ag-psd keeps the hidden pixel opaque and returns its mask separately");
+        const created = [];
+        let status;
+        const uc = {
+            bbox: { x: 0, y: 0 }, origin: { x: 0, y: 0 }, loadAgPsd: async () => ({ readPsd }),
+            ensureWorldRectBounds: () => true, configureImageContext: value => value,
+            addLayer(type, name) { const result = { name, canvas: pixelCanvas() }; created.push(result); return result; },
+            invalidateLayerCaches() {}, renderLayerList() {}, requestRender() {}, syncLightStateToWidget() {}, scheduleFullSync() {},
+            setStatus(value) { status = value; },
+        };
+        const api = tools({ document: { createElement: () => pixelCanvas() },
+            ImageData: class { constructor(data) { this.data = data; } } });
+        await api.importPSDFile(uc, { arrayBuffer: async () => bytes });
+        assert.deepEqual(created, []);
+        assert.match(status, /PSD imported 0 raster layers; skipped 1: layer\/group mask "Masked"/);
+    });
+}
+
+test("PSD disabled masks leave layer and group pixels importable", () => {
+    for (const mask of [{ mask: { disabled: true } }, { realMask: { disabled: true } }, { vectorMask: { disable: true } }]) {
+        const child = { name: "Unmasked", canvas: {} }, imported = [], skipped = [];
+        tools().collectPsdRasterLayers([{ ...child, ...mask }, { ...mask, children: [child] }], imported, skipped);
+        assert.equal(imported.length, 2);
+        assert.equal(skipped.length, 0);
+    }
+    for (const mask of [{ realMask: {} }, { vectorMask: {} }]) {
+        const imported = [], skipped = [];
+        tools().collectPsdRasterLayers([{ name: "Masked", canvas: {}, ...mask }], imported, skipped);
+        assert.equal(imported.length, 0);
+        assert.match(skipped[0].reason, /mask/);
+    }
 });
 
 test("current PSD imports preserve stacking and inherited visibility", async () => {

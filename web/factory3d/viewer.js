@@ -1214,6 +1214,8 @@ export class Factory3DViewer {
             onPlanGesture: options.onPlanGesture || EMPTY,
             onPlanHover: options.onPlanHover || EMPTY,
             resolveAssetURL: options.resolveAssetURL || (value => value),
+            cameraDragScale: Number.isFinite(options.cameraDragScale) && options.cameraDragScale > 0
+                ? Math.max(0.05, Math.min(2, options.cameraDragScale)) : null,
         };
         this.objects = new Map();
         this.sceneData = null;
@@ -1878,10 +1880,7 @@ export class Factory3DViewer {
                     look.moved = true;
                 }
                 if (look.moved && (deltaX || deltaY)) {
-                    this.rotateCameraFPV(
-                        { yaw: -deltaX * 0.18, pitch: -deltaY * 0.18 },
-                        { emit: false },
-                    );
+                    this.rotateCameraFromDrag(deltaX, deltaY);
                     this.canvas.style.cursor = "grabbing";
                     event.preventDefault();
                     return;
@@ -6093,6 +6092,14 @@ export class Factory3DViewer {
         this.controls.enabled = !playing && this.viewMode === "3d" && !this.transform.dragging;
         if (!playing) this.controls.update();
         this.invalidate();
+    }
+
+    rotateCameraFromDrag(deltaX, deltaY) {
+        const scale = this.options.cameraDragScale;
+        const gain = scale == null ? 0.18 : THREE.MathUtils.radToDeg(
+            2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) * 0.5),
+        ) / Math.max(1, this.canvas.getBoundingClientRect().height) * scale;
+        this.rotateCameraFPV({ yaw: -deltaX * gain, pitch: -deltaY * gain }, { emit: false });
     }
 
     rotateCameraFPV({ yaw = 0, pitch = 0 } = {}, { emit = true } = {}) {

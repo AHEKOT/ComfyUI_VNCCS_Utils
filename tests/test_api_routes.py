@@ -55,7 +55,10 @@ def load_routes(tmp_path):
 def test_all_original_urls_methods_and_handler_registration_survive(tmp_path):
     handlers, _load = load_routes(tmp_path)
     expected = json.loads((ROOT / "tests/fixtures/api/routes.json").read_text())
-    assert sorted(handlers) == sorted([tuple(entry) for entry in expected] + [("POST", "/vnccs/unicanvas_state_delete")])
+    assert sorted(handlers) == sorted([tuple(entry) for entry in expected] + [
+        ("POST", "/vnccs/unicanvas_state_delete"),
+        ("POST", "/api/vnccs/pose_sync/upload_capture"),
+    ])
     assert all(inspect.iscoroutinefunction(handler) for handler in handlers.values())
 
 

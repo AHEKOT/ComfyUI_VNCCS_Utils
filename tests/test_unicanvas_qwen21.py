@@ -266,22 +266,6 @@ def test_rgba_reference_geometry_is_independent_of_pixel_content(monkeypatch, pi
     assert settings["_qwen21_latent"] is native
 
 
-@pytest.mark.parametrize("dynamic", [False, True])
-def test_qi2_uses_comfys_native_non_dynamic_delegate(dynamic):
-    from types import SimpleNamespace
-    from unittest.mock import Mock
-
-    model_clone, clip_clone = object(), object()
-    native = SimpleNamespace(clone=Mock(return_value=model_clone))
-    model = SimpleNamespace(is_dynamic=lambda: dynamic, get_non_dynamic_delegate=Mock(return_value=native), clone=Mock(return_value=model_clone))
-    clip = SimpleNamespace(clone=Mock(return_value=clip_clone))
-    assert _get_unicanvas_model_module("qwen_image21").clone_assets(model, clip) == (model_clone, clip_clone)
-    assert model.get_non_dynamic_delegate.call_count == int(dynamic)
-    assert native.clone.call_count == int(dynamic)
-    assert model.clone.call_count == int(not dynamic)
-    clip.clone.assert_called_once()
-
-
 def test_model_uses_native_qi2_cache_and_never_easycache(monkeypatch):
     from types import SimpleNamespace
     from nodes.unicanvas.models import qwen_image21

@@ -115,6 +115,39 @@ for (const native of [false, true]) test(`panorama import keeps live pose bounds
   } finally { context.PanoramaDocument = realDocument; context.document.createElement = realCreate; }
 });
 
+for (const native of [false, true]) test(`panorama import retains native content outside the backing in ${native ? "native" : "scaled"} mode`, async () => {
+  const realDocument = context.PanoramaDocument, realCreate = context.document.createElement;
+  const draws = [];
+  context.document.createElement = () => ({ getContext: () => ({ save() {}, restore() {}, drawImage: (...args) => draws.push(args) }) });
+  context.PanoramaDocument = class {
+    constructor() { this.settings = { yaw: 0, pitch: 0, roll: 0, fov: 90 }; }
+    commitLayer() {}
+    ensureLayer() { return { getContext: () => ({ drawImage() {} }) }; }
+    project() {}
+  };
+  try {
+    const nativeCanvas = { width: 400, height: 200 };
+    const layer = { id: "outside", type: "raster", canvas: { width: 16, height: 16 },
+      hiresCanvas: nativeCanvas, hiresRect: { x: 100, y: -60, width: 200, height: 100 } };
+    const w = widget({ layers: [layer], bbox: { x: 0, y: 0, width: 16, height: 16 },
+      size: { width: 16, height: 16 }, settings: { panorama_native_layers: native },
+      undoStack: [], redoStack: [], getLayerAlphaBounds: () => null,
+      configureImageContext: value => value, createHistorySnapshot: () => ({ layers: [{ ...layer }] }), invalidateLayerCaches() {},
+      addLayer(type, name) { const base = { id: "base", type, name }; this.layers.push(base); return base; },
+      normalizeLayerOrder() {}, setTool() {}, updatePanoramaControls() {},
+      renderLayerList() {}, fitView() {}, updateHistoryButtons() {}, syncToNode() {},
+    });
+    await w.importPanorama({ width: 4096, height: 2048 }, "Panorama");
+    assert.equal(draws[0]?.[0], nativeCanvas, "conversion must draw the source before clearing its native reference");
+    assert.deepEqual(draws[0].slice(1, 5), [0, 0, 400, 200]);
+    assert.deepEqual(draws[0].slice(5), native ? [412, 462, 200, 100] : [0, 256, 1024, 512]);
+    assert.equal(layer.hiresCanvas, null);
+    assert.equal(w.undoStack.length, 1);
+    assert.equal(w.undoStack[0].layers[0].hiresCanvas, nativeCanvas);
+    assert.deepEqual(w.undoStack[0].layers[0].hiresRect, { x: 100, y: -60, width: 200, height: 100 });
+  } finally { context.PanoramaDocument = realDocument; context.document.createElement = realCreate; }
+});
+
 test("panorama panel holds the orbit widget and one Reset button", () => {
   let received;
   context.PanoramaOrbitControl = class {

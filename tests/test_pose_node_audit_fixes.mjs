@@ -119,7 +119,7 @@ function executionScene() {
     const scene = createScene();
     const handlers = new Map(), uploads = [];
     scene.node.studioWidget = scene.w;
-    scene.context.api = { addEventListener: (name, handler) => handlers.set(name, handler) };
+    scene.context.api.addEventListener = (name, handler) => handlers.set(name, handler);
     scene.context.app.graph.getNodeById = () => scene.node;
     scene.context.console = { ...console, error: noop };
     scene.context.fetch = async (_url, options) => { uploads.push(JSON.parse(options.body)); return { ok: true }; };

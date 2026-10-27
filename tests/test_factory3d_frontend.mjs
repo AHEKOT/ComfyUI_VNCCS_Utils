@@ -1234,6 +1234,56 @@ test("3D opening placement projects onto a rotated wall and draws a vertical liv
     wall.geometry.dispose(); wall.material.dispose();
 });
 
+test("Factory camera drag keeps its existing default pixel gain", async () => {
+    const { Factory3DViewer } = await import(pathToFileURL(path.join(root, "web", "factory3d/viewer.js")).href);
+    const view = Object.create(Factory3DViewer.prototype), calls = [];
+    view.rotateCameraFPV = (angles, options) => calls.push({ ...angles, ...options });
+    view.canvas = { getBoundingClientRect() { throw new Error("Factory defaults must not depend on displayed height"); } };
+    for (const options of [{}, { cameraDragScale: null }]) {
+        view.options = options; view.rotateCameraFromDrag(10, -5);
+        const call = calls.at(-1);
+        assert.ok(Math.abs(call.yaw + 1.8) < 1e-12); assert.ok(Math.abs(call.pitch - 0.9) < 1e-12);
+        assert.equal(call.emit, false);
+    }
+});
+
+test("projected camera drag adapts to actual FOV and displayed height", async () => {
+    const { Factory3DViewer } = await import(pathToFileURL(path.join(root, "web", "factory3d/viewer.js")).href);
+    const view = Object.create(Factory3DViewer.prototype), calls = [];
+    let height = 200;
+    view.options = { cameraDragScale: 0.7 }; view.camera = { fov: 60 }; view.captureFov = 90;
+    view.canvas = { clientHeight: 900, getBoundingClientRect: () => ({ height }) };
+    view.rotateCameraFPV = (angles, options) => calls.push({ ...angles, ...options });
+    view.rotateCameraFromDrag(20, -10); const wide = calls.at(-1);
+    view.camera.fov = 15; view.rotateCameraFromDrag(20, -10); const narrow = calls.at(-1);
+    assert.ok(Math.abs(narrow.yaw) < Math.abs(wide.yaw));
+    const ratio = Math.tan(15 * Math.PI / 360) / Math.tan(60 * Math.PI / 360);
+    assert.ok(Math.abs(narrow.yaw / wide.yaw - ratio) < 1e-12);
+    height = 400; view.rotateCameraFromDrag(40, -20); const enlarged = calls.at(-1);
+    assert.ok(Math.abs(enlarged.yaw - narrow.yaw) < 1e-12);
+    assert.ok(Math.abs(enlarged.pitch - narrow.pitch) < 1e-12);
+    assert.ok(calls.every(call => call.emit === false));
+});
+
+test("small projected drag increments update the camera immediately", async () => {
+    const { Factory3DViewer } = await import(pathToFileURL(path.join(root, "web", "factory3d/viewer.js")).href);
+    const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
+    const view = Object.create(Factory3DViewer.prototype);
+    view.options = { cameraDragScale: 0.7 }; view.camera = new THREE.PerspectiveCamera(15, 1, 0.01, 1000);
+    view.camera.position.set(0, 0, 2); view.controls = { target: new THREE.Vector3(), update() {} };
+    view.canvas = { getBoundingClientRect: () => ({ height: 400 }) }; let renders = 0;
+    view.invalidate = () => { renders++; };
+    const position = view.camera.position.clone();
+    for (let step = 0; step < 4; step++) {
+        const before = view.controls.target.clone();
+        view.rotateCameraFromDrag(0.25, -0.125);
+        assert.ok(view.controls.target.distanceTo(before) > 0);
+        assert.equal(renders, step + 1);
+        assert.ok(Math.abs(view.camera.position.distanceTo(view.controls.target) - 2) < 1e-10);
+    }
+    assert.deepEqual(view.camera.position.toArray(), position.toArray());
+});
+
 test("Plan framing fits XZ extents without moving the export camera", async () => {
     const { Factory3DViewer } = await import(pathToFileURL(path.join(root, "web", "factory3d/viewer.js")).href);
     const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);

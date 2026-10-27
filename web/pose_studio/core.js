@@ -1125,6 +1125,7 @@ export class PoseViewerCore {
         this._samProjectionCameraFrame = null;
 
         this.initialized = false;
+        this.initializationError = null;
 
         // Undo/Redo History
         this.history = [];
@@ -1321,6 +1322,7 @@ export class PoseViewerCore {
     }
 
     async waitForCaptureReady() {
+        if (this.initializationError) throw this.initializationError;
         while (!this._disposed) {
             const skin = this._skinTexturePromise;
             const reference = this._referenceTexturePromise;
@@ -1336,9 +1338,9 @@ export class PoseViewerCore {
     dispose() {
         this._disposed = true;
         this.initialized = false;
-        this._referenceGeneration = (this._referenceGeneration || 0) + 1;
-        this._resolveReferenceTexture?.(false);
+        this.removeReferenceImage();
         this._skinTextureLoadToken += 1;
+        this._resolveSkinTexture?.(false);
         this._skinTextureReady = false;
 
         if (this._renderFrame) {
@@ -1394,7 +1396,7 @@ export class PoseViewerCore {
         if (this.scene) {
             // Traverse and dispose materials/geometries
             this.scene.traverse((object) => {
-                if (!object.isMesh) return;
+                if ((!object.isMesh && !object.isLine) || object === this.skeletonHelper) return;
 
                 if (object.geometry) {
                     object.geometry.dispose();
@@ -1460,6 +1462,8 @@ export class PoseViewerCore {
 
             this.requestRender(); // Initial render
         } catch (e) {
+            this.initialized = false;
+            this.initializationError = new Error(`Pose Studio viewer initialization failed: ${e?.message || e}`);
             console.error('Pose Studio: Init failed', e);
         }
     }
@@ -3150,16 +3154,20 @@ export class PoseViewerCore {
     }
 
     _markSkinTextureReady() {
+        this._resolveSkinTexture?.(false);
+        this._resolveSkinTexture = null;
         this._skinTextureReady = true;
         this._skinTexturePromise = Promise.resolve(true);
     }
 
     _loadSkinTexture(skinType, onReady) {
         const token = ++this._skinTextureLoadToken;
+        this._resolveSkinTexture?.(false);
         const skinFile = this._skinTextureFilename(skinType);
         this._skinTextureReady = false;
 
         const promise = new Promise((resolve) => {
+            this._resolveSkinTexture = resolve;
             const texLoader = new this.THREE.TextureLoader();
             texLoader.load(
                 `${EXTENSION_URL}textures/${skinFile}?v=${Date.now()}`,
@@ -3169,10 +3177,12 @@ export class PoseViewerCore {
                         resolve(false);
                         return;
                     }
+                    const previousTexture = this.cachedSkinTexture;
                     this.cachedSkinTexture = tex;
                     this.cachedSkinType = skinType;
                     this._cachedSkinTextureReady = true;
                     onReady?.(tex);
+                    if (previousTexture !== tex) previousTexture?.dispose?.();
                     this._skinTextureReady = true;
                     this.requestRender();
                     resolve(true);
@@ -4744,6 +4754,8 @@ export class PoseViewerCore {
     }
 
     snapToCaptureCamera(width, height, zoom = 1.0, offsetX = 0, offsetY = 0, yawDeg = 0, pitchDeg = 0) {
+        // Workflow controls can restore before the asynchronous viewer setup finishes.
+        if (!this.orbit || !this.camera || !this.captureCamera) return;
         this.updateCaptureCamera(width, height, zoom, offsetX, offsetY, yawDeg, pitchDeg);
 
         // Disable damping for hard reset
@@ -7444,6 +7456,7 @@ export class PoseViewerCore {
 
         const rows = matrixRows.map((row) => Array.isArray(row) ? row : null);
         if (rows.some((row) => !row || row.length < 3)) return null;
+        if (rows.slice(0, 3).some(row => row.slice(0, 3).some(value => !Number.isFinite(value)))) return null;
 
         const THREE = this.THREE;
         const source = new THREE.Matrix4().set(
@@ -7481,7 +7494,7 @@ export class PoseViewerCore {
             if (!boneName) continue;
             const matrixRows = data.joint_rotations[index];
             const matrix = this._convertSAM3DRotationMatrix(matrixRows);
-            if (!matrix) continue;
+            if (!matrix) return null;
             worldRotations[boneName] = new this.THREE.Quaternion().setFromRotationMatrix(matrix);
         }
         return Object.keys(worldRotations).length ? worldRotations : null;
@@ -8506,6 +8519,21 @@ export class PoseViewerCore {
     applySAM3DImport(data, shoulderYOffset = 0, options = {}) {
         if (!this.THREE || !this.bones || !this.skinnedMesh) return false;
 
+        const namedPoints = this._buildSAM3DNamedPoints(data);
+        if (Object.values(namedPoints).some(point => point.slice(0, 3).some(value => !Number.isFinite(value)))) return false;
+        const sourceRotations = this._buildSAM3DWorldRotationMap(data);
+        if (data?.joint_rotations != null && (!Array.isArray(data.joint_rotations)
+            || (data.joint_rotations.length && !sourceRotations))) return false;
+        const restRotations = data?.rest_joint_rotations || data?.rest_joint_rots;
+        if (restRotations != null && (!Array.isArray(restRotations) || (restRotations.length
+            && !this._buildSAM3DWorldRotationMap({ joint_rotations: restRotations, joint_names: data?.joint_names })))) return false;
+        const hasKeypointTargets = this.ikController && (this.bones.pelvis || this.bones.spine_01)
+            && (namedPoints.pelvis || namedPoints.left_hip || namedPoints.right_hip);
+        const hasRotationTargets = sourceRotations && Object.keys(sourceRotations).some(name => (
+            (DEFAULT_WORLD_ROTATION_ORDER.includes(name) && this.bones[name]) || this.bones[SAM3D_TO_MH_BONE_MAP[name]]
+        ));
+        if (!hasKeypointTargets && !hasRotationTargets) return false;
+
         if (options.recordState !== false) this.recordState();
         this._sam3dImportedFootLocalRotations = null;
         this.modelRotation = { x: 0, y: 0, z: 0 };
@@ -8595,7 +8623,18 @@ export class PoseViewerCore {
         const people = data?.people || [];
         const person = people[0];
         const kp3d = person?.keypoints_3d;
-        if (!kp3d) return false;
+        if (!kp3d || typeof kp3d !== 'object' || Array.isArray(kp3d) || !Object.keys(kp3d).length) return false;
+        if (Object.values(kp3d).some(point => !Array.isArray(point) || point.length < 3
+            || point.slice(0, 3).some(value => !Number.isFinite(value)))) return false;
+        const hasRootOrIKTarget = ['pelvis', 'left_wrist', 'right_wrist', 'left_ankle', 'right_ankle']
+            .some(name => kp3d[name]);
+        const hasFKTarget = [
+            ['neck', 'nose'], ['neck', 'left_shoulder'], ['neck', 'right_shoulder'],
+            ['left_shoulder', 'left_elbow'], ['right_shoulder', 'right_elbow'],
+            ['left_hip', 'left_knee'], ['right_hip', 'right_knee'],
+        ].some(([parent, child]) => kp3d[parent] && kp3d[child])
+            || (kp3d.left_ear && kp3d.right_ear && (kp3d.neck || kp3d.nose));
+        if (!this.ikController || (!hasRootOrIKTarget && !hasFKTarget)) return false;
 
         let mannequinPelvis = new this.THREE.Vector3(0, 0, 0);
         const pelvisBone = this.bones.pelvis || this.bones.spine_01;

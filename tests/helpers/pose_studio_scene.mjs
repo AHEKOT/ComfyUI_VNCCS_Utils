@@ -59,6 +59,7 @@ export function createScene({ skinned = false } = {}) {
         setTimeout: fn => { timers.set(++id, fn); return id; }, clearTimeout: id => timers.delete(id),
         app: { graph: { setDirtyCanvas: noop } }, Event: class { constructor(type) { this.type = type; } },
     };
+    context.api = { fetchApi: (...args) => context.fetch(...args) };
     const constants = source.slice(source.indexOf("const DEFAULT_POSE_STUDIO_MESH_PROPORTIONS"), source.indexOf("function getVNCCSSharedMorphWorker"));
     const Widget = vm.runInNewContext(constants + source.slice(source.indexOf("class PoseStudioWidget {"), source.indexOf("// === ComfyUI Extension Registration ===")) + "\nPoseStudioWidget", context);
     Widget.prototype.createUI = noop;

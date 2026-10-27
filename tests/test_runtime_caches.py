@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -12,9 +13,14 @@ from helpers.runtime_caches import load_runtime_caches
 from helpers.unicanvas_package import load_unicanvas_package
 
 
+class JsonRequest:
+    async def read(self):
+        return json.dumps(await self.json()).encode()
+
+
 class RuntimeCacheTests(unittest.TestCase):
     def test_cache_routes_reject_invalid_json_and_ids_without_writes(self):
-        class Request:
+        class Request(JsonRequest):
             headers = {"Content-Length": "100"}
             payload = None
 
@@ -48,7 +54,7 @@ class RuntimeCacheTests(unittest.TestCase):
         self.assertTrue(validate(mock.Mock(headers={}, can_read_body=False), 100))
 
     def test_corrupt_saved_cache_remains_a_server_failure_and_is_preserved(self):
-        class Request:
+        class Request(JsonRequest):
             headers = {"Content-Length": "100"}
             payload = {}
 
@@ -74,7 +80,7 @@ class RuntimeCacheTests(unittest.TestCase):
         state_id = "vnccs_unicanvas_standalone_tab"
 
         def save(revision, base_revision, marker):
-            class Request:
+            class Request(JsonRequest):
                 headers = {"Content-Length": "1000"}
                 async def json(self):
                     return {"state_id": state_id, "state": {"layers": [], "marker": marker},
@@ -95,7 +101,7 @@ class RuntimeCacheTests(unittest.TestCase):
         state_id = "vnccs_unicanvas_standalone_tab"
         entry = {"state": {"layers": [], "marker": "new edit"}, "revision": 20}
         self.cache["_vnccs_write_unicanvas_state_cache_file"](state_id, entry)
-        class Request:
+        class Request(JsonRequest):
             headers = {"Content-Length": "1000"}
             async def json(self):
                 return {"state_id": state_id, "revision": 30, "base_revision": 10}
@@ -110,7 +116,7 @@ class RuntimeCacheTests(unittest.TestCase):
             for state_id in ("a" * 96, "b" * 97, "c" * 128, "___" + "d" * 128 + "___", "e" * 127 + "__more", "!bad/name!"):
                 with self.subTest(state_id=state_id):
                     state = {"layers": [], "marker": state_id}
-                    class Request:
+                    class Request(JsonRequest):
                         headers = {"Content-Length": "1000"}
 
                         async def json(self):
@@ -172,7 +178,7 @@ class RuntimeCacheTests(unittest.TestCase):
             self.cache["VNCCS_UNICANVAS_STATE_CACHE"][state_id] = entry
             (legacy / f"{state_id}.json").write_text(json.dumps(entry))
 
-        class Request:
+        class Request(JsonRequest):
             headers = {"Content-Length": "100"}
             async def json(self):
                 return {"state_id": "current", "revision": 9}
@@ -195,7 +201,7 @@ class RuntimeCacheTests(unittest.TestCase):
 
     def test_canvas_delete_rejects_invalid_request_and_reports_disk_failure(self):
         delete = self.cache["routes"]["/vnccs/unicanvas_state_delete"]
-        class Request:
+        class Request(JsonRequest):
             headers = {"Content-Length": "100"}
             payload = {}
             async def json(self):
@@ -222,11 +228,134 @@ class RuntimeCacheTests(unittest.TestCase):
         self.cache = load_runtime_caches(self.root)
         self.assertEqual(self.cache["_vnccs_read_unicanvas_state_cache_file"]("old"), entry)
 
+    def test_legacy_canvas_migration_serializes_with_upload_and_delete(self):
+        cache = self.cache["canvas_service"]
+        documents = self.cache["documents"]
+        for operation in ("upload", "delete"):
+            with self.subTest(operation=operation):
+                state_id = f"legacy_{operation}"
+                legacy = Path(cache._UNICANVAS_LEGACY_STATE_CACHE_DIR)
+                legacy.mkdir(parents=True, exist_ok=True)
+                old = {"state": {"layers": [{"dataURL": "old pixels"}]}, "revision": 1}
+                (legacy / f"{state_id}.json").write_text(json.dumps(old))
+                ready, release, attempted = threading.Event(), threading.Event(), threading.Event()
+                blocked, results, errors = [], [], []
+                lock = threading.RLock()
+
+                class ObservedLock:
+                    def __enter__(self):
+                        if threading.current_thread().name != "migration" and not attempted.is_set():
+                            acquired = lock.acquire(blocking=False)
+                            blocked.append(not acquired)
+                            attempted.set()
+                            if not acquired:
+                                lock.acquire()
+                        else:
+                            lock.acquire()
+                        return self
+
+                    def __exit__(self, *_args):
+                        lock.release()
+
+                original = cache._vnccs_write_unicanvas_state_cache_file
+
+                def paused_write(*args):
+                    if threading.current_thread().name == "migration":
+                        ready.set()
+                        if not release.wait(5):
+                            raise TimeoutError("migration was not released")
+                    return original(*args)
+
+                class Request(JsonRequest):
+                    headers = {"Content-Length": "1000"}
+
+                    async def json(self):
+                        return {"state_id": state_id, "state": {"layers": [{"dataURL": "new pixels"}]}, "revision": 2}
+
+                def run(action):
+                    try:
+                        results.append(action())
+                    except BaseException as exc:
+                        errors.append(exc)
+
+                shared_lock = ObservedLock()
+                handler = self.cache["routes"][f"/vnccs/unicanvas_state_{operation}"]
+                reader = threading.Thread(name="migration", target=run,
+                                          args=(lambda: cache._vnccs_read_unicanvas_state_cache_file(state_id),))
+                mutation = threading.Thread(target=run, args=(lambda: asyncio.run(handler(Request())),))
+                with mock.patch.object(cache, "LOCK", shared_lock), mock.patch.object(documents, "LOCK", shared_lock), \
+                        mock.patch.object(cache, "_vnccs_write_unicanvas_state_cache_file", paused_write):
+                    reader.start()
+                    try:
+                        self.assertTrue(ready.wait(5))
+                        mutation.start()
+                        self.assertTrue(attempted.wait(5))
+                        self.assertEqual(blocked, [True], "new revisions must wait for the legacy reader")
+                    finally:
+                        release.set()
+                        reader.join(5)
+                        if mutation.ident is not None:
+                            mutation.join(5)
+                    self.assertFalse(reader.is_alive() or mutation.is_alive())
+                    self.assertEqual(errors, [])
+                response = next(result for result in results if hasattr(result, "status"))
+                self.assertEqual(response.status, 200)
+                cache.VNCCS_UNICANVAS_STATE_CACHE.clear()
+                stored = cache._vnccs_read_unicanvas_state_cache_file(state_id)
+                self.assertEqual(stored["revision"], 2)
+                self.assertEqual(stored["state"]["layers"], [] if operation == "delete" else [{"dataURL": "new pixels"}])
+
+    def test_canvas_parse_upload_get_and_delete_keep_the_event_loop_responsive(self):
+        cache = self.cache["canvas_service"]
+        caller = threading.get_ident()
+        for operation in ("parse", "upload", "get", "delete"):
+            with self.subTest(operation=operation):
+                state_id = f"responsive_{operation}"
+                cache._vnccs_write_unicanvas_state_cache_file(state_id, {"state": {"layers": []}, "revision": 1})
+                entered, release = threading.Event(), threading.Event()
+                method = "_vnccs_read_unicanvas_state_cache_file" if operation == "get" else "_vnccs_write_unicanvas_state_cache_file"
+                owner = json if operation == "parse" else cache
+                if operation == "parse":
+                    method = "loads"
+                original = getattr(owner, method)
+
+                def pause_disk_work(*args, **kwargs):
+                    entered.set()
+                    self.assertNotEqual(threading.get_ident(), caller, "disk work ran on the event loop")
+                    if not release.wait(5):
+                        raise TimeoutError("disk work was not released")
+                    return original(*args, **kwargs)
+
+                class Request(JsonRequest):
+                    headers = {"Content-Length": "1000"}
+                    match_info = {"state_id": state_id}
+
+                    async def json(self):
+                        return {"state_id": state_id, "state": {"layers": []}, "revision": 2}
+
+                route = "upload" if operation == "parse" else operation
+                path = "/vnccs/unicanvas_state/{state_id}" if operation == "get" else f"/vnccs/unicanvas_state_{route}"
+                handler = self.cache["routes"][path]
+
+                async def check():
+                    pending = asyncio.create_task(handler(Request()))
+                    try:
+                        self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+                        await asyncio.sleep(0)
+                        self.assertFalse(pending.done(), "the event loop must run while storage is paused")
+                    finally:
+                        release.set()
+                        response = await pending
+                    self.assertEqual(response.status, 200, response.data)
+
+                with mock.patch.object(owner, method, pause_disk_work):
+                    asyncio.run(check())
+
     def test_canvas_rejects_late_revision_after_memory_eviction(self):
         upload = self.cache["routes"]["/vnccs/unicanvas_state_upload"]
         gate = asyncio.Event()
 
-        class Request:
+        class Request(JsonRequest):
             headers = {"Content-Length": "100"}
 
             def __init__(self, revision, wait=False):
@@ -252,7 +381,7 @@ class RuntimeCacheTests(unittest.TestCase):
         self.assertEqual(entry["state"]["layers"][0]["dataURL"], "pixels-2")
 
     def test_canvas_accepts_legacy_payloads(self):
-        class Request:
+        class Request(JsonRequest):
             headers = {"Content-Length": "100"}
 
             async def json(self):
@@ -267,7 +396,7 @@ class RuntimeCacheTests(unittest.TestCase):
         previous = {"state": {"layers": [{"dataURL": "new pixels"}]}, "revision": 200}
         for state_id in ("same", "same_out"):
             write(state_id, previous)
-        class Request:
+        class Request(JsonRequest):
             headers = {"Content-Length": "100"}
             payload = {"state_id": "same", "revision": 100}
             async def json(self):
@@ -292,7 +421,7 @@ class RuntimeCacheTests(unittest.TestCase):
         previous = {"state": {"layers": [{"dataURL": "old"}]}, "revision": 1}
         self.cache["_vnccs_write_unicanvas_state_cache_file"]("same", previous)
         self.cache["VNCCS_UNICANVAS_STATE_CACHE"]["same"] = previous
-        class Request:
+        class Request(JsonRequest):
             headers = {"Content-Length": "100"}
             async def json(self):
                 return {"state_id": "same", "revision": 2, "state": {"layers": [{"dataURL": "new"}]}}
@@ -306,7 +435,7 @@ class RuntimeCacheTests(unittest.TestCase):
         previous = {"animation": {"tracks": {}}, "revision": 1}
         self.cache["_vnccs_write_pose_animation_cache_file"]("same", previous)
         self.cache["VNCCS_POSE_ANIMATION_CACHE"]["same"] = previous
-        class Request:
+        class Request(JsonRequest):
             headers = {"Content-Length": "100"}
             async def json(self):
                 return {"animation_id": "same", "revision": 2, "animation": {"tracks": {}}}

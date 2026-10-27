@@ -11,7 +11,8 @@ export function sampleState() {
         { blockId: "clothing" }, { text: ",\n" }, { blockId: "hair" }, { text: ", standing" }] };
 }
 
-export const text = textContent => ({ nodeType: 3, textContent, get parentElement() { return this.parentNode; } });
+export const text = textContent => ({ nodeType: 3, textContent, get parentElement() { return this.parentNode; },
+    cloneNode() { return text(this.textContent); } });
 export function dom(tag = "div") {
     const node = {
         nodeType: 1, tagName: tag.toUpperCase(), dataset: {}, attributes: {}, childNodes: [], listeners: new Map(),
@@ -27,6 +28,11 @@ export function dom(tag = "div") {
         remove() { if (this.parentNode) this.parentNode.childNodes = this.parentNode.childNodes.filter(node => node !== this); this.parentNode = null; },
         replaceChild(child, previous) { child.parentNode = this; this.childNodes[this.childNodes.indexOf(previous)] = child; previous.parentNode = null; },
         replaceChildren(...children) { for (const child of this.childNodes) child.parentNode = null; this.childNodes = []; this.append(...children); },
+        cloneNode(deep) {
+            const copy = dom(tag); copy.dataset = { ...this.dataset }; copy.className = this.className;
+            if (deep) copy.append(...this.childNodes.map(child => child.cloneNode(true)));
+            return copy;
+        },
         setAttribute(name, value) { this.attributes[name] = value; }, getAttribute(name) { return this.attributes[name]; },
         matches(selector) {
             return selector.split(",").some(part => {
@@ -74,6 +80,7 @@ export function installDom(t) {
     Object.defineProperty(globalThis, "document", { configurable: true, value: {
         ...dom("document"), body: dom("body"),
         getElementById: () => ({}), createElement: dom, createTextNode: text,
+        createDocumentFragment: () => Object.assign(dom(), { nodeType: 11 }),
         createRange: () => ({
             setStart(node, offset) { this.startContainer = node; this.startOffset = offset; },
             setEnd(node, offset) { this.endContainer = node; this.endOffset = offset; },
@@ -85,6 +92,13 @@ export function installDom(t) {
             selectNodeContents(node) { this.setStart(node, 0); this.setEnd(node, node.nodeType === 3 ? node.textContent.length : node.childNodes.length); },
             collapse(start) { if (start) this.setEnd(this.startContainer, this.startOffset); else this.setStart(this.endContainer, this.endOffset); this.collapsed = true; },
             cloneRange() { return { ...this }; },
+            cloneContents() {
+                if (this.startContainer !== this.endContainer) throw new Error("Use an explicit clone spy for cross-node ranges");
+                const fragment = document.createDocumentFragment(), node = this.startContainer;
+                fragment.append(...(node.nodeType === 3 ? [text(node.textContent.slice(this.startOffset, this.endOffset))]
+                    : node.childNodes.slice(this.startOffset, this.endOffset).map(child => child.cloneNode(true))));
+                return fragment;
+            },
             deleteContents() {
                 if (this.startContainer !== this.endContainer) throw new Error("Use an explicit boundary spy for cross-node ranges");
                 const node = this.startContainer;
@@ -94,7 +108,10 @@ export function installDom(t) {
             insertNode(node) {
                 const parent = this.startContainer;
                 if (parent.nodeType !== 1) throw new Error("Use an element insertion boundary in this harness");
-                node.parentNode = parent; parent.childNodes.splice(this.startOffset, 0, node);
+                const nodes = node.nodeType === 11 ? [...node.childNodes] : [node];
+                for (const child of nodes) child.parentNode = parent;
+                parent.childNodes.splice(this.startOffset, 0, ...nodes);
+                if (node.nodeType === 11) node.childNodes = [];
             },
         }),
     } });

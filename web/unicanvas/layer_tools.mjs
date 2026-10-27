@@ -62,6 +62,7 @@ export const LAYER_MENU_ITEMS = Object.freeze([
 ]);
 
 export const PSD_SKIP_REASONS = Object.freeze({
+  mask: "layer/group mask",
   clipping: "clipping mask",
   adjustment: "adjustment layer",
   effects: "layer effects",
@@ -136,6 +137,12 @@ function psdEntryToCanvas(entry) {
 function collectPsdRasterLayers(entries, imported, skipped, hidden = false) {
   for (const entry of entries || []) {
     if (!entry || typeof entry !== "object") continue;
+    const name = entry.name || "Unnamed";
+    if ((entry.mask && !entry.mask.disabled) || (entry.realMask && !entry.realMask.disabled)
+        || (entry.vectorMask && !entry.vectorMask.disable)) {
+      skipped.push({ reason: PSD_SKIP_REASONS.mask, name });
+      continue;
+    }
     if (Array.isArray(entry.children)) {
       if (entry.clipped || entry.adjustment || Object.keys(entry.effects || {}).length
           || normalizePsdOpacity(entry.opacity ?? 1) !== 1
@@ -145,7 +152,6 @@ function collectPsdRasterLayers(entries, imported, skipped, hidden = false) {
       collectPsdRasterLayers(entry.children, imported, skipped, hidden || Boolean(entry.hidden));
       continue;
     }
-    const name = entry.name || "Unnamed";
     if (entry.clipped) {
       skipped.push({ reason: PSD_SKIP_REASONS.clipping, name });
       continue;
@@ -220,6 +226,14 @@ async function importPSDFile(uc, file) {
     if (!current()) return;
     uc.setStatus(`[VNCCS UniCanvas] PSD import failed: ${err.message || err}`, true);
   }
+}
+
+function layerEditCrop(uc, layer) {
+  if (!uc.panorama && layer.hiresCanvas && layer.hiresRect) {
+    const rect = uc.normalizeLayerWorldRect(layer.hiresRect);
+    return { ...rect, x: rect.x - uc.origin.x, y: rect.y - uc.origin.y };
+  }
+  return uc.getLayerAlphaBounds(layer);
 }
 
 function layerImageCanvas(uc, layer) {
@@ -407,7 +421,7 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
   const label = method === "edit"
     ? `Remove bg – Edit model (${editModelLabel})`
     : `Remove bg – ${{ birefnet: "BiRefNet", rembg: "rembg", sam3: "SAM 3" }[method] || "Edit model"}`;
-  const crop = uc.getLayerAlphaBounds(layer);
+  const crop = layerEditCrop(uc, layer);
   if (!crop) {
     uc.setStatus("[VNCCS UniCanvas] Remove bg: layer is empty.", true);
     return;
@@ -417,7 +431,7 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
     return;
   }
   const layerState = uc.captureLayerEditState(layer);
-  const source = uc.cloneCanvasCrop(layer.canvas, crop);
+  const source = layer.hiresCanvas && layer.hiresRect ? layer.hiresCanvas : uc.cloneCanvasCrop(layer.canvas, crop);
   uc.setStatus(`[VNCCS UniCanvas] ${label} running...`);
   try {
     const res = await fetch(REMOVE_BG_ROUTE, {
@@ -438,13 +452,15 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
       return;
     }
     const before = uc.createLayerPixelSnapshot(layer);
-    uc.materializeRasterLayerForEditing(layer);
+    if (uc.materializeRasterLayerForEditing(layer) === false) return;
+    const appliedCrop = { ...crop, x: crop.x + layerState.originX - uc.origin.x,
+      y: crop.y + layerState.originY - uc.origin.y };
     const ctx = layer.canvas.getContext("2d");
     ctx.save();
     ctx.globalCompositeOperation = "destination-in";
-    ctx.drawImage(alpha, 0, 0, alpha.width, alpha.height, crop.x, crop.y, crop.width, crop.height);
+    ctx.drawImage(alpha, 0, 0, alpha.width, alpha.height, appliedCrop.x, appliedCrop.y, appliedCrop.width, appliedCrop.height);
     ctx.restore();
-    uc.markLayerPixelsChanged(layer, crop, false);
+    uc.markLayerPixelsChanged(layer, appliedCrop, false);
     // One-shot operation: exactly one layerPixels history entry.
     uc.pushHistoryEntry({
       kind: "layerPixels",
@@ -525,8 +541,14 @@ function colorMatchIsCurrent(uc, preview) {
 function composeColorMatch(uc, preview) {
   const matched = preview.matched.get(preview.method);
   if (!matched || !colorMatchIsCurrent(uc, preview)) return;
-  const { layer, crop } = preview;
-  uc.materializeRasterLayerForEditing(layer);
+  const { layer } = preview;
+  const origin = { ...uc.origin };
+  if (uc.materializeRasterLayerForEditing(layer) === false) {
+    closeColorMatchPreview(uc, false);
+    return;
+  }
+  const crop = preview.crop = { ...preview.crop,
+    x: preview.crop.x + origin.x - uc.origin.x, y: preview.crop.y + origin.y - uc.origin.y };
   const ctx = uc.configureImageContext(layer.canvas.getContext("2d"));
   ctx.save();
   ctx.clearRect(crop.x, crop.y, crop.width, crop.height);
@@ -558,6 +580,7 @@ function commitColorMatchPreview(uc, preview) {
     cancelAnimationFrame(preview.rafId);
     preview.rafId = 0;
     composeColorMatch(uc, preview);
+    if (!colorMatchIsCurrent(uc, preview)) return;
   }
   uc.pushHistoryEntry({
     kind: "layerPixels",
@@ -598,7 +621,13 @@ async function loadColorMatchMethod(uc, preview, method) {
   try {
     const resultImage = await uc.loadImage(await requestColorMatch(preview.targetBase, preview.referenceBase, method));
     if (seq !== preview.seq || !colorMatchIsCurrent(uc, preview)) return;
-    preview.matched.set(method, resultImage);
+    // source-atop keeps the target alpha; the returned alpha must not weaken the RGB transfer again.
+    const matched = uc.cloneCanvas(resultImage);
+    const matchedContext = uc.getReadbackContext(matched);
+    const pixels = matchedContext.getImageData(0, 0, matched.width, matched.height);
+    for (let i = 3; i < pixels.data.length; i += 4) pixels.data[i] = 255;
+    matchedContext.putImageData(pixels, 0, 0);
+    preview.matched.set(method, matched);
     preview.loading = false;
     preview.strengthInput.disabled = false;
     preview.setNote("");
@@ -653,7 +682,7 @@ function escapeText(value) {
 function openColorMatchPopover(uc, layer, point = null) {
   closeColorMatchPreview(uc, true);
   if (!uc.isLayerEditStateCurrent(uc.captureLayerEditState(layer))) return;
-  const crop = uc.getLayerAlphaBounds(layer);
+  const crop = layerEditCrop(uc, layer);
   if (!crop) {
     uc.setStatus("[VNCCS UniCanvas] Color match to below: layer is empty.", true);
     return;
@@ -663,7 +692,7 @@ function openColorMatchPopover(uc, layer, point = null) {
     uc.setStatus("[VNCCS UniCanvas] Color match to below needs a visible reference layer.", true);
     return;
   }
-  const targetBase = uc.cloneCanvasCrop(layer.canvas, crop);
+  const targetBase = layer.hiresCanvas && layer.hiresRect ? uc.cloneCanvas(layer.hiresCanvas) : uc.cloneCanvasCrop(layer.canvas, crop);
   const element = document.createElement("div");
   element.className = "vnccs-uc-color-match-popover";
   element.style.cssText = "position:absolute; z-index:30; width:270px; padding:10px; border-radius:10px; background:rgba(20,16,30,.97); border:1px solid rgba(255,255,255,.14); color:#e8e8f0; font:11px sans-serif; display:grid; gap:8px; box-shadow:0 8px 24px rgba(0,0,0,.45);";

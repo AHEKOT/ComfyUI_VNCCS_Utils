@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { trimPanoramaHistory } from "../web/unicanvas/panorama.mjs";
 
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const modes = readFileSync(new URL("../web/unicanvas/modes.mjs", import.meta.url), "utf8");
@@ -26,6 +27,7 @@ class Element {
 
 const domDocument = { createElement: tag => new Element(tag), activeElement: null };
 const context = { clearTimeout, console, document: domDocument, DEFAULT_SEED_MODE: "randomize",
+  trimPanoramaHistory,
   poseGenerationLayer: () => null, window: { setTimeout() {} },
   resolveConfigDrawSettings: () => ({ unsupported: "external model tensors" }) };
 const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension("))
@@ -43,6 +45,7 @@ function widget(values = {}) {
   const statuses = [];
   const w = Object.assign(Object.create(prototype), {
     container: new Element(), panorama: null, drawInProgress: false,
+    undoStack: [], redoStack: [],
     left: new Element(), drawControl: new Element(), drawBtn: new Element("button"), batchInput: new Element("input"),
     captureGenerationSettings: () => ({}),
     _documentRevision: 4, _importRevision: 7,
@@ -186,7 +189,7 @@ for (const gesture of ["pointer", "transform", "pose"]) {
   });
 }
 
-for (const flag of ["_generationPreparing", "_generationLocked", "drawInProgress", "_canvasOperation"]) {
+for (const flag of ["_generationPreparing", "_generationLocked", "drawInProgress", "_canvasOperation", "_queuePreparing"]) {
   test(`${flag} prevents pointer changes, Undo, Redo and late layer edits`, () => {
     let edits = 0;
     const { w } = widget({ [flag]: true, tool: "sam", layers: [], origin: { x: 0, y: 0 },
@@ -275,6 +278,22 @@ test("canvas operations block all controls without adding a banner or showing St
   w.syncInteractionLock();
   assert.equal(w.left.inert, false);
   assert.deepEqual(w.container.children, originalChildren);
+});
+
+test("ordinary queue preparation locks edits without showing Stop or blocking settings", () => {
+  const { w } = widget({ _queuePreparing: 1 });
+  const settings = new Element("input");
+  w.container.append(settings);
+  w.syncInteractionLock();
+  assert.equal(w.drawBtn.inert, true);
+  assert.equal(settings.inert, false);
+  assert.equal(w.stopBtn.hidden, true);
+  w.drawInProgress = true;
+  w.syncInteractionLock();
+  assert.equal(w.stopBtn.hidden, false, "a queued Generate keeps its existing Stop control");
+  w._queuePreparing = 0;
+  w.syncInteractionLock();
+  assert.equal(w.drawBtn.inert, true, "ending queue preparation must retain the generation lock");
 });
 
 test("the event gate blocks document edits and allows safe UI events during generation", () => {
@@ -432,7 +451,7 @@ test("fullscreen capture listeners let safe controls receive key events during g
   }
 });
 
-for (const flag of ["_generationPreparing", "_generationLocked", "drawInProgress"]) {
+for (const flag of ["_generationPreparing", "_generationLocked", "drawInProgress", "_queuePreparing"]) {
   for (const gesture of ["middle", "pan-tool", "alt-move", "zoom-drag"]) {
     test(`${flag} permits ${gesture} navigation without changing layers or bbox`, () => {
       const { w } = widget({ [flag]: true, tool: gesture === "pan-tool" ? "pan" : gesture === "alt-move" ? "move" : "brush",

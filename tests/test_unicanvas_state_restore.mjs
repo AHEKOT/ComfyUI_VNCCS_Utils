@@ -57,6 +57,22 @@ test("flat restore keeps workflow metadata and borrows pixels by surviving layer
     assert.equal(w.stateCacheId, base.state_id, "reopening a workflow preserves its cache reference");
 });
 
+test("compact workflows restore native pixels when the layer has no backing-canvas crop", async () => {
+    const saved = { ...base, layers: [{ id: "outside", type: "raster", crop: null, dataURL: null,
+        hiresRect: { x: 150, y: 10, width: 20, height: 20 }, hiresDataURL: "native-pixels" }] };
+    const original = widget(saved);
+    original.syncToNode(saved);
+    const compact = JSON.parse(original.node.widgets[0].value);
+    assert.equal(compact.layers[0].cached, true, "native pixels still depend on the saved cache");
+    assert.equal(compact.layers[0].hiresDataURL, null, "workflow JSON remains compact");
+    cache(saved);
+    const reopened = widget(compact);
+    await reopened._loadFromNode();
+    assert.equal(reopened._stateRestoreFailed, false);
+    assert.equal(reopened.restored.layers[0].hiresDataURL, "native-pixels");
+    assert.deepEqual(reopened.restored.layers[0].hiresRect, saved.layers[0].hiresRect);
+});
+
 test("a copied node reads original pixels then persists an independent writable cache", async () => {
     const saved = { ...base, layers: [{ id: "image", cached: true }] };
     const reads = cache({ ...saved, layers: [{ id: "image", dataURL: "original-pixels" }] });
@@ -323,6 +339,166 @@ function autosavingWidget(standalone) {
             return true;
         },
     };
+}
+
+function installQueueWrapper(runtime, widgets, queuePrompt) {
+    const app = runtime.app = { graph: { _nodes: widgets.map(widget => widget.node) }, queuePrompt };
+    const start = source.indexOf("    const queuePrompt = app.queuePrompt;");
+    const end = source.indexOf("\n  },\n  async beforeRegisterNodeDef", start);
+    vm.runInNewContext(`(function () { ${source.slice(start, end)} })()`, runtime);
+    return app;
+}
+
+function queuedWidget(id, prepare) {
+    const w = Object.assign(Object.create(prototype), {
+        node: { id }, _stateLoadRevision: 1, layers: [], preparePanoramaForQueue: prepare,
+    });
+    w.node.uniCanvasWidget = w;
+    return w;
+}
+
+const settleQueue = () => new Promise(setImmediate);
+function queueDeferred() {
+    let resolve, reject;
+    const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+    return { promise, resolve, reject };
+}
+
+test("managed queue snapshots keep document and output pixels together through graph serialization", async () => {
+    const { w, runtime, uploads, timers, tick } = autosavingWidget(false);
+    await w.flushStateUpload();
+    w.pixels = "blue";
+    w.invalidateLayerRenderCaches(w.layers[0]);
+    w.syncToNode();
+    const upload = queueDeferred(), serialize = queueDeferred();
+    const fetch = runtime.fetch;
+    runtime.fetch = async (...args) => {
+        const response = await fetch(...args);
+        if (uploads.length === 2) await upload.promise;
+        return response;
+    };
+    let queued;
+    const app = installQueueWrapper(runtime, [w], async () => {
+        queued = JSON.parse(w.node.widgets[0].value);
+        await serialize.promise;
+    });
+    const layerState = w.captureLayerEditState(w.layers[0]);
+    const pending = app.queuePrompt();
+    await settleQueue();
+    assert.equal(w.editingBlocked, true);
+    // The pointer gate and the shared asynchronous-edit guard both protect the captured pixels.
+    w.tool = "brush";
+    w.onPointerDown({ button: 0, preventDefault() { assert.fail("queue preparation accepted a paint gesture"); } });
+    if (w.isLayerEditStateCurrent(layerState)) {
+        w.pixels = "green";
+        w.invalidateLayerRenderCaches(w.layers[0]);
+        w.scheduleDeferredCanvasCommit(w.layers[0].id);
+    }
+    upload.resolve();
+    await settleQueue();
+    assert.equal(w.editingBlocked, true, "serialization still owns every document lock");
+    assert.equal(uploads[1].state.canvas_id, w.canvasId);
+    assert.equal(uploads[1].canvas_base_state_id, uploads[0].state_id);
+    assert.equal(uploads[1].state.layers[0].dataURL, "blue");
+    assert.equal(uploads[2].state.layers[0].dataURL, "blue");
+    assert.equal(queued.state_id, uploads[1].state_id);
+    assert.equal(queued.output_id, uploads[2].state_id);
+    serialize.resolve(); await pending;
+    assert.equal(w.editingBlocked, false);
+    for (let i = 0; i < 5 && timers.size; i++) await tick();
+    assert.equal(uploads.length, 3, "normal save timers do not produce a mismatched replacement");
+});
+
+test("all widgets stay locked while another widget saves and until the original queue finishes", async () => {
+    const first = queueDeferred(), second = queueDeferred(), queued = queueDeferred();
+    const a = queuedWidget(1, () => first.promise), b = queuedWidget(2, () => second.promise);
+    const muted = queuedWidget(3, () => assert.fail("muted nodes are not queued")); muted.node.mode = 2;
+    let submitted = false;
+    const app = installQueueWrapper({}, [a, b, muted], async function (...args) {
+        assert.equal(this, app);
+        assert.deepEqual(args, [0, 1]);
+        submitted = true;
+        await queued.promise;
+        return "queued";
+    });
+    const pending = app.queuePrompt(0, 1);
+    assert.equal(a.editingBlocked, true); assert.equal(b.editingBlocked, true);
+    assert.equal(muted.editingBlocked, false);
+    first.resolve(); await settleQueue();
+    assert.equal(a.editingBlocked, true); assert.equal(b.editingBlocked, true); assert.equal(submitted, false);
+    second.resolve(); await settleQueue();
+    assert.equal(a.editingBlocked, true); assert.equal(b.editingBlocked, true);
+    queued.resolve(); assert.equal(await pending, "queued");
+    assert.equal(a.editingBlocked, false); assert.equal(b.editingBlocked, false);
+});
+
+test("overlapping and reentrant queue calls release only their own locks", async () => {
+    const waits = [queueDeferred(), queueDeferred()];
+    const w = queuedWidget(1, async () => {});
+    let calls = 0;
+    const app = installQueueWrapper({}, [w], () => waits[calls++].promise);
+    const first = app.queuePrompt(), second = app.queuePrompt();
+    await settleQueue();
+    assert.equal(w._queuePreparing, 2);
+    waits[0].resolve(); await first;
+    assert.equal(w._queuePreparing, 1); assert.equal(w.editingBlocked, true);
+    waits[1].resolve(); await second;
+    assert.equal(w._queuePreparing, 0);
+    const reentrant = installQueueWrapper({}, [w], async function (depth = 0) {
+        assert.equal(w._queuePreparing, depth + 1);
+        if (!depth) await reentrant.queuePrompt(1);
+        assert.equal(w._queuePreparing, depth + 1);
+    });
+    await reentrant.queuePrompt();
+    assert.equal(w.editingBlocked, false);
+});
+
+for (const failure of ["prepare", "serialize", "restore", "stop"]) {
+    test(`queue ${failure} releases all queue locks without clearing another generation`, async () => {
+        const wait = queueDeferred();
+        const a = queuedWidget(1, () => wait.promise), b = queuedWidget(2, async () => {});
+        Object.assign(a, { drawInProgress: true, _generationLocked: true, _drawViaQueue: true });
+        let submitted = 0;
+        const app = installQueueWrapper({}, [a, b], async () => { submitted++; throw new Error("serialization failed"); });
+        const pending = app.queuePrompt();
+        const rejected = assert.rejects(pending, failure === "prepare" ? /upload failed/
+            : failure === "serialize" ? /serialization failed/ : failure === "restore" ? /document changed/ : /Generation stopped/);
+        if (failure === "prepare") wait.reject(new Error("upload failed"));
+        else {
+            if (failure === "restore") b._stateLoadRevision++;
+            if (failure === "stop") a._stopRequested = true;
+            wait.resolve();
+        }
+        await rejected;
+        assert.equal(submitted, failure === "serialize" ? 1 : 0);
+        assert.equal(a._queuePreparing, 0); assert.equal(b._queuePreparing, 0);
+        assert.equal(a.editingBlocked, true); assert.equal(b.editingBlocked, false);
+    });
+}
+
+test("an edit in any widget stops the queue before another widget is locked or saved", async () => {
+    const a = queuedWidget(1, () => assert.fail("preflight must run before saving"));
+    const b = queuedWidget(2, () => assert.fail("an active edit cannot be saved"));
+    b.transformDraft = {};
+    const app = installQueueWrapper({}, [a, b], () => assert.fail("an active edit cannot be queued"));
+    await assert.rejects(app.queuePrompt(), /Finish the UniCanvas edit/);
+    assert.equal(a.editingBlocked, false); assert.equal(b.editingBlocked, false);
+});
+
+for (const stage of ["pose", "state"]) {
+    test(`replacing the document during ${stage} preparation cannot upload the replacement output`, async () => {
+        const wait = queueDeferred();
+        const w = Object.assign(Object.create(prototype), {
+            _stateLoadRevision: 1, layers: stage === "pose" ? [{ type: "pose" }] : [],
+            poseEditor: { flush: () => wait.promise },
+            flushStateUpload: () => stage === "state" ? wait.promise : assert.fail("replaced pose cannot be saved"),
+            syncToNode() {}, uploadOutputSnapshot: () => assert.fail("replacement pixels cannot use the old queue snapshot"),
+        });
+        const pending = w.preparePanoramaForQueue();
+        w._stateLoadRevision++;
+        wait.resolve(true);
+        await assert.rejects(pending, /document changed/);
+    });
 }
 
 for (const standalone of [false, true]) {

@@ -266,9 +266,155 @@ test("workflow restore sends its saved revision and reads a revision for legacy 
     await editor.ensureScene(legacy);
     assert.deepEqual(sent, ["GET", { objects: [], edit_revision: 7 }]);
     assert.equal(legacy.edit_revision, undefined);
-    editor._fetchJSON = async () => { throw new Error("Conflict"); };
+    editor._fetchJSON = async () => { throw Object.assign(new Error("Conflict"), { status: 409 }); };
     await editor.ensureScene({ objects: [], edit_revision: 4 });
     assert.equal(sent.at(-1), "reload", "a stale workflow loads the newer host scene");
+});
+
+function factoryPersistenceEditor(raw = "{}") {
+    const source = fs.readFileSync(new URL("../web/vnccs_3d_factory.js", import.meta.url), "utf8");
+    const section = (start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
+    const Prototype = vm.runInNewContext(`(class {
+        ${section("    async ensureScene(", "    async _applyScene(")}
+        ${section("    _scheduleSceneSave(", "    _scheduleScenePreview(")}
+        ${section("    async importPly(", "    async _monitorJob(")}
+        ${section("    syncToNode() {", "    restoreFromNode() {")}
+    }).prototype`, {
+        console: { warn() {} }, clearTimeout, setTimeout, FormData,
+        migrateEditorState, enqueueFactorySceneSave,
+        safeObject: value => value && typeof value === "object" && !Array.isArray(value) ? value : {},
+        clamp: (value, min, max) => Math.max(min, Math.min(max, Number(value) || 0)),
+        normalizedEditorView: () => ({}), DEFAULT_SETTINGS: {},
+        MAX_PLY_BYTES: 2 ** 31, MAX_MODEL_TOTAL_BYTES: 2 ** 32,
+        objectNameFromFileName: name => name,
+        ENDPOINTS: { scene: id => `scene/${id}`, scenes: "create", importObject: id => `ply/${id}`, importModel: id => `model/${id}` },
+    });
+    const widget = { name: "factory_data", value: raw };
+    const errors = [], requests = [], saves = [];
+    const editor = Object.assign(Object.create(Prototype), {
+        node: { widgets: [widget] }, sceneId: "scene", scene: {
+            scene_id: "scene", edit_revision: 1,
+            objects: [{ object_id: "existing", transform: { position: [0, 0, 0] } }],
+            layers: [{ type: "object", object_id: "existing" }],
+        },
+        els: { plyImport: { isConnected: true }, sceneName: { value: "Scene" } },
+        viewer: new Proxy({}, { get: () => () => {} }), viewportFailures: new Map(),
+        _showError: (label, error) => errors.push({ label, error }),
+        _architectureSelectionKey: () => "", _normalizeExportSettings: () => ({}), _normalizeLighting: () => ({}),
+        _syncSettings() {}, _syncExportSettings() {}, _syncLighting() {}, loadCapabilities: async () => {},
+        _fetchJSON: async url => { requests.push(url); return { scene_id: "restored", objects: [], edit_revision: 7 }; },
+        async _applyScene(scene) { this.scene = scene; this.sceneId = scene.scene_id; },
+        closeModal() {}, toast() {}, _setStatus() {}, _selectObject() {}, _scheduleScenePreview() {}, _scheduleStateSave() {},
+        serializeState() { return { scene_id: this.sceneId, scene_snapshot: this.scene }; },
+        _scenePayload() {
+            return structuredClone({
+                objects: this.scene.objects.map(({ object_id, transform }) => ({ object_id, transform })),
+                layers: this.scene.layers,
+            });
+        },
+    });
+    return { editor, widget, errors, requests, saves };
+}
+
+test("failed Factory restore preserves raw workflow bytes and blocks later saves until retry succeeds", async () => {
+    for (const raw of ['{"scene_id":', "[]", "null"]) {
+        const { editor, widget, errors, requests } = factoryPersistenceEditor(raw);
+        await editor._restoreFromNodeNow();
+        editor.syncToNode();
+        await assert.rejects(editor._saveSceneNow(), /Restore the saved Factory scene/);
+        assert.equal(widget.value, raw);
+        assert.equal(requests.length, 0, "invalid state must not create or write a scene");
+        assert.equal(errors[0].label, "Saved state is invalid");
+        widget.value = JSON.stringify({ scene_id: "saved" });
+        await editor._restoreFromNodeNow();
+        assert.equal(editor._restoreFailed, false);
+        assert.equal(JSON.parse(widget.value).scene_id, "restored");
+    }
+});
+
+test("Factory restore keeps workflow bytes on load, replay, and conflict-reload errors", async () => {
+    for (const scenario of ["load", "replay", "network", "conflict-reload"]) {
+        const raw = JSON.stringify({ scene_id: "saved", ...(scenario === "load" ? {} : {
+            scene_snapshot: { objects: [], edit_revision: 4 },
+        }) });
+        const { editor, widget, errors, requests } = factoryPersistenceEditor(raw);
+        editor._fetchJSON = async (url, options) => {
+            requests.push(url);
+            throw Object.assign(new Error("Backend unavailable"), {
+                status: scenario === "network" ? undefined : scenario === "conflict-reload" && options ? 409 : 500,
+            });
+        };
+        await editor._restoreFromNodeNow();
+        editor.syncToNode();
+        await assert.rejects(editor._saveSceneNow(), /Restore the saved Factory scene/);
+        assert.equal(widget.value, raw, scenario);
+        assert.equal(requests.length, scenario === "conflict-reload" ? 2 : 1);
+        assert.ok(requests.every(url => url === "scene/saved"), "no replacement scene is created");
+        assert.equal(errors[0].label, "Saved scene could not be restored");
+    }
+    const { editor, widget, requests } = factoryPersistenceEditor();
+    await editor._restoreFromNodeNow();
+    assert.deepEqual(requests, ["create"], "new empty widgets still create their first scene");
+    assert.equal(JSON.parse(widget.value).scene_id, "restored");
+});
+
+test("PLY and model imports preserve live edits and save the merged scene after the response", async () => {
+    for (const method of ["importPly", "importModel"]) {
+        const { editor, requests, errors, saves } = factoryPersistenceEditor();
+        let respond, started;
+        const response = new Promise(resolve => { respond = resolve; });
+        const requestStarted = new Promise(resolve => { started = resolve; });
+        editor._saveSceneNow = async () => requests.push("save");
+        editor._fetchJSON = async url => { requests.push(url); started(); return response; };
+        editor._scheduleSceneSave = () => saves.push(structuredClone(editor.scene));
+        const file = new File(["model"], method === "importPly" ? "model.ply" : "model.glb");
+        const task = editor[method](method === "importPly" ? file : [file]);
+        await requestStarted;
+        assert.equal(requests[0], "save");
+        const server = structuredClone(editor.scene);
+        editor.scene.objects[0].transform.position[0] = 5;
+        editor.scene.edit_revision = 4;
+        server.edit_revision = 3;
+        server.objects.push({ object_id: "imported", files: { model: "model.glb" } });
+        respond({ scene: server, object_id: "imported" });
+        await task;
+        assert.equal(errors.length, 0);
+        assert.equal(editor.scene.objects[0].transform.position[0], 5);
+        assert.equal(editor.scene.objects[1].files.model, "model.glb");
+        assert.equal(editor.scene.edit_revision, 4, "a newer save revision must not move backwards");
+        assert.deepEqual(Array.from(editor.scene.layers, item => item.object_id), ["existing", "imported"]);
+        assert.equal(saves.length, 1);
+        assert.equal(saves[0].objects[0].transform.position[0], 5);
+    }
+});
+
+test("PLY and model import responses cannot replace a reopened scene or a removed editor", async () => {
+    for (const method of ["importPly", "importModel"]) {
+        for (const change of ["same-id", "different-id", "removed"]) {
+            const { editor, saves, errors } = factoryPersistenceEditor();
+            let respond, started;
+            const response = new Promise(resolve => { respond = resolve; });
+            const requestStarted = new Promise(resolve => { started = resolve; });
+            editor._saveSceneNow = async () => {};
+            editor._fetchJSON = async () => { started(); return response; };
+            editor._scheduleSceneSave = () => saves.push(true);
+            const before = structuredClone(editor.scene);
+            const file = new File(["model"], method === "importPly" ? "model.ply" : "model.glb");
+            const task = editor[method](method === "importPly" ? file : [file]);
+            await requestStarted;
+            if (change === "removed") editor.destroyed = true;
+            else {
+                editor.scene = { ...structuredClone(before), name: "Reopened" };
+                if (change === "different-id") editor.sceneId = editor.scene.scene_id = "different";
+            }
+            const owner = editor.scene;
+            respond({ scene: before, object_id: "imported" });
+            await task;
+            assert.equal(errors.length, 0);
+            assert.equal(editor.scene, owner);
+            assert.equal(saves.length, 0);
+        }
+    }
 });
 
 test("Shared numeric contract cases agree with accepted UI values and the viewer normalizer", () => {

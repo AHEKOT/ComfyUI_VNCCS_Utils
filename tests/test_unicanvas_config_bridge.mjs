@@ -19,9 +19,13 @@ function graphWithConfig(loras = []) {
 test("config LoRAs retain separate CLIP strengths, including zero", () => {
   const { graph, canvas } = graphWithConfig([
     { name: "model-only", strength: 1, clip_strength: 0 },
+    { name: "clip-only", strength: 0, clip_strength: 1 },
     { name: "separate", strength: .8, clip_strength: .2 },
     { name: "shared", strength: .7 },
     { name: "disabled", strength: 1, enabled: false },
+    { name: "both-zero", strength: 0, clip_strength: 0 },
+    { name: "shared-zero", strength: 0 },
+    { name: "invalid-clip-zero", strength: 0, clip_strength: "invalid" },
   ]);
   const result = resolveConfigDrawSettings(graph, canvas);
   assert.equal(result.unsupported, undefined);
@@ -29,6 +33,7 @@ test("config LoRAs retain separate CLIP strengths, including zero", () => {
   assert.equal(result.settings.turbo_enabled, false);
   assert.deepEqual(result.settings.lora_stack, [
     { name: "model-only", strength: 1, clip_strength: 0 },
+    { name: "clip-only", strength: 0, clip_strength: 1 },
     { name: "separate", strength: .8, clip_strength: .2 },
     { name: "shared", strength: .7, clip_strength: null },
   ]);

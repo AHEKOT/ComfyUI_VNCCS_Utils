@@ -31,6 +31,55 @@ async function savedOnDisk(page) {
     await expect.poll(() => page.evaluate(() => window.__promptDesignerTestNode.properties.promptDesigner.dirty)).toBe(false);
 }
 
+test("multi-prompt paste retains cards, fields grow with text and local random settings survive workflow restoration", async ({ page }) => {
+    const root = await openDesigner(page);
+    await page.evaluate(() => {
+        const widget = window.__promptDesignerTestNode.promptDesigner;
+        widget.state.parts = [{ text: Array.from({ length: 18 }, (_, index) => `Prompt line ${index + 1}`).join("\n") + "\n" }, { blockId: "artists" }];
+        widget.render(); widget.commit();
+        const range = document.createRange(); range.selectNodeContents(widget.editor);
+        const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+        const clipboardData = new DataTransfer();
+        widget.editor.dispatchEvent(new ClipboardEvent("copy", { bubbles: true, cancelable: true, clipboardData }));
+        selection.removeAllRanges(); widget.caret = null;
+        widget.state.parts = [{ multiPrompt: { variants: [[], []] } }]; widget.render(); widget.commit();
+        widget.editMultiPrompt(widget.editor.querySelector("[data-multi-prompt]"));
+        for (const editor of widget.multiRows.querySelectorAll(".vnccs-pd-variant-editor")) {
+            editor.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
+        }
+    });
+    const first = root.getByRole("textbox", { name: "Text and blocks for prompt1", exact: true });
+    const second = root.getByRole("textbox", { name: "Text and blocks for prompt2", exact: true });
+    await expect(first.locator("[data-block-id]")).toHaveText("Artists 1");
+    await expect(second.locator("[data-block-id]")).toHaveText("Artists 2");
+    for (const viewport of [{ width: 1600, height: 1000 }, { width: 1100, height: 850 }]) {
+        await page.setViewportSize(viewport);
+        for (const editor of [first, second]) {
+            const size = await editor.evaluate(editor => ({ height: editor.clientHeight, content: editor.scrollHeight }));
+            expect(size.height).toBeGreaterThan(480);
+            expect(size.content - size.height).toBeLessThanOrEqual(1);
+        }
+    }
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await first.locator("[data-block-id]").dblclick();
+    await expect(root.getByText("Inspector · Block instance", { exact: true })).toBeVisible();
+    await expect(root.getByRole("textbox", { name: "Main prompt editor" })).toBeVisible();
+    await root.getByLabel("Randomize this instance", { exact: true }).check();
+    expect(await page.evaluate(() => JSON.parse(window.__promptDesignerTestNode.widgets.find(widget => widget.name === "node_state").value)
+        .parts[0].multiPrompt.variants.map(parts => parts.find(part => part.blockId).random ?? false))).toEqual([true, false]);
+    await root.getByRole("button", { name: "Back to multi-prompt", exact: true }).click();
+    await page.evaluate(() => {
+        const original = window.__promptDesignerTestNode, saved = original.serialize();
+        window.app.graph.remove(original);
+        const restored = window.LiteGraph.createNode("VNCCS_PromptDesigner"); window.app.graph.add(restored); restored.configure(saved);
+        window.__promptDesignerTestNode = restored;
+    });
+    await root.getByRole("button", { name: "Edit multi-prompt", exact: true }).dblclick();
+    await expect(first.locator("[data-block-id]")).toHaveText("Artists 1");
+    await first.locator("[data-block-id]").dblclick();
+    await expect(root.getByLabel("Randomize this instance", { exact: true })).toBeChecked();
+});
+
 test("the first Enter after typing or paste shows the new caret line and saves one newline", async ({ page }) => {
     const root = await openDesigner(page);
     const editor = root.getByRole("textbox", { name: "Main prompt editor", exact: true });
@@ -68,7 +117,7 @@ test("Prompt Designer saves input, inserts linked blocks and restores workflow s
     expect(await page.evaluate(() => JSON.parse(window.__promptDesignerTestNode.widgets.find(w => w.name === "node_state").value)
         .blocks.find(block => block.id === "clothing").text)).toBe("{~coat|shirt}");
     await root.getByRole("tab", { name: "Prompt", exact: true }).click();
-    await expect(root.locator('.vnccs-pd-chip[data-block-id="clothing"]')).toHaveText("Clothing");
+    await expect(root.locator('.vnccs-pd-chip[data-block-id="clothing"]')).toHaveText("Clothing 1");
     await root.getByRole("textbox", { name: "Main prompt editor" }).fill("manual prompt, ");
     await root.locator('.vnccs-pd-block[data-block-id="hair"]').dragTo(root.getByRole("textbox", { name: "Main prompt editor" }));
     await expect(root.locator('.vnccs-pd-chip[data-block-id="hair"]')).toHaveCount(1);

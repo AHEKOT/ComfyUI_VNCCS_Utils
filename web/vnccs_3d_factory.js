@@ -7154,35 +7154,35 @@ class Factory3DWidget {
     }
 
     async ensureScene(snapshot = null, { preserveSource = false } = {}) {
+        if (this._restoreFailed && !this._isRestoring) {
+            throw new Error("Restore the saved Factory scene before editing it.");
+        }
         if (this.sceneId) {
-            try {
-                if (snapshot && Array.isArray(snapshot.objects)) {
-                    try {
-                        const replay = { ...snapshot };
-                        if (replay.edit_revision === undefined) {
-                            const saved = await this._fetchJSON(ENDPOINTS.scene(this.sceneId));
-                            replay.edit_revision = saved.edit_revision;
-                        }
-                        const scene = await this._fetchJSON(ENDPOINTS.scene(this.sceneId), {
-                            method: "PATCH",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify(replay),
-                        });
-                        await this._applyScene(scene, { preserveSource });
-                    } catch (error) {
-                        console.warn(
-                            "[VNCCS 3D Factory] Scene snapshot could not be replayed; loading host scene",
-                            error,
-                        );
-                        await this.loadScene(this.sceneId, { preserveSource });
+            if (snapshot && Array.isArray(snapshot.objects)) {
+                try {
+                    const replay = { ...snapshot };
+                    if (replay.edit_revision === undefined) {
+                        const saved = await this._fetchJSON(ENDPOINTS.scene(this.sceneId));
+                        replay.edit_revision = saved.edit_revision;
                     }
-                } else {
+                    const scene = await this._fetchJSON(ENDPOINTS.scene(this.sceneId), {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(replay),
+                    });
+                    await this._applyScene(scene, { preserveSource });
+                } catch (error) {
+                    if (error?.status !== 409) throw error;
+                    console.warn(
+                        "[VNCCS 3D Factory] Scene snapshot could not be replayed; loading host scene",
+                        error,
+                    );
                     await this.loadScene(this.sceneId, { preserveSource });
                 }
-                return;
-            } catch (error) {
-                console.warn("[VNCCS 3D Factory] Saved scene could not be restored", error);
+            } else {
+                await this.loadScene(this.sceneId, { preserveSource });
             }
+            return;
         }
         await this.createScene("Untitled scene", { preserveSource });
     }
@@ -7427,6 +7427,7 @@ class Factory3DWidget {
         this._renderCameraTracks();
         this._renderInspector();
         this._syncToolbar();
+        if (!this._isRestoring) this._restoreFailed = false;
         this._scheduleStateSave();
         this.syncToNode();
         const loaded = Number(viewportResult.loaded) || 0;
@@ -9012,6 +9013,7 @@ class Factory3DWidget {
     }
 
     _scheduleSceneSave(delay = 180) {
+        if (this._isRestoring || this._restoreFailed) return;
         this._conditioningEditEpoch = (this._conditioningEditEpoch || 0) + 1;
         clearTimeout(this._sceneSaveTimer);
         this._sceneSaveTimer = setTimeout(
@@ -9026,6 +9028,9 @@ class Factory3DWidget {
     async _saveSceneNow({ showError = true } = {}) {
         const requestedScene = this.scene;
         await this._historyRestoreSerial;
+        if (this._isRestoring || this._restoreFailed) {
+            throw new Error("Restore the saved Factory scene before saving it.");
+        }
         if (this.scene !== requestedScene) return null;
         this._activeNumericGesture?.commit();
         clearTimeout(this._sceneSaveTimer);
@@ -9545,6 +9550,9 @@ class Factory3DWidget {
         this._setStatus("Importing PLY", "working");
         try {
             if (!this.sceneId) await this.ensureScene();
+            const sceneOwner = this.scene;
+            await this._saveSceneNow();
+            if (this.destroyed || this.scene !== sceneOwner) return;
             const sceneId = this.sceneId;
             const form = new FormData();
             form.append("ply", file, file.name || "model.ply");
@@ -9553,12 +9561,24 @@ class Factory3DWidget {
                 method: "POST",
                 body: form,
             });
-            if (this.sceneId !== sceneId) {
+            if (this.destroyed || this._restoreFailed) return;
+            if (this.sceneId !== sceneId || this.scene !== sceneOwner) {
                 this._setStatus("PLY imported", "success");
                 this.toast("PLY was added to the scene where the import started.", "success");
                 return;
             }
+            this._activeNumericGesture?.commit();
+            const live = this._scenePayload();
+            const liveObjects = new Map(live.objects.map(item => [item.object_id, item]));
+            result.scene = {
+                ...result.scene, ...live,
+                edit_revision: Math.max(result.scene.edit_revision, this.scene.edit_revision),
+                objects: result.scene.objects.map(item => ({ ...item, ...(liveObjects.get(item.object_id) || {}) })),
+                layers: [...live.layers, { type: "object", object_id: result.object_id }],
+            };
             await this._applyScene(result.scene, { preserveSource: true });
+            if (this.destroyed || this.scene !== result.scene) return;
+            this._scheduleSceneSave(0);
             this._selectObject(result.object_id);
             if (this.viewportFailures.has(result.object_id)) {
                 this._setStatus("Imported; preview failed", "error");
@@ -9614,6 +9634,9 @@ class Factory3DWidget {
         this._setStatus("Importing 3D model", "working");
         try {
             if (!this.sceneId) await this.ensureScene();
+            const sceneOwner = this.scene;
+            await this._saveSceneNow();
+            if (this.destroyed || this.scene !== sceneOwner) return;
             const sceneId = this.sceneId;
             const form = new FormData();
             const paths = [];
@@ -9629,12 +9652,24 @@ class Factory3DWidget {
                 method: "POST",
                 body: form,
             });
-            if (this.sceneId !== sceneId) {
+            if (this.destroyed || this._restoreFailed) return;
+            if (this.sceneId !== sceneId || this.scene !== sceneOwner) {
                 this._setStatus("3D model imported", "success");
                 this.toast("The model was added to the scene where the import started.", "success");
                 return;
             }
+            this._activeNumericGesture?.commit();
+            const live = this._scenePayload();
+            const liveObjects = new Map(live.objects.map(item => [item.object_id, item]));
+            result.scene = {
+                ...result.scene, ...live,
+                edit_revision: Math.max(result.scene.edit_revision, this.scene.edit_revision),
+                objects: result.scene.objects.map(item => ({ ...item, ...(liveObjects.get(item.object_id) || {}) })),
+                layers: [...live.layers, { type: "object", object_id: result.object_id }],
+            };
             await this._applyScene(result.scene, { preserveSource: true });
+            if (this.destroyed || this.scene !== result.scene) return;
+            this._scheduleSceneSave(0);
             this._selectObject(result.object_id);
             if (this.viewportFailures.has(result.object_id)) {
                 this._setStatus("Imported; preview failed", "error");
@@ -12236,7 +12271,7 @@ class Factory3DWidget {
     }
 
     syncToNode() {
-        if (this._isRestoring || this._unsupportedEditorState) return;
+        if (this._isRestoring || this._unsupportedEditorState || this._restoreFailed) return;
         clearTimeout(this._saveTimer);
         this._saveTimer = 0;
         const widget = this.node?.widgets?.find(item => item.name === "factory_data");
@@ -12251,11 +12286,21 @@ class Factory3DWidget {
 
     async _restoreFromNodeNow() {
         this._isRestoring = true;
+        this._restoreFailed = true;
+        clearTimeout(this._saveTimer);
+        clearTimeout(this._sceneSaveTimer);
         const widget = this.node?.widgets?.find(item => item.name === "factory_data");
         let state = {};
         try {
-            try { state = safeObject(JSON.parse(String(widget?.value || "{}"))); }
-            catch (error) { this._showError("Saved state is invalid", error); }
+            try {
+                state = JSON.parse(String(widget?.value || "{}"));
+                if (!state || typeof state !== "object" || Array.isArray(state)) {
+                    throw new Error("Saved Factory state must be an object.");
+                }
+            } catch (error) {
+                this._showError("Saved state is invalid", error);
+                return;
+            }
             try {
                 state = migrateEditorState(state);
                 this._unsupportedEditorState = false;
@@ -12385,6 +12430,9 @@ class Factory3DWidget {
             ) {
                 this._restoreSourceAsset(savedSource);
             }
+            this._restoreFailed = false;
+        } catch (error) {
+            this._showError("Saved scene could not be restored", error);
         } finally {
             this._isRestoring = false;
             this.syncToNode();

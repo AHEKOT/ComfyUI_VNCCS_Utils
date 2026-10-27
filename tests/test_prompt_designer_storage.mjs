@@ -204,6 +204,28 @@ test("failed restoration never fabricates or persists defaults over saved data",
     assert.equal(local.values.size, 0);
 });
 
+test("a damaged browser draft blocks constructor defaults when no valid authored copy can be recovered", async () => {
+    for (const raw of ["{}", " {\n } "]) {
+        const local = memory(), damaged = '{"state":"latest authored draft';
+        local.setItem(key, damaged);
+        const node = { properties: { promptDesigner: { id: identifier, revision: 1 } } };
+        const store = new DocumentStorage(node, {
+            fetchApi: async () => reply({ error: "Disk unavailable" }, 500),
+        }, () => {}, local);
+        await assert.rejects(store.restore(raw), /JSON/);
+        assert.equal(local.getItem(key), damaged);
+        assert.equal(local.values.size, 1);
+        assert.equal(store.pending, undefined);
+    }
+    const local = memory();
+    local.setItem(key, "damaged recovery JSON");
+    const changed = editedState();
+    const store = new DocumentStorage({ properties: { promptDesigner: { id: identifier, revision: 1 } } }, {
+        fetchApi: async () => reply({ error: "Disk unavailable" }, 500),
+    }, () => {}, local);
+    assert.deepEqual(await store.restore(JSON.stringify(changed)), changed);
+});
+
 test("a constructor placeholder cannot replace damaged authored metadata when disk recovery is unavailable", async t => {
     const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
     t.after(() => { if (previous) Object.defineProperty(globalThis, "localStorage", previous); else delete globalThis.localStorage; });
@@ -234,6 +256,37 @@ test("a constructor placeholder cannot replace damaged authored metadata when di
         assert.equal(writes, 0);
         widget.documentStorage.dispose();
     }
+});
+
+test("widget restoration keeps damaged browser drafts inert and cannot autosave constructor defaults", async t => {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    t.after(() => { if (previous) Object.defineProperty(globalThis, "localStorage", previous); else delete globalThis.localStorage; });
+    const local = memory(), damaged = "damaged authored browser draft";
+    local.setItem(key, damaged);
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: local });
+    const hidden = { name: "node_state", value: "{}" };
+    const properties = { promptDesigner: { id: identifier, revision: 1 } };
+    const original = JSON.stringify(properties);
+    let writes = 0;
+    const widget = Object.create(PromptDesignerWidget.prototype);
+    Object.assign(widget, {
+        node: { properties, widgets: [hidden] }, api: { fetchApi: async (_, options) => {
+            if (options?.method === "PUT") writes++;
+            return reply({ error: "Disk unavailable" }, 500);
+        } },
+        copy: {}, container: {}, revision: 0, setStatus(message) { this.message = message; }, render() {},
+    });
+    await widget.loadFromNode();
+    assert.equal(widget.container.inert, true);
+    assert.ok(widget.restoreError);
+    assert.equal(widget.persist(), undefined);
+    assert.throws(() => widget.prepareForQueue(), /restoration is not complete/);
+    assert.equal(hidden.value, "{}");
+    assert.equal(JSON.stringify(properties), original);
+    assert.equal(local.getItem(key), damaged);
+    assert.equal(local.values.size, 1);
+    assert.equal(writes, 0);
+    widget.documentStorage.dispose();
 });
 
 test("damaged metadata still restores an authored workflow copy or a validated disk snapshot", async () => {
@@ -432,7 +485,7 @@ test("legacy tab migration cannot roll a large restored workflow back to the pre
             ? { revision: 1 } : { revision: 0, state: null }) },
         copy: {}, undo: {}, redo: {}, container: {}, state: old, saved: JSON.stringify(old), revision: 0,
         render() {}, setStatus(message) { this.message = message; }, hideInspector() {}, restorePromptDetails() {},
-        loadLibraryCards() {}, schedulePreview() {},
+        loadLibraryCards() {}, schedulePreview() {}, refreshInstanceLabels() {},
     });
     t.after(() => { widget.documentStorage?.dispose(); });
     await widget.loadFromNode();

@@ -77,4 +77,5 @@ async def upload_pose_sync(request):
 def register_routes(app):
     """Register Pose Studio runtime synchronization routes."""
     app.router.add_post("/vnccs/pose_sync/upload_capture", upload_pose_sync)
+    app.router.add_post("/api/vnccs/pose_sync/upload_capture", upload_pose_sync)
     app.router.add_post("/vnccs/debug/upload_capture", upload_pose_sync)

@@ -58,7 +58,7 @@ test("prompt chips display names while keeping shared block text and references"
     widget.updateChips(block);
     assert.deepEqual(chips.map(chip => chip.textContent), ["Art style", "Art style", "Hair"]);
     assert.equal(chips[0].attributes["aria-label"], "Edit block: Art style");
-    assert.equal(chips[0].title, "Click to select. Double-click or press Enter to edit Art style. Drag to move.");
+    assert.equal(chips[0].title, "Click to select. Double-click or press Enter for instance settings. Drag to move.");
     assert.deepEqual(readEditor(widget.editor), [{ blockId: "artists" }, { blockId: "artists" }, { blockId: "hair" }]);
     assert.match(templateText(normalizeState(JSON.parse(JSON.stringify(widget.state)))), /\{~ink\|watercolor\}/);
     block.name = "";
@@ -185,6 +185,41 @@ test("prompt and block preview timeouts show a useful error and keep authored te
     assert.equal(JSON.stringify(widget.state), saved);
 });
 
+test("reconfiguration retires prompt and block previews without hiding restoration errors", async t => {
+    installDom(t);
+    t.mock.method(PromptDesignerWidget.prototype, "loadFromNode", function () { this.state = defaultState(); });
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "requestAnimationFrame");
+    const frames = [];
+    globalThis.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
+    t.after(() => {
+        if (descriptor) Object.defineProperty(globalThis, "requestAnimationFrame", descriptor);
+        else delete globalThis.requestAnimationFrame;
+    });
+    const widget = new PromptDesignerWidget(node(), {});
+    t.after(() => widget.events.abort());
+    widget.state.activeTab = "artists";
+    widget.renderBlockVariants();
+    widget.showResolvedPrompts(["last valid output"]);
+    const requests = [];
+    widget.api.fetchApi = (_, options) => new Promise(resolve => requests.push({ resolve, signal: options.signal }));
+    const prompt = widget.preview(), block = widget.previewBlock();
+    widget.invalidateRestore();
+    widget.setStatus("Current workflow recovery failed", true);
+    widget.blockStatus.textContent = "Current block recovery failed";
+    requests[0].resolve({ ok: true, json: async () => ({ prompt: "obsolete workflow" }) });
+    requests[1].resolve({ ok: false, json: async () => ({ error: "Obsolete block error" }) });
+    await Promise.all([prompt, block]);
+    widget.schedulePreview(); widget.scheduleBlockPreview();
+    t.mock.timers.tick(200);
+    assert.equal(widget.output.textContent, "last valid output");
+    assert.equal(widget.status.textContent, "Current workflow recovery failed");
+    assert.equal(widget.blockStatus.textContent, "Current block recovery failed");
+    assert.equal(frames.length, 0, "recovery cannot schedule a new preview of unvalidated state");
+    assert.equal(requests.length, 2);
+    assert.ok(requests.every(request => request.signal.aborted));
+});
+
 test("API export and workflow serialization keep the seed; only queue preparation randomizes it", () => {
     const widget = Object.create(PromptDesignerWidget.prototype);
     widget.state = defaultState();
@@ -233,12 +268,27 @@ test("cycle position advances only for queue or shuffle and survives workflow re
     assert.equal(widget.state.cycleIndex, 4);
 });
 
+test("wrapped cycles advance queued state while retaining their source and fixed seed", t => {
+    installDom(t);
+    t.mock.method(PromptDesignerWidget.prototype, "loadFromNode", function () { this.state = defaultState(); });
+    const widget = new PromptDesignerWidget(node(), {});
+    t.after(() => widget.events.abort());
+    t.mock.method(widget, "schedulePreview", () => {});
+    const source = "%{(...)$${@red|blue}}";
+    widget.state.parts = [{ text: source }]; widget.state.afterGenerate = "fixed";
+    for (const cycleIndex of [0, 1, 2]) {
+        const queued = JSON.parse(widget.prepareForQueue());
+        assert.equal(queued.cycleIndex, cycleIndex);
+        assert.equal(queued.seed, "0"); assert.deepEqual(queued.parts, [{ text: source }]);
+    }
+});
+
 test("cycle detection follows referenced text, multi outputs and If branches, and ignores unused or random cards", () => {
     const state = defaultState();
     state.blocks[0].text = "{@red|blue}";
     state.parts = [{ text: "plain" }];
     assert.equal(hasCycle(state), false);
-    for (const part of [{ text: "{@red|blue}" }, { blockId: state.blocks[0].id },
+    for (const part of [{ text: "{@red|blue}" }, { text: "%{(...)$${@red|blue}}" }, { blockId: state.blocks[0].id },
         { multiPrompt: { variants: [[{ blockId: state.blocks[0].id }], []] } },
         { condition: { blockId: state.blocks[0].id, operator: "equals", value: "red", then: { text: "ok" } } },
         { condition: { blockId: "hair", operator: "equals", value: "white", then: { parts: [{ blockId: state.blocks[0].id }] } } }]) {

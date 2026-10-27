@@ -158,6 +158,7 @@ The **Unicanvas** sidebar tab runs UniCanvas as a standalone image app — no no
 *   **Reusable Block Cards**: Organize prompt fragments into searchable, color-coded categories and edit their variants once for reuse across compositions.
 *   **Dynamic Prompt Syntax**: Use choices, weighted and nested variants, and variables through `dynamicprompts`, while preserving your separators and line breaks.
 *   **Random and Cyclic Variants**: Sample card variants randomly or cycle through them in order. Keep a fixed seed for reproducible results or randomize it for each queued generation.
+*   **Block Instances**: Copies share the same sampled result across the prompt and multi-prompt outputs. Numbered cards identify each instance; double-click a prompt card to enable its independent random draw. Click a library card to edit the shared block.
 *   **Conditional Fragments**: Build inline If/Else sections with equals, not equals, contains, and not contains checks, combined with AND/OR. Conditions can use the resolved value of a block card.
 *   **Multiple Prompt Outputs**: Create multi-prompt fragments that produce up to 16 separate `STRING` outputs from one composition, with sockets exposed as needed.
 *   **Resolved Prompt Preview**: Inspect the sampled prompt and block variants with the same seeded sampling used during execution, before queueing a workflow.

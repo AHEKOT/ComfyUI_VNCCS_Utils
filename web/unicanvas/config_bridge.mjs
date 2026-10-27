@@ -82,9 +82,10 @@ function configLoraStack(configNode) {
     state = {};
   }
   return (Array.isArray(state?.loras) ? state.loras : [])
-    .filter((item) => item && item.name && item.enabled !== false && Number(item.strength ?? 1) !== 0)
+    .filter((item) => item && item.name && item.enabled !== false)
     .map((item) => ({ name: String(item.name), strength: Number(item.strength ?? 1),
-      clip_strength: item.clip_strength == null || !Number.isFinite(Number(item.clip_strength)) ? null : Number(item.clip_strength) }));
+      clip_strength: item.clip_strength == null || !Number.isFinite(Number(item.clip_strength)) ? null : Number(item.clip_strength) }))
+    .filter((item) => item.strength !== 0 || (item.clip_strength ?? item.strength) !== 0);
 }
 
 /**
