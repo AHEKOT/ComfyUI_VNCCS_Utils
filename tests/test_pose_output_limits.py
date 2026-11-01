@@ -187,12 +187,14 @@ class PoseOutputLimitTests(unittest.TestCase):
         original_decode = POSE_STUDIO._decode_captured_images
         original_from_numpy = getattr(POSE_STUDIO.torch, "from_numpy", None)
         original_stack = getattr(POSE_STUDIO.torch, "stack", None)
+        original_zeros = getattr(POSE_STUDIO.torch, "zeros", None)
         original_create_video = POSE_STUDIO._create_comfy_video
         POSE_STUDIO._decode_captured_images = lambda _captures: images
         POSE_STUDIO.torch.from_numpy = lambda array: array
         POSE_STUDIO.torch.stack = lambda tensors, dim=0: (
             stack_calls.append((tensors, dim)) or batch
         )
+        POSE_STUDIO.torch.zeros = lambda shape: types.SimpleNamespace(expand=lambda *size: size)
         POSE_STUDIO._create_comfy_video = lambda *_args: self.fail(
             "image-batch mode must not create a VIDEO"
         )
@@ -216,6 +218,10 @@ class PoseOutputLimitTests(unittest.TestCase):
                 del POSE_STUDIO.torch.stack
             else:
                 POSE_STUDIO.torch.stack = original_stack
+            if original_zeros is None:
+                del POSE_STUDIO.torch.zeros
+            else:
+                POSE_STUDIO.torch.zeros = original_zeros
             POSE_STUDIO._create_comfy_video = original_create_video
 
         self.assertEqual(len(stack_calls), 1)
@@ -223,7 +229,8 @@ class PoseOutputLimitTests(unittest.TestCase):
         self.assertEqual(len(stack_calls[0][0]), 2)
         self.assertIs(result[0], batch)
         self.assertEqual(result[1], ["first", "second"])
-        self.assertEqual(node.OUTPUT_IS_LIST, (False, True))
+        # Auxiliary outputs appended after lighting_prompt stay list outputs.
+        self.assertEqual(node.OUTPUT_IS_LIST, (False,) + (True,) * 7)
 
     def test_pose_image_dimensions_use_comfyui_height_width_order(self):
         image = types.SimpleNamespace(shape=(1, 768, 1344, 3))

@@ -41,6 +41,12 @@ Outputs:
 | --- | --- | --- |
 | `images` | `IMAGE` list | Rendered pose image output. In LIST mode it is one image per pose tab. In GRID mode it is a one-item list containing the grid image. |
 | `lighting_prompt` | `STRING` list | Combined lighting, per-pose, and connected camera prompt aligned with `images`. |
+| `depth` | `IMAGE` list | Camera depth of the characters, aligned with `images`. See [Auxiliary control images](#auxiliary-control-images). |
+| `normal` | `IMAGE` list | View-space normal map aligned with `images`. |
+| `outline` | `IMAGE` list | White contour lines on black aligned with `images`. |
+| `silhouette` | `IMAGE` list | White characters on black aligned with `images`. |
+| `mask` | `MASK` list | Character coverage (1 = character) aligned with `images`. |
+| `character_id` | `IMAGE` list | One flat colour per character slot on black, aligned with `images`. |
 
 Important backend behavior:
 
@@ -232,6 +238,45 @@ Use GRID when:
 
 - You want a single pose sheet/contact sheet.
 - You are building reference previews rather than separate generation inputs.
+
+## Auxiliary control images
+
+`depth`, `normal`, `outline`, `silhouette`, `mask` and `character_id` are extra
+outputs appended after `images` and `lighting_prompt`, so existing links keep their
+slots. They are rendered in the browser only when at least one of them is linked;
+unlinked outputs return black placeholders and cost nothing, and `images` is
+unchanged either way.
+
+- **Same camera as `images`.** Every pass is rendered right after its RGB capture
+  through that capture's camera and at the output resolution, so FOV, Distance,
+  Align Camera to View, Yaw/Pitch, Zoom and the radar placement affect all outputs
+  identically.
+- **Characters only.** The passes draw a private scene of the character meshes
+  (every character, with its own pose, position, zoom and rotation; hidden
+  characters are skipped). The grid, capture frame, bones, joint markers, reference
+  image, skydome, gizmos, imported figure overlays and any other editor helper never
+  appear. Lighting, skin texture and model colour do not affect them.
+- **Overlaps** are resolved by the depth test in every pass, exactly as in `images`.
+- **LIST / GRID.** LIST returns one image per pose tab; GRID builds the same grid as
+  `images` on a black (ID 0) background.
+- **Pose Manager.** RUN still sends the card images byte for byte; the passes are
+  rendered at RUN with the exact camera each card was captured with.
+- **Debug Mode and `pose_image`** captures produce passes for the image they output.
+- **Animation mode** is not supported yet: linking an auxiliary output there stops
+  the run with an error instead of returning blank images.
+
+| Output | Encoding |
+| --- | --- |
+| `depth` | Grayscale linear camera depth: nearest visible surface **white (255)**, farthest one gray 32, background **black (0)**. Normalized per image over all characters, so depth differences between characters stay visible. Same convention as MiDaS / ControlNet depth maps. |
+| `normal` | View-space normals, OpenGL / three.js `MeshNormalMaterial` convention: R = +X (right), G = +Y (up), B = +Z (toward the camera), `rgb = normal * 0.5 + 0.5`. A surface facing the camera is (128, 128, 255). Background is black. |
+| `outline` | **White lines on black.** A character pixel is on the outline when a neighbour is background, another character behind it, or a part of the same character behind it (an inverse-depth step of at least 1 %, e.g. an arm in front of the body). Lines lie inside the silhouette, 1 px wide up to 640 px and thicker on larger outputs. Normal creases are not drawn yet. |
+| `silhouette` | White (255) characters on black. |
+| `mask` | ComfyUI `MASK`, 1.0 on characters, 0.0 on background. |
+| `character_id` | Flat colours without anti-aliasing by character slot: Character 1 = red (255, 0, 0), Character 2 = green (0, 255, 0), Character 3 = blue (0, 0, 255), Character 4 = yellow (255, 255, 0); background = ID 0 = black. The colour follows the slot, not the selected character, so it is stable across edits, saves and reloads. One channel threshold extracts a character's mask. |
+
+The workflow records the linked auxiliary outputs in `pose_data.export.conditioning_outputs`
+so linking one re-executes the node. The passes reuse the 3D Factory conditioning renderer
+(`web/shared/conditioning_render.mjs`).
 
 ## Camera and Framing
 
