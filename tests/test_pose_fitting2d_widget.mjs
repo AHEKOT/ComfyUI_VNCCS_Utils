@@ -95,6 +95,33 @@ test("dragging a marker moves the mannequin on every frame before release and re
     assert.ok(Math.abs(viewer.fitting2d.markers.l_wrist.u - original.u) > 1e-4);
 });
 
+test("markers can be grabbed and dragged when the ComfyUI canvas is zoomed", () => {
+    for (const zoom of [0.6, 1.5]) {
+        const s = fittingScene();
+        const { controller, pointer, runFrames, handWorld, viewer } = s;
+        // ComfyUI scales the node DOM with a CSS transform: the client rect changes, layout px do not.
+        const left = 40, top = 25;
+        viewer.canvas.getBoundingClientRect = () => ({ left, top, width: VIEW * zoom, height: VIEW * zoom });
+        controller.setActive(true);
+        const marker = controller.state.markers.l_wrist;
+        const original = { u: marker.u, v: marker.v };
+        const layout = controller.frameToOverlay(marker.u, marker.v);
+        const screen = { x: left + layout.x * zoom, y: top + layout.y * zoom };
+        const startHand = handWorld();
+        const down = pointer("pointerdown", screen.x, screen.y);
+        assert.equal(down.stopped, true, `zoom ${zoom}: the drawn marker is hit`);
+        assert.equal(controller.drag?.id, "l_wrist");
+        pointer("pointermove", screen.x - 20, screen.y - 15);
+        runFrames();
+        assert.ok(handWorld().distanceTo(startHand) > 1e-4, `zoom ${zoom}: the arm follows before release`);
+        pointer("pointerup", screen.x - 20, screen.y - 15);
+        const moved = controller.frameToOverlay(controller.state.markers.l_wrist.u, controller.state.markers.l_wrist.v);
+        assert.ok(Math.abs(moved.x - (layout.x - 20 / zoom)) < 0.5, `zoom ${zoom}: the marker stays under the cursor (x)`);
+        assert.ok(Math.abs(moved.y - (layout.y - 15 / zoom)) < 0.5, `zoom ${zoom}: the marker stays under the cursor (y)`);
+        assert.ok(Math.hypot(controller.state.markers.l_wrist.u - original.u, controller.state.markers.l_wrist.v - original.v) > 1e-4);
+    }
+});
+
 test("clicks away from markers, inactive mode and other buttons are left to the viewer", () => {
     const s = fittingScene();
     const { controller, pointer } = s;

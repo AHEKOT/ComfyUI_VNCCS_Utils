@@ -501,8 +501,11 @@ export class PoseFitting2DController {
 
     hitTest(clientX, clientY) {
         if (!this.state || !this.canvas) return null;
+        // Overlay positions are in CSS layout px; the client rect is scaled by the ComfyUI canvas zoom.
         const rect = this.canvas.getBoundingClientRect();
-        const x = clientX - rect.left, y = clientY - rect.top;
+        const size = this.viewportSize();
+        const x = (clientX - rect.left) * size.width / Math.max(1, rect.width);
+        const y = (clientY - rect.top) * size.height / Math.max(1, rect.height);
         const framePlane = this.framePlane();
         let best = null;
         for (const id of F.POSE_FITTING_MARKER_IDS) {
