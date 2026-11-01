@@ -248,7 +248,7 @@ Common settings:
 | camera yaw/pitch | Shared viewing direction for the whole scene. |
 | FOV / Distance | Shared capture lens in **Camera Angle**: vertical field of view (15–75°, default 30°) and camera distance (10–250, default 45). Wide angles exaggerate perspective; narrow angles flatten it. |
 | Maintain Subject Size | When on, changing FOV moves the camera so the subject keeps its size and only the perspective changes (`distance * tan(FOV / 2)` stays constant). |
-| Align Camera to View | Copies the current viewport camera (position, rotation, FOV, zoom) to the capture camera, like Unity's Align With View. Shortcut: `Ctrl+Shift+F` while Pose Studio has focus. **Orbit Camera** returns to the Yaw/Pitch camera. |
+| Align Camera to View | Moves the capture camera to the current viewport camera (position, rotation, zoom), like Unity's Align With View, and captures what the orange frame covers. Shortcut: `Ctrl+Shift+F` while Pose Studio has focus. **Orbit Camera** returns to the Yaw/Pitch camera. |
 | Camera positioning radar | Moves the selected character; every character keeps its own X/Y. |
 | Camera Zoom | Scales the selected character; every character keeps its own zoom. |
 | model rotation | Rotate the mannequin without changing the viewport UI state. |
@@ -267,9 +267,11 @@ cleared; the stored manual lens is not overwritten.
 to the viewport. The capture camera takes the viewport camera's exact position and
 rotation; characters, their placement and their joints do not change. Framing rules:
 
-- The vertical field of view and the image centre match the viewport. When the output
-  aspect differs from the viewport, a wider output shows more at the sides and a
-  narrower one crops the sides; the orange frame marks the captured area.
+- The capture covers what the orange frame covers in the viewport. The viewport always
+  shows the frame with a margin around it, so the image is the centre of the view at
+  the frame's height, and the FOV you set is kept: aligning right after a FOV change or
+  **Preview** leaves the camera unchanged. When the output aspect differs, a wider output
+  shows more at the sides and a narrower one crops the sides.
 - FOV outside 15–75° is stored as the nearest lens value plus a matching zoom, and a
   pivot closer than 10 or farther than 250 is moved along the view ray. Neither changes
   the image.

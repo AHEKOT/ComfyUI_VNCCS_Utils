@@ -531,16 +531,20 @@ function meshPoints(viewer) {
     return points;
 }
 
-// Every sampled mannequin vertex lands on the same image position in both cameras.
-// scaleX converts the editor's horizontal NDC when the output aspect differs.
-function assertSameComposition(points, editor, capture, message, scaleX = 1) {
+// Height of the orange frame as a fraction of the viewport (see snapToCaptureCamera).
+const FRAME = tanHalf(30) / tanHalf(45);
+const frameFov = editorFov => Math.atan(tanHalf(editorFov) * FRAME) * 360 / Math.PI;
+
+// Every sampled mannequin vertex lands where the editor view shows it inside the
+// frame: capture NDC = editor NDC / FRAME, plus the output aspect on x.
+function assertFrameComposition(points, editor, capture, message, outputAspect = editor.aspect) {
     editor.updateMatrixWorld(true);
     capture.updateMatrixWorld(true);
     for (const point of points) {
         const a = point.clone().project(editor);
         const b = point.clone().project(capture);
-        close(b.x, a.x * scaleX, 1e-9, `${message} x`);
-        close(b.y, a.y, 1e-9, `${message} y`);
+        close(b.x, a.x * editor.aspect / outputAspect / FRAME, 1e-9, `${message} x`);
+        close(b.y, a.y / FRAME, 1e-9, `${message} y`);
     }
 }
 
@@ -557,7 +561,7 @@ function sceneSnapshot(scene) {
 
 const editorView = { position: [17, 23, 29], target: [2, 9, -3], fov: 52, zoom: 1.3 };
 
-test("Align Camera to View copies the editor position, rotation, FOV and zoom without touching characters", () => {
+test("Align Camera to View copies the editor position, rotation and zoom and captures the frame without touching characters", () => {
     const scene = lensScene();
     const { w, viewer } = scene;
     const second = scene.context.createPoseStudioCharacter({ index: 1, mesh: w.meshParams, transform: { x: 6, y: 1, zoom: 0.9 } });
@@ -566,19 +570,17 @@ test("Align Camera to View copies the editor position, rotation, FOV and zoom wi
     moveEditor(viewer, editorView);
     const before = sceneSnapshot(scene);
     const editorWorld = viewer.camera.matrixWorld.toArray();
-    const editorProjection = viewer.camera.projectionMatrix.toArray();
     findButton(scene, "Align Camera to View").click();
 
     const view = w.exportParams.cam_view;
     assert.deepEqual(view.position, editorView.position);
     viewer.captureCamera.updateMatrixWorld(true);
     viewer.captureCamera.matrixWorld.toArray().forEach((value, index) => close(value, editorWorld[index], 1e-9, `world[${index}]`));
-    for (const index of [0, 5, 8, 9]) close(viewer.captureCamera.projectionMatrix.elements[index], editorProjection[index], 1e-9, `projection[${index}]`);
-    assert.equal(viewer.captureCamera.fov, 52);
+    close(viewer.captureCamera.fov, frameFov(52), 1e-9, "the lens is the part of the view the frame covers");
     close(viewer.captureCamera.zoom, 1.3, 1e-12);
-    assert.equal(w.exportParams.cam_fov_deg, 52, "the FOV control shows the copied lens");
+    close(w.exportParams.cam_fov_deg, frameFov(52), 1e-9, "the FOV control shows the capture lens");
     close(w.exportParams.cam_distance, new viewer.THREE.Vector3(...editorView.position).distanceTo(new viewer.THREE.Vector3(...editorView.target)), 1e-9);
-    assertSameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, "aligned capture");
+    assertFrameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, "aligned capture");
     assert.deepEqual(sceneSnapshot(scene), before, "characters keep their position, size and joints");
     assert.deepEqual(viewer.camera.matrixWorld.toArray(), editorWorld, "the editor keeps its view");
 
@@ -598,7 +600,7 @@ test("Align Camera to View copies the editor position, rotation, FOV and zoom wi
     }
 });
 
-test("aligned captures keep the editor's vertical framing when the output aspect differs", () => {
+test("aligned captures keep the frame's height and centre when the output aspect differs", () => {
     const scene = lensScene();
     const { w, viewer } = scene;
     moveEditor(viewer, editorView);
@@ -606,22 +608,45 @@ test("aligned captures keep the editor's vertical framing when the output aspect
     w.exportParams.view_width = 2048;
     w.exportParams.view_height = 1024;
     w.applyCameraToViewer(false);
-    // Height and centre match the editor view; a wider output shows more at the sides.
-    assertSameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, "wide output", viewer.camera.aspect / 2);
+    // A wider output shows more at the sides, a narrower one crops them.
+    assertFrameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, "wide output", 2);
     w.exportParams.view_width = 512;
     w.applyCameraToViewer(false);
-    assertSameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, "tall output", viewer.camera.aspect / 0.5);
+    assertFrameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, "tall output", 0.5);
+});
+
+test("editing FOV and then aligning keeps the lens; Preview then Align changes nothing", () => {
+    const scene = lensScene();
+    const { w, viewer } = scene;
+    slide(scene, "cam_yaw_deg", -14);
+    slide(scene, "cam_distance", 11.87);
+    for (const fov of [62, 75, 15, 30]) {
+        slide(scene, "cam_fov_deg", fov);
+        const before = cameraState(viewer);
+        w.alignCaptureCameraToView();
+        assert.equal(w.exportParams.cam_fov_deg, fov, `FOV ${fov} is kept`);
+        close(w.exportParams.cam_distance, 11.87, 1e-9);
+        assertSameCamera(cameraState(viewer), before, `capture at ${fov} degrees`);
+        w.useOrbitCaptureCamera();
+    }
+    // Preview (snap the view to the capture camera), then Align: still the same camera.
+    moveEditor(viewer, editorView);
+    w.alignCaptureCameraToView();
+    const aligned = cameraState(viewer);
+    w.applyCameraToViewer(true);
+    for (let repeat = 0; repeat < 3; repeat += 1) w.alignCaptureCameraToView();
+    assertSameCamera(cameraState(viewer), aligned, "Preview + Align");
 });
 
 test("editor FOV and distance outside the lens range keep the exact image", () => {
     const scene = lensScene();
     const { w, viewer } = scene;
-    // A 75 degree lens snaps the editor to about 99.7 degrees.
-    slide(scene, "cam_fov_deg", 75);
-    assert.ok(viewer.camera.fov > 75);
-    w.alignCaptureCameraToView();
-    assert.equal(viewer.captureCamera.fov, 75);
-    assertSameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, "clamped FOV carried by zoom");
+    for (const fov of [120, 10]) {
+        moveEditor(viewer, { ...editorView, fov, zoom: 1 });
+        w.alignCaptureCameraToView();
+        assert.equal(viewer.captureCamera.fov, fov > 45 ? 75 : 15, "the lens is clamped");
+        assertFrameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, `editor ${fov} degrees carried by zoom`);
+    }
 
     // Closer than the minimum distance: the pivot moves along the ray, the camera does not.
     moveEditor(viewer, { position: [0, 12, 6], target: [0, 11, 2], fov: 40 });
@@ -630,7 +655,7 @@ test("editor FOV and distance outside the lens range keep the exact image", () =
     assert.equal(w.exportParams.cam_distance, 10);
     viewer.captureCamera.updateMatrixWorld(true);
     viewer.captureCamera.matrixWorld.toArray().forEach((value, index) => close(value, editorWorld[index], 1e-9, `world[${index}]`));
-    assertSameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, "short distance");
+    assertFrameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, "short distance");
 });
 
 test("aligned view: Distance moves along the view ray, Yaw/Pitch wait for Orbit Camera, reset clears it", () => {
