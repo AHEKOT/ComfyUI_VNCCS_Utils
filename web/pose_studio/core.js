@@ -5,6 +5,8 @@
  */
 
 
+import { normalizeCaptureLens } from "./animation.mjs?v=1791754604000";
+
 // Determine the extension's base URL dynamically to support varied directory names
 const EXTENSION_URL = new URL(".", import.meta.url).toString();
 export const POSE_STUDIO_CAPTURE_FOV = 30;
@@ -1183,6 +1185,8 @@ export class PoseViewerCore {
         this.isDispatching = false;
         this.queuedSyncFrame = null;
         this.cameraParams = null; // Store widget camera params explicitly
+        // Vertical FOV and orbit distance of the capture camera (shared by the scene).
+        this.captureLens = normalizeCaptureLens();
         this.isInteractionActive = null;
         this._hoveredHandSide = null;
         this.useHandControlPopover = this.options.useHandControlPopover !== false;
@@ -3966,6 +3970,12 @@ export class PoseViewerCore {
         this.requestRender();
     }
 
+    setCaptureLens(params) {
+        const lens = normalizeCaptureLens(params);
+        this.captureLens = { ...lens };
+        return lens;
+    }
+
     setCameraParams(params) {
         if (!params) return;
         if (this.cameraParams) {
@@ -4700,7 +4710,7 @@ export class PoseViewerCore {
             baseTarget.y - offsetY,
             baseTarget.z
         );
-        const dist = 45;
+        const dist = this.captureLens.distance;
 
         // Positioning relative to offset target
         const yawRad = this.THREE.MathUtils.degToRad(Number(yawDeg) || 0);
@@ -4708,7 +4718,7 @@ export class PoseViewerCore {
         const cameraOffset = new this.THREE.Vector3(0, 0, dist);
         cameraOffset.applyEuler(new this.THREE.Euler(pitchRad, yawRad, 0, 'YXZ'));
         this.captureCamera.aspect = width / height;
-        this.captureCamera.fov = POSE_STUDIO_CAPTURE_FOV;
+        this.captureCamera.fov = this.captureLens.fov_deg;
         this.captureCamera.zoom = zoom;
         this.captureCamera.updateProjectionMatrix();
         this.captureCamera.position.copy(target).add(cameraOffset);
@@ -4736,7 +4746,7 @@ export class PoseViewerCore {
 
         if (this.captureFrame) {
             const vFOV = (this.captureCamera.fov * Math.PI) / 180;
-            // Frame at target distance (dist = 45)
+            // Frame at target distance
             const h = 2 * dist * Math.tan(vFOV / 2) / Math.max(0.1, zoom);
             const w = h * this.captureCamera.aspect;
 
@@ -4779,6 +4789,18 @@ export class PoseViewerCore {
                     baseTarget.z
                 );
             })();
+        if (!this._samProjectionCameraFrame) {
+            // Keep the capture frame as large in the viewport as the default
+            // 30 degree lens did: a wide lens moves the capture camera closer,
+            // so the editor camera backs off along the same view ray instead.
+            const lens = this.captureLens;
+            const halfAngle = degrees => Math.tan(degrees * Math.PI / 360);
+            const editDistance = lens.distance * halfAngle(lens.fov_deg) / halfAngle(POSE_STUDIO_CAPTURE_FOV);
+            if (editDistance > lens.distance + 1e-6) {
+                const direction = this.captureCamera.position.clone().sub(target).normalize();
+                this.camera.position.copy(target).addScaledVector(direction, editDistance);
+            }
+        }
         this.orbit.target.copy(target);
         this.orbit.update();
 
@@ -4962,7 +4984,7 @@ export class PoseViewerCore {
         // projected effect and solve the small 2x2 system. This keeps every
         // deformed pose centred instead of reusing the active pose's framing.
         const fov = this.THREE.MathUtils.degToRad(this.captureCamera.fov || 30);
-        const visibleHeight = 2 * 45 * Math.tan(fov * 0.5) / zoom;
+        const visibleHeight = 2 * this.captureLens.distance * Math.tan(fov * 0.5) / zoom;
         const epsilon = Math.max(0.001, visibleHeight * 0.01);
         const xProbe = projectedBounds(zoom, epsilon, 0);
         const yProbe = projectedBounds(zoom, 0, epsilon);
@@ -5415,7 +5437,7 @@ export class PoseViewerCore {
         }
 
         const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
-        const dist = 45;
+        const dist = this.captureLens.distance;
         const aspect = (Number(width) || 1024) / Math.max(1, Number(height) || 1024);
         const vFOV = (this.captureCamera.fov * Math.PI) / 180;
         const visibleHAtZoom1 = 2 * dist * Math.tan(vFOV / 2);

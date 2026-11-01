@@ -994,6 +994,50 @@ export function playbackFrameForElapsed(elapsedMilliseconds, fpsValue) {
     return Math.floor((Math.max(0, finiteNumber(elapsedMilliseconds)) / 1000) * fps);
 }
 
+// Capture lens defaults reproduce the fixed camera used before FOV became
+// editable, so poses and workflows without lens fields render unchanged.
+export const DEFAULT_CAPTURE_FOV_DEG = 30;
+export const MIN_CAPTURE_FOV_DEG = 15;
+export const MAX_CAPTURE_FOV_DEG = 75;
+export const DEFAULT_CAPTURE_DISTANCE = 45;
+// The capture camera clips at 0.1..500 and a default mannequin is about 20
+// units tall; this range keeps it in front of the camera and inside the far plane.
+export const MIN_CAPTURE_DISTANCE = 10;
+export const MAX_CAPTURE_DISTANCE = 250;
+
+export function normalizeCaptureLens(source = {}) {
+    // null, "" and booleans coerce to finite numbers; treat them as missing.
+    const lensNumber = (value, fallback) => (
+        typeof value === "number" || typeof value === "string" && value.trim() !== ""
+            ? finiteNumber(value, fallback)
+            : fallback
+    );
+    return {
+        fov_deg: clamp(
+            lensNumber(source?.fov_deg, DEFAULT_CAPTURE_FOV_DEG),
+            MIN_CAPTURE_FOV_DEG,
+            MAX_CAPTURE_FOV_DEG,
+        ),
+        distance: clamp(
+            lensNumber(source?.distance, DEFAULT_CAPTURE_DISTANCE),
+            MIN_CAPTURE_DISTANCE,
+            MAX_CAPTURE_DISTANCE,
+        ),
+        maintain_subject_size: source?.maintain_subject_size === true,
+    };
+}
+
+// Distance that keeps the reference plane's on-screen size when the vertical
+// FOV changes: distance * tan(fov / 2) is held constant.
+export function computeSubjectSizeDistance(baseDistance, baseFovDeg, nextFovDeg) {
+    const base = normalizeCaptureLens({ fov_deg: baseFovDeg, distance: baseDistance });
+    const next = normalizeCaptureLens({ fov_deg: nextFovDeg }).fov_deg;
+    const halfAngle = degrees => Math.tan(degrees * Math.PI / 360);
+    return normalizeCaptureLens({
+        distance: base.distance * halfAngle(base.fov_deg) / halfAngle(next),
+    }).distance;
+}
+
 export function resolveCaptureCameraParams(poseParams = {}, currentParams = {}, animationMode = false) {
     const source = animationMode
         ? currentParams
@@ -1008,6 +1052,7 @@ export function resolveCaptureCameraParams(poseParams = {}, currentParams = {}, 
         offset_y: number(source.offset_y, 0),
         yaw_deg: number(source.yaw_deg, 0),
         pitch_deg: number(source.pitch_deg, 0),
+        ...normalizeCaptureLens(source),
     };
 }
 

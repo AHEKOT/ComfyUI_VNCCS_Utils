@@ -246,11 +246,20 @@ Common settings:
 | --- | --- |
 | `view_width` / `view_height` | Output resolution. |
 | camera yaw/pitch | Shared viewing direction for the whole scene. |
+| FOV / Distance | Shared capture lens in **Camera Angle**: vertical field of view (15–75°, default 30°) and camera distance (10–250, default 45). Wide angles exaggerate perspective; narrow angles flatten it. |
+| Maintain Subject Size | When on, changing FOV moves the camera so the subject keeps its size and only the perspective changes (`distance * tan(FOV / 2)` stays constant). |
 | Camera positioning radar | Moves the selected character; every character keeps its own X/Y. |
 | Camera Zoom | Scales the selected character; every character keeps its own zoom. |
 | model rotation | Rotate the mannequin without changing the viewport UI state. |
 | background color | Used for final render and grid background. |
 | `directional_skydome_enabled` | Show/export the directional skydome and expose the `camera_prompt` input. |
+
+The lens is stored with each pose tab's `cameraParams` (`fov_deg`, `distance`,
+`maintain_subject_size`), mirrored on every character like yaw/pitch, and in the
+library asset's `camera` block. Poses and workflows saved without these fields load
+with the original 30° / 45 camera. While an applied SAM camera is active its
+projection sets the lens, so FOV and Distance are disabled until it is paused or
+cleared; the stored manual lens is not overwritten.
 
 Tips:
 
