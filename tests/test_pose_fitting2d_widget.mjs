@@ -401,3 +401,245 @@ test("fitting follows an edited capture lens and an aligned view and never moves
     assert.ok(w.exportParams.cam_view, "aligned view stored");
     check("aligned view");
 });
+
+/** Put the editor camera close to the left hand so fingertip markers are far enough apart to grab. */
+function lookAtLeftHand(s, distance = 5) {
+    const { viewer, THREE } = s;
+    const hand = viewer.bones.middle_01_l.getWorldPosition(new THREE.Vector3());
+    viewer.camera.position.copy(hand).add(new THREE.Vector3(0, 0, distance));
+    viewer.camera.lookAt(hand);
+    viewer.camera.updateMatrixWorld(true);
+    viewer.orbit.target.copy(hand);
+}
+
+test("hand markers are off by default; Middle tips / All fingertips add tips at the fingers and group the list", () => {
+    const s = fittingScene();
+    const { controller, viewer } = s;
+    controller.setActive(true);
+    const e = controller.elements;
+    assert.equal(e.hands.value, "off");
+    assert.equal(controller.visibleIds().length, 14, "the existing 14-marker workflow is unchanged");
+    assert.ok(F.POSE_FITTING_MARKER_IDS.slice(14).every(id => controller.state.markers[id].u === null));
+    assert.ok([...e.listGroups.values()].every(header => header.style.display === "none"), "no group headers for body-only lists");
+    assert.ok(F.POSE_FITTING_MARKER_IDS.slice(14).every(id => e.listRows.get(id).row.style.display === "none"));
+    const history = viewer.history.length;
+    e.hands.value = "middle";
+    e.hands.emit("change");
+    assert.deepEqual(controller.visibleIds().slice(14), ["l_middle_tip", "r_middle_tip"]);
+    const frame = controller.frameSize();
+    for (const id of ["l_middle_tip", "r_middle_tip"]) {
+        const marker = controller.state.markers[id];
+        const joint = s.projected(id);
+        assert.equal(marker.enabled, false, `${id} starts disabled: it constrains nothing until dragged`);
+        assert.ok(Math.hypot(marker.u * frame.width - joint.x, marker.v * frame.height - joint.y) < 1e-6, `${id} sits on the fingertip`);
+    }
+    assert.equal(controller.state.markers.l_index_tip.u, null, "hidden tips stay unplaced");
+    assert.equal(viewer.history.length, history, "changing the mode is a setting, not a pose edit");
+    e.hands.value = "all";
+    e.hands.emit("change");
+    assert.equal(controller.visibleIds().length, 24);
+    assert.equal(e.listGroups.get("l").style.display, "");
+    assert.equal(e.listGroups.get("r").style.display, "");
+    assert.equal(e.listRows.get("r_pinky_tip").row.style.display, "");
+    assert.equal(JSON.parse(s.node.widgets[0].value).characters[0].poses[0].fitting2d.settings.handMarkers, "all", "the mode is saved with the pose");
+    // Back to Off: the tips keep their data but disappear from the overlay, list and solver.
+    e.hands.value = "off";
+    e.hands.emit("change");
+    assert.ok(controller.state.markers.l_index_tip.u !== null);
+    assert.equal(e.listRows.get("l_index_tip").row.style.display, "none");
+    assert.ok(F.fittingStateToSolverMarkers(controller.state, frame).every(item => !item.id.endsWith("_tip")));
+});
+
+test("dragging a fingertip marker bends the finger on every frame with one undo step at any canvas zoom", () => {
+    for (const zoom of [0.6, 1, 1.4]) {
+        const s = fittingScene();
+        const { controller, viewer, pointer, runFrames, THREE } = s;
+        const left = 30, top = 20;
+        viewer.canvas.getBoundingClientRect = () => ({ left, top, width: VIEW * zoom, height: VIEW * zoom });
+        lookAtLeftHand(s);
+        controller.setActive(true);
+        controller.setHandMarkers("all");
+        const toScreen = id => {
+            const marker = controller.state.markers[id];
+            const layout = controller.frameToOverlay(marker.u, marker.v);
+            return { x: left + layout.x * zoom, y: top + layout.y * zoom, layout };
+        };
+        const tipWorld = () => viewer.bones.index_03_l.getWorldPosition(new THREE.Vector3());
+        const start = toScreen("l_index_tip");
+        const history = viewer.history.length;
+        const down = pointer("pointerdown", start.x, start.y);
+        assert.equal(down.stopped, true, `zoom ${zoom}: the fingertip marker is hit`);
+        assert.equal(controller.drag.id, "l_index_tip", `zoom ${zoom}: the nearest marker wins`);
+        const startTip = tipWorld();
+        let previous = startTip;
+        const frame = controller.frameSize();
+        for (let step = 1; step <= 3; step++) {
+            pointer("pointermove", start.x + 5 * step * zoom, start.y + 4 * step * zoom);
+            assert.ok(runFrames() >= 1);
+            const now = tipWorld();
+            assert.ok(now.distanceTo(previous) > 1e-5, `zoom ${zoom} step ${step}: the finger moved before release`);
+            previous = now;
+            const joint = s.projected("l_index_tip");
+            const target = controller.state.markers.l_index_tip;
+            assert.ok(Math.hypot(joint.x - target.u * frame.width, joint.y - target.v * frame.height) < 2, `zoom ${zoom} step ${step}: the tip follows`);
+            assert.equal(viewer.history.length, history + 1);
+        }
+        pointer("pointerup", start.x + 15 * zoom, start.y + 12 * zoom);
+        assert.equal(viewer.history.length, history + 1, "one undo step per gesture");
+        const releasedJoint = s.projected("l_index_tip");
+        const releasedTarget = controller.state.markers.l_index_tip;
+        assert.ok(Math.hypot(releasedJoint.x - releasedTarget.u * frame.width, releasedJoint.y - releasedTarget.v * frame.height) < 1, `zoom ${zoom}: the fingertip does not spring back on release`);
+        assert.ok(tipWorld().distanceTo(previous) < 0.2 * previous.distanceTo(startTip), `zoom ${zoom}: release refines without a visible jump`);
+        assert.equal(controller.state.markers.l_index_tip.enabled, true, "dragging enables the tip");
+        const moved = toScreen("l_index_tip");
+        assert.ok(Math.abs(moved.layout.x - (start.layout.x + 15)) < 0.5 && Math.abs(moved.layout.y - (start.layout.y + 12)) < 0.5, "the marker stays under the cursor");
+        const report = F.measureJointLimits(controller.buildModel());
+        assert.ok(report.joints.index_02_l.violation < 1 && report.joints.index_03_l.violation < 1);
+        viewer.undo();
+        assert.equal(controller.state.markers.l_index_tip.enabled, false, "undo restores the marker");
+    }
+});
+
+test("dragging the middle fingertip turns the hand toward it", () => {
+    const s = fittingScene();
+    const { controller, viewer, pointer, runFrames, THREE } = s;
+    lookAtLeftHand(s);
+    controller.setActive(true);
+    controller.setHandMarkers("middle");
+    const marker = controller.state.markers.l_middle_tip;
+    const start = controller.frameToOverlay(marker.u, marker.v);
+    const wrist = controller.frameToOverlay(controller.state.markers.l_wrist.u, controller.state.markers.l_wrist.v);
+    const handBefore = viewer.bones.hand_l.quaternion.clone();
+    const wristWorld = viewer.bones.hand_l.getWorldPosition(new THREE.Vector3());
+    pointer("pointerdown", start.x, start.y);
+    // Swing the tip sideways around the wrist in the image.
+    const dx = start.x - wrist.x, dy = start.y - wrist.y;
+    const at = angle => [wrist.x + dx * Math.cos(angle) - dy * Math.sin(angle), wrist.y + dx * Math.sin(angle) + dy * Math.cos(angle)];
+    for (let step = 1; step <= 4; step++) {
+        pointer("pointermove", ...at(0.06 * step));
+        runFrames();
+        assert.ok(viewer.bones.hand_l.quaternion.angleTo(handBefore) > 1e-3 * step, `step ${step}: the hand turns while dragging`);
+    }
+    pointer("pointerup", ...at(0.24));
+    assert.ok(viewer.bones.hand_l.getWorldPosition(new THREE.Vector3()).distanceTo(wristWorld) < 1e-9, "the wrist stays where the wrist marker holds it");
+    const result = controller.lastResult;
+    assert.ok(result.markers.find(item => item.id === "l_middle_tip").error < 2, JSON.stringify(result.markers));
+    assert.ok(F.measureJointLimits(controller.buildModel()).joints.hand_l.violation < 1);
+});
+
+test("reset buttons restore Stiffness and Weight as one undo step; the Weight reset refits", () => {
+    const s = fittingScene();
+    const { controller, viewer, runFrames, handWorld } = s;
+    controller.setActive(true);
+    const e = controller.elements;
+    for (const button of [e.stiffnessReset, e.weightReset]) {
+        assert.equal(button.className, "vnccs-ps-reset-btn", "the Pose Studio slider reset control");
+        assert.equal(button.innerHTML, "↺");
+    }
+    assert.equal(e.stiffnessReset.title, "Reset to 1.00");
+    assert.equal(e.weightReset.title, "Reset to 1.0");
+    let history = viewer.history.length;
+    e.stiffness.emit("pointerdown");
+    e.stiffness.value = "1";
+    e.stiffness.emit("input");
+    e.stiffness.emit("change");
+    e.stiffness.emit("pointerup");
+    assert.equal(controller.state.settings.stiffness, 4);
+    assert.equal(viewer.history.length, history + 1, "a Stiffness gesture is one undo step");
+    history = viewer.history.length;
+    e.stiffnessReset.click();
+    assert.equal(controller.state.settings.stiffness, 1);
+    assert.equal(e.stiffness.value, "0");
+    assert.equal(e.stiffnessLabel.textContent, "1.00");
+    assert.equal(viewer.history.length, history + 1, "the reset is one undo step");
+    viewer.undo();
+    assert.equal(controller.state.settings.stiffness, 4, "undo restores the stiffness");
+
+    controller.state.markers.l_wrist.u += 0.05;
+    controller.state.markers.l_elbow.pinned = true;
+    controller.select("l_wrist");
+    e.weight.emit("pointerdown");
+    e.weight.value = "4";
+    e.weight.emit("input");
+    runFrames();
+    e.weight.emit("change");
+    const weighted = handWorld();
+    history = viewer.history.length;
+    e.weightReset.click();
+    assert.equal(controller.state.markers.l_wrist.weight, 1);
+    assert.equal(e.weight.value, "1");
+    assert.equal(viewer.history.length, history + 1, "the reset is one undo step");
+    assert.equal(controller.live, null, "the live edit is closed");
+    assert.ok(handWorld().distanceTo(weighted) > 1e-5, "the reset refits the pose");
+    viewer.undo();
+    assert.equal(controller.state.markers.l_wrist.weight, 4);
+});
+
+test("Hide bone handles hides and disables bone picking while Fitting Mode is on and restores it", () => {
+    const s = fittingScene();
+    const { controller, viewer, THREE, node } = s;
+    viewer._createJointMarkers();
+    const transform = {
+        dragging: false, axis: null, enabled: true, visible: false, object: null,
+        attach(object) { this.object = object; this.visible = true; }, detach() { this.object = null; this.visible = false; }, setMode() {},
+    };
+    viewer.transform = transform;
+    const effector = { visible: false }, pole = { visible: false };
+    const ik = { effectors: { hand_l: effector }, poleTargets: { leftArm: pole }, getChainForEffector: () => "leftArm", getMode: () => "ik", getPoleMode: () => "on" };
+    const withIK = fn => { viewer.ikController = ik; viewer.ikMode = true; try { fn(); } finally { viewer.ikController = null; viewer.ikMode = false; } };
+    const click = name => {
+        const point = viewer.bones[name].getWorldPosition(new THREE.Vector3()).project(viewer.camera);
+        viewer.handlePointerDown({ button: 0, clientX: (point.x + 1) / 2 * VIEW, clientY: (1 - point.y) / 2 * VIEW, pointerId: 3 });
+    };
+    const bodyMarkers = () => viewer.jointMarkers.filter(marker => !viewer._isFingerHandBoneName(viewer.boneList[marker.userData.boneIndex].name));
+    click("lowerarm_l");
+    assert.equal(viewer.selectedBone?.name, "lowerarm_l", "normal mode: the elbow handle selects the bone");
+    assert.equal(transform.visible, true);
+    withIK(() => { viewer.updateIKEffectorVisibility(); viewer.updatePoleTargetVisibility(); assert.ok(effector.visible && pole.visible); });
+
+    // The setting alone does nothing until Fitting Mode is on.
+    controller.elements.hideHandles.checked = true;
+    controller.elements.hideHandles.emit("change");
+    assert.equal(s.w.exportParams.fit_hide_bone_handles, true);
+    assert.equal(viewer.areBoneHandlesHidden(), false);
+    controller.setActive(true);
+    assert.equal(viewer.areBoneHandlesHidden(), true);
+    assert.ok(viewer.jointMarkers.every(marker => marker.visible === false), "every bone drag point is hidden");
+    assert.equal(viewer.selectedBone, null, "the selected bone and its gizmo are released");
+    assert.equal(transform.visible, false);
+    assert.equal(transform.enabled, false, "the gizmo cannot be grabbed");
+    withIK(() => { viewer.updateIKEffectorVisibility(); viewer.updatePoleTargetVisibility(); assert.ok(!effector.visible && !pole.visible, "IK helpers are hidden"); });
+    click("lowerarm_l");
+    click("head");
+    assert.equal(viewer.selectedBone, null, "clicks in the viewport select no bone");
+    viewer.handlePointerMove({ clientX: 10, clientY: 10, buttons: 0 });
+    assert.equal(viewer.hoveredBoneName, null);
+    // External selection (bone list / timeline) keeps the gizmo hidden and inert.
+    viewer.selectBoneByName("upperarm_l");
+    assert.equal(transform.visible, false);
+    viewer.deselectBone();
+    // 2D markers keep working.
+    const marker = controller.state.markers.l_wrist;
+    const position = controller.frameToOverlay(marker.u, marker.v);
+    assert.equal(s.pointer("pointerdown", position.x, position.y).stopped, true);
+    s.pointer("pointerup", position.x, position.y);
+    assert.equal(JSON.parse(node.widgets[0].value).export.fit_hide_bone_handles, true, "saved with the node, not with the pose");
+    assert.equal(viewer.getPose().fitting2d.settings.hideBoneHandles, undefined);
+
+    // Leaving Fitting Mode restores normal editing; entering it hides them again.
+    controller.setActive(false);
+    assert.equal(viewer.areBoneHandlesHidden(), false);
+    assert.ok(bodyMarkers().every(marker => marker.visible), "bone drag points are back");
+    assert.equal(transform.enabled, true);
+    click("lowerarm_l");
+    assert.equal(viewer.selectedBone?.name, "lowerarm_l");
+    controller.setActive(true);
+    assert.equal(viewer.areBoneHandlesHidden(), true);
+    controller.elements.hideHandles.checked = false;
+    controller.elements.hideHandles.emit("change");
+    assert.equal(viewer.areBoneHandlesHidden(), false, "turning the toggle off restores the handles");
+    assert.ok(bodyMarkers().every(marker => marker.visible));
+    click("head");
+    assert.equal(viewer.selectedBone?.name, "head");
+    withIK(() => { viewer.updateIKEffectorVisibility(); assert.ok(effector.visible); });
+});

@@ -308,6 +308,10 @@ and Ankle. Left and right are the character's own sides, exactly as in
 OpenPose (`L Wrist` is the character's left hand, drawn on the image right
 when the character faces the camera).
 
+Optional fingertip markers (**Hands** setting): `L/R Thumb`, `Index`,
+`Middle`, `Ring` and `Pinky` tips. They are smaller than the body markers and
+show their label only when selected.
+
 ### Workflow
 
 1. Open **2D Pose Fitting** and press **Fitting Mode: Off** to switch it on.
@@ -319,7 +323,11 @@ when the character faces the camera).
    it: pixel `x / canvas_width`, `y / canvas_height`. Normalized (0..1)
    keypoints are detected. Missing keypoints (confidence 0 or `0,0`) become
    disabled markers at the current joint. A warning appears when the JSON
-   aspect ratio differs from the output size.
+   aspect ratio differs from the output size. When the file has
+   `hand_left_keypoints_2d` / `hand_right_keypoints_2d`, the fingertip points
+   (indices 4, 8, 12, 16 and 20: thumb, index, middle, ring, pinky) become the
+   fingertip markers, and Hands switches from Off to All fingertips. Body-only
+   files load exactly as before.
 3. Drag markers in the viewport. The mannequin follows while you drag; every
    enabled marker is solved together. Clicks away from a marker still select
    bones and orbit the editor camera.
@@ -337,19 +345,22 @@ when the character faces the camera).
 | Reset Targets | Moves unpinned markers back onto the current joints. |
 | Clear Constraints | Removes all markers from this pose. |
 | Optimize | `Limbs + head` keeps the pelvis and spine fixed; `Whole body` also rotates them. |
+| Hands | `Off` (default): the 14 body markers only. `Middle tips`: adds the two middle fingertips, which also turn the hands. `All fingertips`: all ten tips. Saved with the pose. New tips start disabled on the current fingertips and become enabled when dragged. |
 | Move root | Whole body only: the pelvis may also translate (for scale/offset mismatches). |
-| Stiffness | How strongly the next solve stays near the pose it starts from (0.06..16). Lower follows markers more freely, higher keeps the current 3D depth. |
+| Stiffness | How strongly the next solve stays near the pose it starts from (0.06..16). Lower follows markers more freely, higher keeps the current 3D depth. ↺ resets it to 1.00. |
 | Refit after FK/IK edits | Runs Fit Pose after a gizmo or IK drag ends. |
 | Show markers | Hides the overlay without deleting markers. |
+| Hide bone handles | While Fitting Mode is on, hides Pose Studio's bone drag points, IK helpers and rotation gizmo and ignores bone clicks in the viewport, so only the 2D markers can be grabbed. Orbit, pan and zoom keep working; captures are unaffected. Leaving Fitting Mode or unticking it restores normal bone editing. Saved with the node (an editor preference, not part of the pose). |
 | Enabled | Uses this marker in the solve. |
 | Pinned | Weight x10; Reset Targets keeps the marker in place. |
-| Weight | 0..10 per marker; edits refit live. |
+| Weight | 0..10 per marker; edits refit live. ↺ resets it to 1.0 and refits. |
 | Depth | `Auto`, `Near` or `Far`: the joint is closer to (Near) or farther from (Far) the camera than its parent joint. |
 | Flip | Mirrors the joint's depth around its parent while keeping the 2D position (for example an elbow pointing toward or away from the camera). Refused when the mirrored pose breaks the joint limits. |
 
-Every marker drag, Fit Pose, Reset Targets, Clear Constraints, marker edit and
-weight-slider gesture is one Undo step, and Undo restores the pose and the
-markers together.
+Every marker drag, Fit Pose, Reset Targets, Clear Constraints, marker edit,
+Stiffness or Weight slider gesture and slider reset is one Undo step, and Undo
+restores the pose and the markers together. The marker list is grouped into
+Body, Left hand and Right hand when fingertip markers are shown.
 
 ### How it solves
 
@@ -366,6 +377,20 @@ markers together.
   Distance, zoom and output size.
 - Only joint rotations change (plus the pelvis position with Move root);
   bone lengths and body proportions never change.
+- Fingertips are solved after the body, in two short stages that never move
+  the wrist or arm (the wrist marker owns those):
+  1. Hand: the middle fingertip turns the hand (`hand_l` / `hand_r`) toward
+     its marker, within wrist limits (flexion -70..80 degrees, side bend
+     -35..25, twist -20..20). The fingers stay as they are in this stage, and
+     the effect fades out when the tip marker is near the knuckles (a curled
+     finger), so the hand and the finger do not fight.
+  2. Fingers: each active fingertip bends its whole chain, `_01` (knuckle,
+     limited ball joint: bend, sideways spread and a little twist) then `_02`
+     and `_03` (hinges that bend toward the palm and barely hyperextend). The
+     thumb has its own wider limits and bends across the palm.
+- The fingertip is the end of the `_03` bone: the MakeHuman
+  `<finger>_03____tail` joint (the fingertip vertex), recomputed when the
+  body shape changes.
 - Drags solve a few iterations per animation frame (bounded time) and refine
   once on release. Invalid results (NaN, energy increase, broken limits) are
   dropped and the last valid pose stays.
@@ -375,16 +400,24 @@ markers together.
 
 ### Storage
 
-Markers, pins, weights, depth hints and the panel settings are stored on the
-pose as `fitting2d` (normalized `u`/`v` output-frame coordinates, top-left
-origin). Every character and every pose tab has its own markers, and they are
-saved with the workflow and with Pose Library entries. Poses without
-`fitting2d` load exactly as before; Clear Constraints removes the field.
+Markers, pins, weights, depth hints and the panel settings (including Hands)
+are stored on the pose as `fitting2d` (normalized `u`/`v` output-frame
+coordinates, top-left origin). Every character and every pose tab has its own
+markers, and they are saved with the workflow and with Pose Library entries.
+Poses without `fitting2d` load exactly as before; Clear Constraints removes
+the field. `fitting2d` saved before fingertip markers existed loads unchanged
+with Hands Off. Hide bone handles is stored with the node, not with the pose.
 
 ### Limitations
 
-- One person per OpenPose file (`people[0]`); hands and face keypoints are
-  ignored, and BODY_25 MidHip and feet points are not used.
+- One person per OpenPose file (`people[0]`); only the five fingertip points
+  of each hand are used, face keypoints are ignored, and BODY_25 MidHip and
+  feet points are not used.
+- Fingertip markers do not move the wrist or the arm, and the hand tilt
+  toward or away from the camera cannot be read from one view: when a tip
+  projects closer to the wrist than the knuckles, the finger curls rather
+  than the hand tilting. Very large jumps (an open hand dragged straight into
+  a fist) can leave a finger slightly off; dragging the tip again settles it.
 - The camera is not fitted. If the reference figure is much larger, smaller
   or offset, adjust Camera Zoom or the positioning radar first, or use Whole
   body with Move root.

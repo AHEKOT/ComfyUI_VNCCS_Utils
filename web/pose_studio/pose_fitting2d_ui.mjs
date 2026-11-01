@@ -14,7 +14,7 @@
  *   the editor view orbits.
  */
 import { detectAndParseJSON } from "./imports/openpose.js?v=1791754604000";
-import * as F from "./pose_fitting2d.mjs";
+import * as F from "./pose_fitting2d.mjs?v=20261102.1";
 
 const SIDE_COLORS = { l: "#4fd1ff", r: "#ff9f43", c: "#ffe066" };
 const SKELETON = [
@@ -23,7 +23,12 @@ const SKELETON = [
     ["r_shoulder", "r_hip"], ["r_hip", "r_knee"], ["r_knee", "r_ankle"],
     ["l_shoulder", "l_hip"], ["l_hip", "l_knee"], ["l_knee", "l_ankle"], ["r_hip", "l_hip"],
 ];
+const HAND_SKELETON = F.POSE_FITTING_MARKERS.filter(def => def.group === "hand").map(def => [def.parent, def.id]);
 const HIT_RADIUS = 11;
+/** Fingertips sit a few pixels apart: smaller hit area and drawing. */
+const HAND_HIT_RADIUS = 7;
+const HAND_MODE_LABELS = [["off", "Off"], ["middle", "Middle tips"], ["all", "All fingertips"]];
+const LIST_GROUPS = [["body", "Body"], ["l", "Left hand"], ["r", "Right hand"]];
 export const POSE_FITTING_FRAME_BUDGET = Object.freeze({ iterations: 8, timeMs: 6 });
 export const POSE_FITTING_FINAL_BUDGET = Object.freeze({ iterations: 80, timeMs: 80 });
 const MARKER_DEFS = new Map(F.POSE_FITTING_MARKERS.map(def => [def.id, def]));
@@ -73,6 +78,11 @@ export class PoseFitting2DController {
         return this.state?.settings || F.defaultFittingSettings();
     }
 
+    /** Markers shown, draggable and solved in the current hand-marker mode. */
+    visibleIds() {
+        return F.visibleFittingMarkerIds(this.settings());
+    }
+
     // ------------------------------------------------------------------
     // Solver plumbing
     // ------------------------------------------------------------------
@@ -108,9 +118,11 @@ export class PoseFitting2DController {
         return offset;
     }
 
-    buildModel() {
+    buildModel(handMarkers = this.settings().handMarkers) {
         const offset = this.noseOffset();
-        const snapshot = F.snapshotViewerRig(this.viewer, offset ? { head: offset } : {});
+        const hands = handMarkers === "middle" || handMarkers === "all";
+        const offsets = { ...(hands ? F.viewerFingerTipOffsets(this.viewer) : {}), ...(offset ? { head: offset } : {}) };
+        const snapshot = F.snapshotViewerRig(this.viewer, offsets, { handMarkers });
         return snapshot ? F.buildFittingModel(snapshot) : null;
     }
 
@@ -158,10 +170,11 @@ export class PoseFitting2DController {
             tolerance: 1e-7,
         }, context));
         this.recordTiming(now() - started);
-        // Reject broken results and keep the last valid pose visible.
+        // Reject broken results and keep the last valid pose visible. A pose that
+        // already broke a limit (e.g. a hand set by FK) is not rejected for it.
         const broken = !result.valid || !Number.isFinite(result.energy)
             || result.energy > result.initialEnergy * 1.5 + 1e-6
-            || result.maxLimitViolation > 25;
+            || result.maxLimitViolation > Math.max(25, (result.initialLimitViolation || 0) + 1);
         if (broken) {
             this.message = "Solver rejected an invalid step; the last valid pose is kept.";
             return null;
@@ -238,15 +251,63 @@ export class PoseFitting2DController {
             this.host?.syncToNode?.(false);
         }
         this.message = next ? "Drag markers in the viewport. Bones stay selectable elsewhere." : "";
+        this.applyBoneHandles();
         this.redraw();
         this.refreshPanel();
     }
 
     targetsFromPose(state, options) {
-        const model = this.buildModel();
+        const model = this.buildModel(state?.settings?.handMarkers ?? this.settings().handMarkers);
         const projector = this.projector();
         if (!model || !projector) return state;
         return F.resetFittingTargets(state, F.projectFittingJoints(model, projector), this.frameSize(), options);
+    }
+
+    /**
+     * Hand-marker mode (per pose). Fingertip markers that have no position yet
+     * appear disabled on the current fingertips; dragging one enables it.
+     */
+    setHandMarkers(mode) {
+        if (!F.POSE_FITTING_HAND_MODES.includes(mode)) return;
+        if (!this.state) this.state = this.targetsFromPose(null, { keepPinned: false });
+        if (!this.state) return;
+        this.state.settings = { ...F.defaultFittingSettings(), ...this.state.settings, handMarkers: mode };
+        const missing = this.visibleIds().filter(id => this.state.markers[id]?.u === null);
+        const model = missing.length && this.isAvailable() ? this.buildModel(mode) : null;
+        const projector = model ? this.projector() : null;
+        if (model && projector) {
+            const projected = F.projectFittingJoints(model, projector);
+            const frame = this.frameSize();
+            for (const id of missing) {
+                const point = projected[id];
+                if (!point?.valid) continue;
+                Object.assign(this.state.markers[id], { u: point.x / frame.width, v: point.y / frame.height, enabled: false, confidence: 1 });
+            }
+        }
+        if (this.selectedId && !this.visibleIds().includes(this.selectedId)) this.selectedId = null;
+        this.redraw();
+        this.refreshPanel();
+        this.host?.syncToNode?.(false);
+    }
+
+    // ------------------------------------------------------------------
+    // Bone handles (editor setting of the widget, applied while the mode is on)
+    // ------------------------------------------------------------------
+
+    hideBoneHandlesSetting() {
+        return this.host?.exportParams?.fit_hide_bone_handles === true;
+    }
+
+    setHideBoneHandles(hidden) {
+        if (this.host?.exportParams) this.host.exportParams.fit_hide_bone_handles = hidden === true;
+        this.applyBoneHandles();
+        this.refreshPanel();
+        this.host?.syncToNode?.(false);
+    }
+
+    /** Pose Studio's bone drag points are hidden and unpickable only while Fitting Mode is on. */
+    applyBoneHandles() {
+        this.viewer?.setBoneHandlesHidden?.(this.active && this.hideBoneHandlesSetting());
     }
 
     fitPose() {
@@ -365,10 +426,13 @@ export class PoseFitting2DController {
         const imported = F.fittingStateFromOpenPose(parsed, { frame, previous: this.state });
         if (!imported) throw new Error("The JSON has no usable body keypoints.");
         // Missing keypoints get the current joint position but stay disabled.
-        const filled = this.targetsFromPose(F.createFittingState(), { keepPinned: false, enable: false });
+        const blank = F.createFittingState();
+        blank.settings.handMarkers = imported.state.settings.handMarkers;
+        const filled = this.targetsFromPose(blank, { keepPinned: false, enable: false });
         for (const id of F.POSE_FITTING_MARKER_IDS) {
             const marker = imported.state.markers[id];
-            if (marker.u === null && filled?.markers?.[id]?.u !== null) {
+            const fill = filled?.markers?.[id];
+            if (marker.u === null && fill && fill.u !== null) {
                 Object.assign(marker, { u: filled.markers[id].u, v: filled.markers[id].v, enabled: false, confidence: 0 });
             }
         }
@@ -376,7 +440,7 @@ export class PoseFitting2DController {
         this.beginUndoStep();
         this.state = imported.state;
         this.setActive(true);
-        this.message = `Loaded ${imported.found} keypoints (${parsed.format || parsed.source || "pose"}). Press Fit Pose.`
+        this.message = `Loaded ${imported.found} keypoints${imported.handFound ? ` and ${imported.handFound} fingertips` : ""} (${parsed.format || parsed.source || "pose"}). Press Fit Pose.`
             + (imported.warnings.length ? ` ${imported.warnings.join(" ")}` : "");
         this.commitPose();
         return imported;
@@ -417,6 +481,7 @@ export class PoseFitting2DController {
     onPoseChanged() {
         if (this._applying) return;
         if (!this.isAvailable() && this.active) this.setActive(false);
+        this.applyBoneHandles();
         this.redraw();
         this.refreshPanel();
     }
@@ -508,13 +573,14 @@ export class PoseFitting2DController {
         const y = (clientY - rect.top) * size.height / Math.max(1, rect.height);
         const framePlane = this.framePlane();
         let best = null;
-        for (const id of F.POSE_FITTING_MARKER_IDS) {
+        for (const id of this.visibleIds()) {
             const marker = this.state.markers[id];
             if (!marker || marker.u === null) continue;
             const position = this.frameToOverlay(marker.u, marker.v, framePlane);
             if (!position) continue;
             const distance = Math.hypot(position.x - x, position.y - y);
-            if (distance <= HIT_RADIUS && (!best || distance < best.distance)) best = { id, distance };
+            const radius = MARKER_DEFS.get(id).group === "hand" ? HAND_HIT_RADIUS : HIT_RADIUS;
+            if (distance <= radius && (!best || distance < best.distance)) best = { id, distance };
         }
         return best;
     }
@@ -630,26 +696,28 @@ export class PoseFitting2DController {
         const projector = this.projector();
         if (!model || !projector || !framePlane) return;
         const projected = F.projectFittingJoints(model, projector);
+        const visible = this.visibleIds();
         const targets = {};
-        for (const id of F.POSE_FITTING_MARKER_IDS) {
+        for (const id of visible) {
             const marker = state.markers[id];
             if (marker?.u === null || marker?.u === undefined) continue;
             targets[id] = this.frameToOverlay(marker.u, marker.v, framePlane);
         }
         ctx.lineWidth = 1;
         ctx.strokeStyle = "rgba(255,255,255,0.28)";
-        for (const [a, b] of SKELETON) {
+        for (const [a, b] of [...SKELETON, ...HAND_SKELETON]) {
             if (!targets[a] || !targets[b] || !state.markers[a].enabled || !state.markers[b].enabled) continue;
             ctx.beginPath();
             ctx.moveTo(targets[a].x, targets[a].y);
             ctx.lineTo(targets[b].x, targets[b].y);
             ctx.stroke();
         }
-        for (const id of F.POSE_FITTING_MARKER_IDS) {
+        for (const id of visible) {
             const marker = state.markers[id];
             const target = targets[id];
             if (!target) continue;
             const def = MARKER_DEFS.get(id);
+            const hand = def.group === "hand";
             const joint = projected[id];
             const actual = joint?.valid ? this.frameToOverlay(joint.x / frame.width, joint.y / frame.height, framePlane) : null;
             const error = joint?.valid ? Math.hypot(joint.x - marker.u * frame.width, joint.y - marker.v * frame.height) : Infinity;
@@ -663,12 +731,14 @@ export class PoseFitting2DController {
                 ctx.stroke();
                 ctx.fillStyle = "rgba(255,255,255,0.85)";
                 ctx.beginPath();
-                ctx.arc(actual.x, actual.y, 2.5, 0, Math.PI * 2);
+                ctx.arc(actual.x, actual.y, hand ? 1.5 : 2.5, 0, Math.PI * 2);
                 ctx.fill();
             }
             const selected = id === this.selectedId;
-            const radius = (selected ? 7 : 5.5) + Math.min(3, Math.max(0, (marker.weight || 1) - 1));
-            ctx.lineWidth = marker.pinned ? 3 : 2;
+            const radius = hand
+                ? (selected ? 4.5 : 3.5) + Math.min(1.5, Math.max(0, (marker.weight || 1) - 1) / 2)
+                : (selected ? 7 : 5.5) + Math.min(3, Math.max(0, (marker.weight || 1) - 1));
+            ctx.lineWidth = hand ? (marker.pinned ? 2 : 1.5) : (marker.pinned ? 3 : 2);
             ctx.strokeStyle = marker.enabled ? color : "rgba(160,160,160,0.7)";
             ctx.fillStyle = marker.enabled ? `${color}55` : "rgba(0,0,0,0.25)";
             ctx.beginPath();
@@ -676,7 +746,8 @@ export class PoseFitting2DController {
             else ctx.arc(target.x, target.y, radius, 0, Math.PI * 2);
             ctx.fill();
             ctx.stroke();
-            if (selected || (marker.enabled && error > F.POSE_FITTING_DEFAULTS.unreachedPx)) {
+            // Fingertip labels only for the selected marker: five tips would overlap.
+            if (selected || (!hand && marker.enabled && error > F.POSE_FITTING_DEFAULTS.unreachedPx)) {
                 ctx.font = "11px sans-serif";
                 ctx.fillStyle = "#ffffff";
                 const label = Number.isFinite(error) ? `${def.label} ${error.toFixed(1)}px` : `${def.label} (behind camera)`;
@@ -709,6 +780,21 @@ export class PoseFitting2DController {
             children.forEach(child => element.appendChild(child));
             return element;
         };
+        // Same reset control as the other Pose Studio sliders (Camera Angle, FOV, ...):
+        // set the default and replay input + change, so a reset is one ordinary gesture.
+        const resetButton = (slider, value, title) => {
+            const element = make("button", "vnccs-ps-reset-btn");
+            element.type = "button";
+            element.innerHTML = "↺";
+            element.title = title;
+            element.addEventListener("click", event => {
+                event?.stopPropagation?.();
+                slider.value = String(value);
+                slider.dispatchEvent(new Event("input"));
+                slider.dispatchEvent(new Event("change"));
+            });
+            return element;
+        };
         const checkbox = (label, title, onChange) => {
             const wrap = make("label", "vnccs-ps-fit-check");
             wrap.title = title;
@@ -721,7 +807,7 @@ export class PoseFitting2DController {
         };
 
         const toggle = button("Fitting Mode: Off", "Show and drag 2D markers that pull joints toward reference positions in the output frame", () => this.setActive(!this.active), "vnccs-ps-fit-toggle");
-        const load = button("Load OpenPose JSON", "Create markers from OpenPose COCO-18 / BODY_25 JSON (keypoints are mapped onto the output frame like the background image)", () => this.openFilePicker());
+        const load = button("Load OpenPose JSON", "Create markers from OpenPose COCO-18 / BODY_25 JSON, with fingertips from hand keypoints when present (keypoints are mapped onto the output frame like the background image)", () => this.openFilePicker());
         const fit = button("Fit Pose", "Optimize joint angles so projected joints match the enabled markers", () => this.fitPose(), "primary");
         const reset = button("Reset Targets", "Move unpinned markers onto the current joints (creates markers when none exist)", () => this.resetTargets());
         const clear = button("Clear Constraints", "Remove all 2D markers from this pose", () => this.clearConstraints());
@@ -732,7 +818,7 @@ export class PoseFitting2DController {
         const show = checkbox("Show markers", "Show the marker overlay", value => this.updateSettings({ showMarkers: value }));
         const moveRoot = checkbox("Move root", "Whole body only: allow the pelvis to translate (camera never moves)", value => this.updateSettings({ moveRoot: value }));
         const autoRefit = checkbox("Refit after FK/IK edits", "Run Fit Pose automatically when an FK/IK drag ends", value => this.updateSettings({ autoRefit: value }));
-        const scope = make("select", "vnccs-ps-fit-select");
+        const scope = make("select", "vnccs-ps-select vnccs-ps-fit-select");
         for (const [value, label] of [["limbs", "Limbs + head"], ["body", "Whole body"]]) {
             const option = make("option", "", label);
             option.value = value;
@@ -740,21 +826,51 @@ export class PoseFitting2DController {
         }
         scope.title = "Limbs + head keeps the pelvis and spine fixed; Whole body also rotates them";
         scope.addEventListener("change", () => this.updateSettings({ scope: scope.value }));
+        const hands = make("select", "vnccs-ps-select vnccs-ps-fit-select");
+        for (const [value, label] of HAND_MODE_LABELS) {
+            const option = make("option", "", label);
+            option.value = value;
+            hands.appendChild(option);
+        }
+        hands.title = "Fingertip markers: Off keeps the 14 body markers; Middle tips adds the two middle fingertips (they also turn the hands); All fingertips adds all ten";
+        hands.addEventListener("change", () => this.setHandMarkers(hands.value));
+        const hideHandles = checkbox("Hide bone handles", "While Fitting Mode is on, hide Pose Studio's bone drag points, IK helpers and rotation gizmo and ignore bone clicks in the viewport. Orbit, pan and zoom keep working. Saved with this node.", value => this.setHideBoneHandles(value));
         content.appendChild(row(make("span", "vnccs-ps-label", "Optimize"), scope));
+        content.appendChild(row(make("span", "vnccs-ps-label", "Hands"), hands));
         content.appendChild(row(show.wrap, moveRoot.wrap));
         content.appendChild(row(autoRefit.wrap));
+        content.appendChild(row(hideHandles.wrap));
 
         const stiffnessLabel = make("span", "vnccs-ps-value", "1.00");
         const stiffness = make("input", "vnccs-ps-slider");
         stiffness.type = "range"; stiffness.min = "-2"; stiffness.max = "2"; stiffness.step = "0.05"; stiffness.value = "0";
         stiffness.title = "Pose prior: higher keeps the current 3D pose (depth) more, lower matches markers more freely";
+        // One undo step per gesture (pointer drag, keys or reset); the value applies to the next solve.
+        let stiffnessGesture = false;
+        const beginStiffness = () => {
+            if (stiffnessGesture) return;
+            stiffnessGesture = true;
+            this.endInteraction();
+            this.beginUndoStep();
+        };
+        const finishStiffness = () => {
+            if (!stiffnessGesture) return;
+            stiffnessGesture = false;
+            this.updateSettings({ stiffness: Math.pow(4, Number(stiffness.value)) });
+        };
+        stiffness.addEventListener("pointerdown", beginStiffness);
         stiffness.addEventListener("input", () => {
+            beginStiffness();
             const value = Math.pow(4, Number(stiffness.value));
             stiffnessLabel.textContent = value.toFixed(2);
             if (this.state) this.state.settings.stiffness = value;
         });
-        stiffness.addEventListener("change", () => this.updateSettings({ stiffness: Math.pow(4, Number(stiffness.value)) }));
-        content.appendChild(row(make("span", "vnccs-ps-label", "Stiffness"), stiffness, stiffnessLabel));
+        stiffness.addEventListener("change", finishStiffness);
+        stiffness.addEventListener("pointerup", finishStiffness);
+        stiffness.addEventListener("pointercancel", finishStiffness);
+        stiffness.addEventListener("blur", finishStiffness);
+        const stiffnessReset = resetButton(stiffness, 0, "Reset to 1.00");
+        content.appendChild(row(make("span", "vnccs-ps-label", "Stiffness"), stiffness, stiffnessLabel, stiffnessReset));
 
         const status = make("div", "vnccs-ps-fit-status", "");
         content.appendChild(status);
@@ -798,7 +914,7 @@ export class PoseFitting2DController {
         weight.addEventListener("pointerup", finishWeight);
         weight.addEventListener("pointercancel", finishWeight);
         weight.addEventListener("blur", finishWeight);
-        const depth = make("select", "vnccs-ps-fit-select");
+        const depth = make("select", "vnccs-ps-select vnccs-ps-fit-select");
         for (const [value, label] of [["auto", "Auto"], ["near", "Near"], ["far", "Far"]]) {
             const option = make("option", "", label);
             option.value = value;
@@ -810,7 +926,8 @@ export class PoseFitting2DController {
         const markerError = make("span", "vnccs-ps-value", "");
         editor.appendChild(row(editorTitle, markerError));
         editor.appendChild(row(enabled.wrap, pinned.wrap));
-        editor.appendChild(row(make("span", "vnccs-ps-label", "Weight"), weight, weightLabel));
+        const weightReset = resetButton(weight, 1, "Reset to 1.0");
+        editor.appendChild(row(make("span", "vnccs-ps-label", "Weight"), weight, weightLabel, weightReset));
         editor.appendChild(row(make("span", "vnccs-ps-label", "Depth"), depth, flip));
         content.appendChild(editor);
 
@@ -825,9 +942,9 @@ export class PoseFitting2DController {
         content.appendChild(fileInput);
 
         this.elements = {
-            toggle, load, fit, reset, clear, scope, show: show.input, moveRoot: moveRoot.input, autoRefit: autoRefit.input,
-            stiffness, stiffnessLabel, status, list, editor, editorTitle, enabled: enabled.input, pinned: pinned.input,
-            weight, weightLabel, depth, flip, markerError, fileInput, listRows: new Map(),
+            toggle, load, fit, reset, clear, scope, hands, hideHandles: hideHandles.input, show: show.input, moveRoot: moveRoot.input, autoRefit: autoRefit.input,
+            stiffness, stiffnessLabel, stiffnessReset, status, list, editor, editorTitle, enabled: enabled.input, pinned: pinned.input,
+            weight, weightLabel, weightReset, depth, flip, markerError, fileInput, listRows: new Map(), listGroups: new Map(),
         };
         this.refreshPanel();
     }
@@ -841,7 +958,7 @@ export class PoseFitting2DController {
         const frame = this.frameSize();
         const projected = F.projectFittingJoints(model, projector);
         const out = {};
-        for (const id of F.POSE_FITTING_MARKER_IDS) {
+        for (const id of this.visibleIds()) {
             const marker = state.markers[id];
             const joint = projected[id];
             if (!marker || marker.u === null || !joint) continue;
@@ -862,6 +979,8 @@ export class PoseFitting2DController {
         e.fit.disabled = !available || !state;
         e.clear.disabled = !state;
         e.scope.value = settings.scope;
+        e.hands.value = settings.handMarkers || "off";
+        e.hideHandles.checked = this.hideBoneHandlesSetting();
         e.show.checked = settings.showMarkers !== false;
         e.moveRoot.checked = !!settings.moveRoot;
         e.moveRoot.disabled = settings.scope !== "body";
@@ -873,9 +992,10 @@ export class PoseFitting2DController {
         }
 
         const residuals = this.active ? this.residuals() : null;
+        const visible = this.visibleIds();
         let summary = available ? "" : "Available in image mode once the model is loaded.";
         if (available && state && residuals) {
-            const values = F.POSE_FITTING_MARKER_IDS
+            const values = visible
                 .filter(id => state.markers[id]?.enabled && Number.isFinite(residuals[id]))
                 .map(id => [id, residuals[id]]);
             if (values.length) {
@@ -890,10 +1010,19 @@ export class PoseFitting2DController {
         }
         e.status.textContent = this.message ? `${summary}\n${this.message}` : summary;
 
-        // Marker list: enable, pin, residual
+        // Marker list: enable, pin, residual; grouped as Body / Left hand / Right hand.
         e.list.style.display = state ? "" : "none";
         if (state) {
+            const showGroups = visible.length > F.POSE_FITTING_BODY_MARKER_IDS.length;
             for (const def of F.POSE_FITTING_MARKERS) {
+                const groupKey = def.group === "hand" ? def.side : "body";
+                if (!e.listGroups.has(groupKey)) {
+                    const header = this.document.createElement("div");
+                    header.className = "vnccs-ps-fit-group";
+                    header.textContent = LIST_GROUPS.find(([key]) => key === groupKey)[1];
+                    e.list.appendChild(header);
+                    e.listGroups.set(groupKey, header);
+                }
                 let item = e.listRows.get(def.id);
                 if (!item) {
                     const rowElement = this.document.createElement("div");
@@ -909,6 +1038,9 @@ export class PoseFitting2DController {
                     item = { row: rowElement, name, value };
                     e.listRows.set(def.id, item);
                 }
+                const shown = visible.includes(def.id);
+                item.row.style.display = shown ? "" : "none";
+                if (!shown) continue;
                 const marker = state.markers[def.id];
                 const residual = residuals?.[def.id];
                 const flags = `${marker.pinned ? "📌 " : ""}${marker.enabled ? "" : "(off) "}`;
@@ -917,9 +1049,12 @@ export class PoseFitting2DController {
                 item.row.classList?.toggle?.("selected", def.id === this.selectedId);
                 item.row.classList?.toggle?.("unreached", marker.enabled && residual > F.POSE_FITTING_DEFAULTS.unreachedPx);
             }
+            for (const [key, header] of e.listGroups) {
+                header.style.display = showGroups && visible.some(id => (MARKER_DEFS.get(id).group === "hand" ? MARKER_DEFS.get(id).side : "body") === key) ? "" : "none";
+            }
         }
 
-        const marker = state?.markers?.[this.selectedId];
+        const marker = visible.includes(this.selectedId) ? state?.markers?.[this.selectedId] : null;
         e.editor.style.display = marker ? "" : "none";
         if (marker) {
             const def = MARKER_DEFS.get(this.selectedId);
@@ -940,6 +1075,7 @@ export class PoseFitting2DController {
 
     dispose() {
         this.endInteraction();
+        this.viewer?.setBoneHandlesHidden?.(false);
         for (const remove of this._removeListeners.splice(0)) remove();
         this.overlay?.remove?.();
         this.overlay = null;

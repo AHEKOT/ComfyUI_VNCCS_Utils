@@ -357,7 +357,7 @@ test("stored fitting data is validated, clamped and backward compatible", () => 
     assert.deepEqual(state.markers.l_wrist, { u: 0.5, v: 0.25, enabled: true, pinned: true, weight: 10, confidence: 1, depth: "auto" });
     assert.equal(state.markers.r_wrist.enabled, false, "a marker without coordinates cannot be enabled");
     assert.equal(state.markers.bogus, undefined);
-    assert.deepEqual(state.settings, { scope: "limbs", moveRoot: false, stiffness: 0.05, showMarkers: false, autoRefit: false });
+    assert.deepEqual(state.settings, { scope: "limbs", moveRoot: false, stiffness: 0.05, showMarkers: false, autoRefit: false, handMarkers: "off" });
     assert.deepEqual(state.frame, { width: 1024, height: 768 });
     assert.equal(state.unknown, undefined);
     assert.deepEqual(Object.keys(state.markers), F.POSE_FITTING_MARKER_IDS);

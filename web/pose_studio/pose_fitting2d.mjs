@@ -22,9 +22,17 @@
  * Optimized degrees of freedom are local bone rotations (and, only when the
  * user enables it, the pelvis translation). Bone lengths and body proportions
  * are never changed, the camera is never moved.
+ *
+ * Fingertip markers are solved after the body, strictly in this order so the
+ * stages never fight: (1) body markers move the torso, arms and legs; (2) the
+ * middle fingertip turns the hand (wrist rotation within wrist limits, fingers
+ * frozen) so the wrist -> middle tip direction points at it; (3) every fingertip drives
+ * its own finger chain (MCP ball + PIP/DIP hinges) with the hand held fixed.
+ * Fingertips never move the arm: the wrist marker owns the wrist position.
  */
 
-export const POSE_FITTING_VERSION = 1;
+/** Version 2 adds fingertip markers and `settings.handMarkers`; version 1 data loads unchanged. */
+export const POSE_FITTING_VERSION = 2;
 
 const DEG = Math.PI / 180;
 const RAD = 180 / Math.PI;
@@ -35,7 +43,7 @@ const RAD = 180 / Math.PI;
  * `parent` names the marker one rigid segment closer to the torso; it defines
  * what a depth hint compares against.
  */
-export const POSE_FITTING_MARKERS = Object.freeze([
+const BODY_MARKERS = [
     { id: "head", label: "Head", bone: "head", openpose: "nose", parent: "neck", side: "c", flip: "neck_01" },
     { id: "neck", label: "Neck", bone: "neck_01", openpose: "neck", parent: null, side: "c" },
     { id: "r_shoulder", label: "R Shoulder", bone: "upperarm_r", openpose: "r_shoulder", parent: "neck", side: "r" },
@@ -50,10 +58,49 @@ export const POSE_FITTING_MARKERS = Object.freeze([
     { id: "l_hip", label: "L Hip", bone: "thigh_l", openpose: "l_hip", parent: null, side: "l" },
     { id: "l_knee", label: "L Knee", bone: "calf_l", openpose: "l_knee", parent: "l_hip", side: "l", flip: "thigh_l" },
     { id: "l_ankle", label: "L Ankle", bone: "foot_l", openpose: "l_ankle", parent: "l_knee", side: "l", flip: "calf_l" },
-].map(marker => Object.freeze(marker)));
+].map(marker => ({ ...marker, group: "body" }));
+
+export const POSE_FITTING_FINGERS = Object.freeze(["thumb", "index", "middle", "ring", "pinky"]);
+/** Fingertip indices of the 21-point OpenPose hand model. */
+const OPENPOSE_HAND_TIP = Object.freeze({ thumb: 4, index: 8, middle: 12, ring: 16, pinky: 20 });
+
+/**
+ * Fingertip markers. The tip is the end of the distal (`_03`) bone; its parent
+ * marker for depth hints is the wrist of the same side.
+ */
+const HAND_MARKERS = ["l", "r"].flatMap(side => POSE_FITTING_FINGERS.map(finger => ({
+    id: `${side}_${finger}_tip`,
+    label: `${side.toUpperCase()} ${finger[0].toUpperCase()}${finger.slice(1)}`,
+    bone: `${finger}_03_${side}`,
+    openposeHand: OPENPOSE_HAND_TIP[finger],
+    parent: `${side}_wrist`,
+    side,
+    group: "hand",
+    finger,
+})));
+
+export const POSE_FITTING_MARKERS = Object.freeze([...BODY_MARKERS, ...HAND_MARKERS].map(marker => Object.freeze(marker)));
 
 export const POSE_FITTING_MARKER_IDS = Object.freeze(POSE_FITTING_MARKERS.map(marker => marker.id));
+export const POSE_FITTING_BODY_MARKER_IDS = Object.freeze(BODY_MARKERS.map(marker => marker.id));
 const MARKER_INDEX = new Map(POSE_FITTING_MARKERS.map((marker, index) => [marker.id, index]));
+const MARKER_DEFS = new Map(POSE_FITTING_MARKERS.map(marker => [marker.id, marker]));
+
+/** Which fingertip markers are shown and solved: none, the two middle tips, or all ten. */
+export const POSE_FITTING_HAND_MODES = Object.freeze(["off", "middle", "all"]);
+
+/** True when a marker takes part in the current hand-marker mode (body markers always do). */
+export function isFittingMarkerVisible(id, settings = null) {
+    const def = MARKER_DEFS.get(id);
+    if (!def) return false;
+    if (def.group !== "hand") return true;
+    const mode = settings?.handMarkers;
+    return mode === "all" || (mode === "middle" && def.finger === "middle");
+}
+
+export function visibleFittingMarkerIds(settings = null) {
+    return POSE_FITTING_MARKER_IDS.filter(id => isFittingMarkerVisible(id, settings));
+}
 
 /** Bones that take part in forward kinematics, parents first. */
 export const POSE_FITTING_RIG_BONES = Object.freeze([
@@ -64,6 +111,17 @@ export const POSE_FITTING_RIG_BONES = Object.freeze([
     "thigh_r", "calf_r", "foot_r",
 ]);
 
+/** Finger bones (MCP `_01`, PIP `_02`, DIP `_03`), added to the rig only while hand markers are on. */
+export const POSE_FITTING_FINGER_BONES = Object.freeze(["l", "r"].flatMap(side =>
+    POSE_FITTING_FINGERS.flatMap(finger => ["01", "02", "03"].map(segment => `${finger}_${segment}_${side}`))));
+
+/** Rig bones for a hand-marker mode. "off" keeps the original body-only rig. */
+export function fittingRigBones(handMarkers = "off") {
+    return handMarkers === "middle" || handMarkers === "all"
+        ? [...POSE_FITTING_RIG_BONES, ...POSE_FITTING_FINGER_BONES]
+        : POSE_FITTING_RIG_BONES;
+}
+
 /**
  * Joint model. Ball-joint limits are swing components (degrees, rotation
  * vector components in the parent rest frame, left side; the right side is
@@ -72,7 +130,43 @@ export const POSE_FITTING_RIG_BONES = Object.freeze([
  * straight limb and positive bends toward `flexSide` (body front or back).
  * `prior` multiplies the pose-prior stiffness: torso joints are stiffer so
  * limbs move first.
+ *
+ * Hand joints (`scope: "hand"`) use an anatomical frame derived from each
+ * hand's own rest geometry instead of world axes (`frame: "hand"`): `flex` is
+ * the swing toward the palm (negative = extension), `side` the swing toward the
+ * thumb (radial / abduction toward the index side), `twist` the roll about the
+ * bone. Finger PIP/DIP joints are hinges that bend toward the palm; the thumb's
+ * bend side is half way between the palm and the fingers.
  */
+function handJointSpecs() {
+    const specs = {};
+    for (const side of ["l", "r"]) {
+        specs[`hand_${side}`] = {
+            type: "ball", scope: "hand", frame: "hand", prior: 2, child: `middle_01_${side}`, priorAxes: [1, 2.5, 4],
+            limits: { flex: [-70, 80], side: [-35, 25], twist: [-20, 20] },
+        };
+        for (const finger of POSE_FITTING_FINGERS) {
+            const thumb = finger === "thumb";
+            specs[`${finger}_01_${side}`] = {
+                type: "ball", scope: "hand", frame: "hand", prior: 1.5, child: `${finger}_02_${side}`,
+                priorAxes: thumb ? [1, 1.5, 3] : [1, 6, 6],
+                limits: thumb
+                    ? { flex: [-35, 65], side: [-45, 45], twist: [-35, 35] }
+                    : { flex: [-25, 95], side: [-25, 25], twist: [-15, 15] },
+            };
+            specs[`${finger}_02_${side}`] = {
+                type: "hinge", scope: "hand", prior: 1, child: `${finger}_03_${side}`,
+                flex: thumb ? [-20, 75] : [-5, 110], flexSide: thumb ? "thumb" : "palm",
+            };
+            specs[`${finger}_03_${side}`] = {
+                type: "hinge", scope: "hand", prior: 1, tip: `${side}_${finger}_tip`,
+                flex: thumb ? [-20, 90] : [-10, 90], flexSide: thumb ? "thumb" : "palm",
+            };
+        }
+    }
+    return specs;
+}
+
 export const POSE_FITTING_JOINTS = Object.freeze({
     pelvis: { type: "ball", scope: "body", prior: 6, axis: [0, 1, 0], limits: null, translation: true },
     spine_01: { type: "ball", scope: "body", prior: 4, child: "spine_02", limits: { x: [-20, 35], z: [-20, 20], twist: [-20, 20] } },
@@ -90,6 +184,7 @@ export const POSE_FITTING_JOINTS = Object.freeze({
     thigh_r: { type: "ball", scope: "limbs", prior: 1.5, child: "calf_r", limits: { x: [-130, 30], y: [-90, 90], z: [-30, 60], twist: [-45, 45] } },
     calf_l: { type: "hinge", scope: "limbs", prior: 1, child: "foot_l", flex: [0, 150], flexSide: "back" },
     calf_r: { type: "hinge", scope: "limbs", prior: 1, child: "foot_r", flex: [0, 150], flexSide: "back" },
+    ...handJointSpecs(),
 });
 
 export const POSE_FITTING_DEFAULTS = Object.freeze({
@@ -362,28 +457,6 @@ export function buildFittingModel(snapshot) {
         bone.children = [];
     }
     bones.forEach((bone, i) => { if (bone.parent >= 0) bones[bone.parent].children.push(i); });
-    // Joint geometry derived from the rig's own rest offsets.
-    for (const bone of bones) {
-        const spec = jointSpecFor(bone.name);
-        bone.spec = spec;
-        if (!spec) continue;
-        const child = spec.child && index.has(spec.child) ? bones[index.get(spec.child)] : null;
-        const childDir = child ? normalize(qrotate(bone.rest, child.position)) : null;
-        if (spec.type === "ball") {
-            bone.restDir = childDir && len(childDir) > 0 ? childDir : normalize(spec.axis || [0, 1, 0]);
-        } else if (spec.type === "hinge") {
-            const upper = normalize(bone.position);
-            const lower = childDir || upper;
-            const side = spec.flexSide === "back" ? [0, 0, -1] : [0, 0, 1];
-            let axis = cross(upper, lower);
-            if (len(axis) < 0.05) axis = spec.flexSide === "back" ? [1, 0, 0] : cross(upper, side);
-            axis = normalize(axis);
-            if (dot(cross(axis, upper), side) < 0) axis = axis.map(value => -value);
-            bone.upperDir = upper;
-            bone.childRest = child ? child.position.slice() : upper.slice();
-            bone.hingeAxis = axis;
-        }
-    }
     const pointOffsets = snapshot.pointOffsets || {};
     const markers = POSE_FITTING_MARKERS.map(def => {
         const boneIndex = index.has(def.bone) ? index.get(def.bone) : -1;
@@ -392,6 +465,10 @@ export function buildFittingModel(snapshot) {
         if (def.id === "head" && boneIndex >= 0) {
             const neckLength = len(bones[boneIndex].position) || 1;
             fallback = [0, neckLength, 1.1 * neckLength];
+        } else if (def.group === "hand" && boneIndex >= 0) {
+            // Without a measured tip, extend the distal bone by its parent segment.
+            const bone = bones[boneIndex];
+            fallback = qrotate(qconj(bone.rest), bone.position);
         }
         return {
             id: def.id,
@@ -400,7 +477,99 @@ export function buildFittingModel(snapshot) {
             parent: def.parent ? MARKER_INDEX.get(def.parent) : -1,
         };
     });
-    return { base, bones, index, markers };
+    const handFrames = buildHandFrames(bones, index);
+    // Joint geometry derived from the rig's own rest offsets.
+    for (const bone of bones) {
+        const spec = jointSpecFor(bone.name);
+        bone.spec = spec;
+        if (!spec) continue;
+        const child = spec.child && index.has(spec.child) ? bones[index.get(spec.child)] : null;
+        const tipMarker = spec.tip ? markers[MARKER_INDEX.get(spec.tip)] : null;
+        const childLocal = child ? child.position : (tipMarker?.bone >= 0 ? tipMarker.offset : null);
+        const childDir = childLocal ? normalize(qrotate(bone.rest, childLocal)) : null;
+        const handFrame = spec.scope === "hand" ? handFrames[bone.name.slice(-1)] : null;
+        if (spec.type === "ball") {
+            bone.restDir = childDir && len(childDir) > 0 ? childDir : normalize(spec.axis || [0, 1, 0]);
+            if (spec.frame === "hand") {
+                const palm = handFrame ? handVectorInParentFrame(bones, index.get(bone.name), handFrame, bone.name.startsWith("thumb_") ? handFrame.thumbFlex : handFrame.palm) : null;
+                const across = handFrame ? handVectorInParentFrame(bones, index.get(bone.name), handFrame, handFrame.across) : null;
+                const d = bone.restDir;
+                const perp = v => normalize(sub(v, d.map(value => value * dot(v, d))));
+                // Swing about flexAxis moves the bone toward the palm, about sideAxis toward the thumb.
+                bone.limitAxes = palm && across
+                    ? { flex: normalize(cross(d, perp(palm))), side: normalize(cross(d, perp(across))) }
+                    : null;
+                if (bone.limitAxes && spec.priorAxes) {
+                    const flexAxis = bone.limitAxes.flex;
+                    bone.priorBasis = [flexAxis, normalize(cross(d, flexAxis)), d];
+                }
+            }
+        } else if (spec.type === "hinge") {
+            const upper = normalize(bone.position);
+            const lower = childDir || upper;
+            const handSide = (spec.flexSide === "palm" || spec.flexSide === "thumb") && handFrame
+                ? handVectorInParentFrame(bones, index.get(bone.name), handFrame, spec.flexSide === "thumb" ? handFrame.thumbFlex : handFrame.palm)
+                : null;
+            let side, axis;
+            if (handSide) {
+                // Fingers: bend toward the palm side measured on the hand, not world axes.
+                side = handSide;
+                axis = cross(upper, side);
+            } else {
+                side = spec.flexSide === "back" ? [0, 0, -1] : [0, 0, 1];
+                axis = cross(upper, lower);
+                if (len(axis) < 0.05) axis = spec.flexSide === "back" ? [1, 0, 0] : cross(upper, side);
+            }
+            axis = normalize(axis);
+            if (dot(cross(axis, upper), side) < 0) axis = axis.map(value => -value);
+            bone.upperDir = upper;
+            bone.childRest = childLocal ? childLocal.slice() : upper.slice();
+            bone.hingeAxis = axis;
+        }
+    }
+    // Internal aim points (never user markers): the middle knuckle of each hand.
+    for (const side of ["l", "r"]) {
+        const frame = handFrames[side];
+        if (!frame || frame.middle < 0) continue;
+        markers.push({ id: `${side}_hand_aim`, bone: frame.hand, offset: bones[frame.middle].position.slice(), parent: -1, internal: true });
+    }
+    const markerIndex = new Map(markers.map((marker, i) => [marker.id, i]));
+    return { base, bones, index, markers, markerIndex };
+}
+
+/**
+ * Palm frame of each hand in hand-bone coordinates, from the rest offsets of
+ * the knuckles: `palm` points out of the palm, `across` from the pinky toward
+ * the index knuckle (the thumb side), `thumbFlex` is the thumb's bend side.
+ */
+function buildHandFrames(bones, index) {
+    const frames = {};
+    for (const side of ["l", "r"]) {
+        const at = name => (index.has(name) ? index.get(name) : -1);
+        const hand = at(`hand_${side}`), middle = at(`middle_01_${side}`);
+        const indexBase = at(`index_01_${side}`), pinky = at(`pinky_01_${side}`);
+        if (hand < 0 || middle < 0 || indexBase < 0 || pinky < 0) continue;
+        const d = normalize(bones[middle].position);
+        let across = sub(bones[indexBase].position, bones[pinky].position);
+        across = normalize(sub(across, d.map(value => value * dot(across, d))));
+        // Mirrored hands have opposite handedness.
+        const palm = normalize(side === "l" ? cross(d, across) : cross(across, d));
+        if (!len(d) || !len(across) || !len(palm)) continue;
+        frames[side] = { hand, middle, palm, across, thumbFlex: normalize(sub(palm, across)) };
+    }
+    return frames;
+}
+
+/** Express a hand-frame vector in the rest frame of a bone's parent (the frame its rotation acts in). */
+function handVectorInParentFrame(bones, boneIndex, frame, vector) {
+    if (boneIndex === frame.hand) return qrotate(bones[frame.hand].rest, vector);
+    const chain = [];
+    let bone = bones[boneIndex].parent;
+    while (bone >= 0 && bone !== frame.hand) { chain.push(bone); bone = bones[bone].parent; }
+    if (bone !== frame.hand) return null;
+    let out = vector;
+    for (let k = chain.length - 1; k >= 0; k--) out = qrotate(qconj(bones[chain[k]].rest), out);
+    return out;
 }
 
 /** Clone the mutable part of a model (local rotations and positions). */
@@ -479,6 +648,16 @@ export function projectionPriorScale(model, projector, state = null) {
 function ballLimitValues(bone, q) {
     let qrel = qmul(q, qconj(bone.rest));
     let d = bone.restDir;
+    if (bone.limitAxes) {
+        // Hand joints: anatomical axes measured on this side's own geometry (no mirroring).
+        if (qrel[3] < 0) qrel = qrel.map(value => -value);
+        const projection = qrel[0] * d[0] + qrel[1] * d[1] + qrel[2] * d[2];
+        const twist = qnormalize([d[0] * projection, d[1] * projection, d[2] * projection, qrel[3]]);
+        let twistAngle = 2 * Math.atan2(projection, qrel[3]);
+        if (twistAngle > Math.PI) twistAngle -= 2 * Math.PI;
+        const swing = qlog(qmul(qrel, qconj(twist)));
+        return { flex: dot(swing, bone.limitAxes.flex) * RAD, side: dot(swing, bone.limitAxes.side) * RAD, twist: twistAngle * RAD };
+    }
     if (bone.mirror) {
         qrel = [qrel[0], -qrel[1], -qrel[2], qrel[3]];
         d = mirrorVector(d);
@@ -498,6 +677,7 @@ function hingeFlex(bone, q) {
 }
 
 const LIMIT_KEYS = ["x", "y", "z", "twist"];
+const HAND_LIMIT_KEYS = ["flex", "side", "twist"];
 
 /** Violations (degrees beyond range) for one joint, fixed length per joint type. */
 function jointViolations(bone, q) {
@@ -508,8 +688,9 @@ function jointViolations(bone, q) {
         return [Math.max(0, spec.flex[0] - flex) + Math.max(0, flex - spec.flex[1])];
     }
     if (!spec.limits) return [];
+    if (spec.frame === "hand" && !bone.limitAxes) return [];
     const values = ballLimitValues(bone, q);
-    return LIMIT_KEYS.map(key => {
+    return (bone.limitAxes ? HAND_LIMIT_KEYS : LIMIT_KEYS).map(key => {
         const range = spec.limits[key];
         if (!range) return 0;
         return Math.max(0, range[0] - values[key]) + Math.max(0, values[key] - range[1]);
@@ -557,7 +738,8 @@ function buildDofs(model, activeMarkers, settings) {
     model.bones.forEach((bone, i) => {
         const spec = bone.spec;
         if (!spec || !relevant.has(i)) return;
-        if (allowed ? !allowed.has(bone.name) : (spec.scope === "body" && scope !== "body")) return;
+        // Hand joints are solved only in the hand stages (explicit bone lists).
+        if (allowed ? !allowed.has(bone.name) : (spec.scope === "hand" || (spec.scope === "body" && scope !== "body"))) return;
         if (spec.type === "hinge") {
             dofs.push({ bone: i, kind: "hinge", axis: bone.hingeAxis });
         } else {
@@ -609,7 +791,7 @@ function buildProblem(model, projector, markers, options) {
     const settings = { ...POSE_FITTING_DEFAULTS, ...options };
     const active = [];
     for (const marker of markers || []) {
-        const index = MARKER_INDEX.get(marker.id);
+        const index = model.markerIndex ? model.markerIndex.get(marker.id) : MARKER_INDEX.get(marker.id);
         if (index === undefined || model.markers[index].bone < 0) continue;
         if (marker.enabled === false) continue;
         const x = Number(marker.x), y = Number(marker.y);
@@ -729,6 +911,16 @@ function evaluate(model, projector, problem, state, anchor, wantJacobian) {
         if (seenBones.has(dof.bone)) return;
         seenBones.add(dof.bone);
         const deviation = qlog(qmul(state.quaternions[dof.bone], qconj(anchor.quaternions[dof.bone])));
+        if (bone.priorBasis) {
+            // Hand joints: flexion is cheap, sideways swing and roll are stiff.
+            bone.priorBasis.forEach((axis, j) => {
+                const w = s * bone.spec.priorAxes[j];
+                const row = wantJacobian ? new Float64Array(n) : null;
+                if (row) for (let c = 0; c < 3; c++) row[k + c] = w * axis[c];
+                push(w * dot(axis, deviation), row);
+            });
+            return;
+        }
         for (let c = 0; c < 3; c++) {
             const row = wantJacobian ? new Float64Array(n) : null;
             if (row) row[k + c] = s;
@@ -863,6 +1055,153 @@ function stateIsValid(state) {
  */
 export function solvePoseFitting(model, projector, markers, options = {}) {
     const started = now();
+    const list = markers || [];
+    const handMarkers = list.filter(marker => MARKER_DEFS.get(marker?.id)?.group === "hand");
+    if (!handMarkers.length) return solveStage(model, projector, list, options, started);
+    const body = solveStage(model, projector, list.filter(marker => MARKER_DEFS.get(marker?.id)?.group !== "hand"), options, started);
+    if (!body.valid) return body;
+    const stages = [body];
+    let state = body.state;
+    // The prior is scaled for the whole figure (radians against pixels). A hand
+    // is much shorter than an arm, so the same rotation moves its tip far fewer
+    // pixels: scale the prior by the squared length ratio so fingertips are as
+    // compliant as body markers and do not spring back when a drag ends.
+    const settingsStiffness = finite(options.poseStiffness) ? options.poseStiffness : POSE_FITTING_DEFAULTS.poseStiffness;
+    const handStiffness = settingsStiffness * handPriorRatio(model, state);
+    const handOptions = bones => ({ ...options, bones, initialState: state, minIterations: 1, stage: "hand", poseStiffness: handStiffness });
+    // (2) Hand orientation: the middle fingertip sets the direction the hand points.
+    const aim = handAimTargets(model, projector, handMarkers, state, { ...POSE_FITTING_DEFAULTS, ...options });
+    if (aim.markers.length) {
+        const result = solveStage(model, projector, aim.markers, handOptions(aim.bones), started);
+        if (result.valid) state = result.state;
+        stages.push({ ...result, markers: [], unreached: [], internal: true });
+    }
+    // (3) Finger chains with the hand fixed.
+    const fingerBones = fingerChainBones(model, handMarkers);
+    if (fingerBones.length) {
+        const result = solveStage(model, projector, handMarkers, handOptions(fingerBones), started);
+        if (result.valid) state = result.state;
+        stages.push(result);
+    }
+    return mergeStageResults(stages, state, started);
+}
+
+/** (wrist -> middle fingertip length / shoulder -> wrist length)^2, averaged over both sides. */
+function handPriorRatio(model, state) {
+    const world = forwardKinematics(model, state);
+    const position = name => {
+        const index = model.index.get(name);
+        return index === undefined ? null : [world[index][12], world[index][13], world[index][14]];
+    };
+    const ratios = [];
+    for (const side of ["l", "r"]) {
+        const shoulder = position(`upperarm_${side}`), wrist = position(`hand_${side}`);
+        const tipIndex = model.markerIndex?.get(`${side}_middle_tip`);
+        const tipMarker = tipIndex === undefined ? null : model.markers[tipIndex];
+        if (!shoulder || !wrist || !tipMarker || tipMarker.bone < 0) continue;
+        const tip = transformPoint(world[tipMarker.bone], tipMarker.offset);
+        const arm = Math.hypot(wrist[0] - shoulder[0], wrist[1] - shoulder[1], wrist[2] - shoulder[2]);
+        const hand = Math.hypot(tip[0] - wrist[0], tip[1] - wrist[1], tip[2] - wrist[2]);
+        if (arm > 1e-6 && finite(hand)) ratios.push((hand / arm) ** 2);
+    }
+    if (!ratios.length) return 1;
+    return clamp(ratios.reduce((sum, value) => sum + value, 0) / ratios.length, 0.02, 1);
+}
+
+/** Active (enabled, finite, weighted) markers, filtered like buildProblem. */
+function activeMarkerList(markers) {
+    return markers.filter(marker => {
+        if (!marker || marker.enabled === false) return false;
+        const weight = (finite(Number(marker.weight)) ? Math.max(0, Number(marker.weight)) : 1)
+            * (finite(Number(marker.confidence)) ? clamp(Number(marker.confidence), 0, 1) : 1);
+        return weight > 0 && finite(Number(marker.x)) && finite(Number(marker.y));
+    });
+}
+
+/**
+ * Hand-aim targets: turn the hand (fingers frozen in their current shape) so
+ * the image direction wrist -> middle fingertip points at the marker, keeping
+ * the tip's current distance from the wrist; the finger stage then fixes the
+ * length by curling or straightening. The aim fades out when the marker or the
+ * current tip is closer to the wrist than the middle knuckle (a curled finger
+ * says little about the hand direction).
+ */
+function handAimTargets(model, projector, handMarkers, state, settings) {
+    const out = { markers: [], bones: [] };
+    const world = forwardKinematics(model, state);
+    const smooth = value => { const t = clamp((value - 0.9) / 0.5, 0, 1); return t * t * (3 - 2 * t); };
+    for (const marker of activeMarkerList(handMarkers)) {
+        const def = MARKER_DEFS.get(marker.id);
+        if (def.finger !== "middle") continue;
+        const aimIndex = model.markerIndex?.get(`${def.side}_hand_aim`);
+        const tipIndex = model.markerIndex?.get(marker.id);
+        if (aimIndex === undefined || tipIndex === undefined || model.markers[tipIndex].bone < 0) continue;
+        const aimMarker = model.markers[aimIndex];
+        const tipMarker = model.markers[tipIndex];
+        const handWorld = world[aimMarker.bone];
+        const wrist = projector.project([handWorld[12], handWorld[13], handWorld[14]]);
+        const knuckle = projector.project(transformPoint(handWorld, aimMarker.offset));
+        const tip = projector.project(transformPoint(world[tipMarker.bone], tipMarker.offset));
+        if (!wrist.valid || !knuckle.valid || !tip.valid) continue;
+        const radius = Math.hypot(knuckle.x - wrist.x, knuckle.y - wrist.y);
+        const reach = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
+        const tx = Number(marker.x) - wrist.x, ty = Number(marker.y) - wrist.y;
+        const distance = Math.hypot(tx, ty);
+        if (radius < 1e-6 || distance < 1e-6 || reach < 1e-6) continue;
+        const reliability = smooth(distance / radius) * smooth(reach / radius);
+        const base = (finite(Number(marker.weight)) ? Math.max(0, Number(marker.weight)) : 1)
+            * (finite(Number(marker.confidence)) ? clamp(Number(marker.confidence), 0, 1) : 1)
+            * (marker.pinned ? settings.pinFactor : 1);
+        const weight = base * reliability;
+        if (weight < 1e-3) continue;
+        out.markers.push({ id: marker.id, x: wrist.x + tx / distance * reach, y: wrist.y + ty / distance * reach, weight });
+        out.bones.push(model.bones[aimMarker.bone].name);
+    }
+    return out;
+}
+
+/** Finger chain bones (MCP, PIP, DIP) of every active fingertip marker. */
+function fingerChainBones(model, handMarkers) {
+    const bones = [];
+    for (const marker of activeMarkerList(handMarkers)) {
+        const def = MARKER_DEFS.get(marker.id);
+        for (const segment of ["01", "02", "03"]) {
+            const name = `${def.finger}_${segment}_${def.side}`;
+            if (model.index.has(name)) bones.push(name);
+        }
+    }
+    return bones;
+}
+
+function mergeStageResults(stages, state, started) {
+    const markers = stages.flatMap(result => result.markers);
+    const finiteErrors = markers.filter(item => item.valid).map(item => item.error);
+    const sum = key => stages.reduce((total, result) => total + result[key], 0);
+    const max = key => stages.reduce((value, result) => Math.max(value, result[key] || 0), 0);
+    const notConverged = stages.find(result => !result.converged);
+    return {
+        valid: stages.every(result => result.valid),
+        method: stages[0].method,
+        state,
+        iterations: sum("iterations"),
+        converged: !notConverged,
+        reason: notConverged ? notConverged.reason : stages.at(-1).reason,
+        energy: sum("energy"),
+        initialEnergy: sum("initialEnergy"),
+        energyHistory: stages[0].energyHistory,
+        markers,
+        maxError: finiteErrors.length ? Math.max(...finiteErrors) : 0,
+        meanError: finiteErrors.length ? finiteErrors.reduce((total, value) => total + value, 0) / finiteErrors.length : 0,
+        unreached: stages.flatMap(result => result.unreached),
+        maxLimitViolation: max("maxLimitViolation"),
+        initialLimitViolation: max("initialLimitViolation"),
+        dofs: stages.flatMap(result => result.dofs),
+        stages: stages.map(result => ({ dofs: result.dofs.length, iterations: result.iterations, reason: result.reason })),
+        durationMs: now() - started,
+    };
+}
+
+function solveStage(model, projector, markers, options, started) {
     const problem = buildProblem(model, projector, markers, options);
     const { settings, dofs } = problem;
     const method = ["lm", "dls", "jt"].includes(options.method) ? options.method : "lm";
@@ -874,15 +1213,17 @@ export function solvePoseFitting(model, projector, markers, options = {}) {
     let state = initial;
     let current = evaluate(model, projector, problem, state, anchor, true);
     const initialEnergy = current.energy;
+    const initialLimitViolation = current.maxViolation;
     const history = [current.energy];
     let mu = finite(options.damping) ? options.damping : 1e-3;
     let iterations = 0;
     let converged = dofs.length === 0 || problem.active.length === 0;
     let reason = converged ? "no-constraints" : "max-iterations";
     const n = dofs.length;
+    const minIterations = Math.max(0, Math.floor(options.minIterations ?? 0));
 
     while (!converged && iterations < maxIterations) {
-        if (now() - started > timeBudget) { reason = "time-budget"; break; }
+        if (iterations >= minIterations && now() - started > timeBudget) { reason = "time-budget"; break; }
         iterations++;
         const { A, g } = normalEquations(current.rows, current.residual, n);
         let accepted = false;
@@ -943,7 +1284,8 @@ export function solvePoseFitting(model, projector, markers, options = {}) {
 
     // Hinges are hard limits: soft penalties may leave a fraction of a degree
     // of hyperextension, which is projected back onto the valid range here.
-    const projected = projectHingeLimits(model, state);
+    // Hand stages only touch their own hinges; the body stage leaves finger joints alone.
+    const projected = projectHingeLimits(model, state, options.stage === "hand" ? new Set(dofs.map(dof => dof.bone)) : null);
     if (projected !== state) {
         state = projected;
         current = evaluate(model, projector, problem, state, anchor, false);
@@ -978,15 +1320,17 @@ export function solvePoseFitting(model, projector, markers, options = {}) {
         meanError: finiteErrors.length ? finiteErrors.reduce((sum, value) => sum + value, 0) / finiteErrors.length : 0,
         unreached: errors.filter(item => !item.valid || item.error > settings.unreachedPx).map(item => item.id),
         maxLimitViolation: final.maxViolation,
+        initialLimitViolation,
         dofs: dofs.map(dof => ({ bone: model.bones[dof.bone].name, kind: dof.kind, component: dof.component ?? null })),
         durationMs: now() - started,
     };
 }
 
-function projectHingeLimits(model, state) {
+function projectHingeLimits(model, state, onlyBones = null) {
     let next = state;
     model.bones.forEach((bone, i) => {
         if (bone.spec?.type !== "hinge") return;
+        if (onlyBones ? !onlyBones.has(i) : bone.spec.scope === "hand") return;
         const flex = hingeFlex(bone, next.quaternions[i]);
         const target = clamp(flex, bone.spec.flex[0], bone.spec.flex[1]);
         if (Math.abs(target - flex) < 1e-9) return;
@@ -1124,7 +1468,7 @@ export function markerDepthRelation(model, projector, markerId, state = null) {
 // =====================================================================
 
 export function defaultFittingSettings() {
-    return { scope: "limbs", moveRoot: false, stiffness: 1, showMarkers: true, autoRefit: false };
+    return { scope: "limbs", moveRoot: false, stiffness: 1, showMarkers: true, autoRefit: false, handMarkers: "off" };
 }
 
 export function defaultFittingMarker() {
@@ -1175,6 +1519,8 @@ export function normalizeFittingState(raw) {
         stiffness: normalizeNumber(settings.stiffness, 1, 0.05, 20),
         showMarkers: settings.showMarkers !== false,
         autoRefit: settings.autoRefit === true,
+        // Version 1 data has no hand markers: keep the 14-marker workflow.
+        handMarkers: POSE_FITTING_HAND_MODES.includes(settings.handMarkers) ? settings.handMarkers : "off",
     };
     const frame = raw.frame;
     if (frame && Number(frame.width) > 0 && Number(frame.height) > 0) {
@@ -1199,7 +1545,8 @@ export function cloneFittingState(state) {
 /** Solver marker list from stored state (normalized coordinates -> frame pixels). */
 export function fittingStateToSolverMarkers(state, frame, extra = {}) {
     if (!state?.markers) return [];
-    return POSE_FITTING_MARKER_IDS.map(id => {
+    // Hidden fingertip markers keep their data but never constrain the pose.
+    return visibleFittingMarkerIds(state.settings).map(id => {
         const marker = state.markers[id];
         if (!marker || marker.u === null || marker.v === null) return null;
         return {
@@ -1216,10 +1563,10 @@ export function fittingStateToSolverMarkers(state, frame, extra = {}) {
     }).filter(Boolean);
 }
 
-/** Set marker targets from projected joints (all markers, or only unpinned). */
+/** Set marker targets from projected joints (all visible markers, or only unpinned). */
 export function resetFittingTargets(state, projected, frame, { keepPinned = true, enable = true } = {}) {
     const next = cloneFittingState(state) || createFittingState();
-    for (const id of POSE_FITTING_MARKER_IDS) {
+    for (const id of visibleFittingMarkerIds(next.settings)) {
         const point = projected[id];
         const marker = next.markers[id];
         if (!point || !point.valid || (keepPinned && marker.pinned && marker.u !== null)) continue;
@@ -1238,7 +1585,9 @@ export function resetFittingTargets(state, projected, frame, { keepPinned = true
 
 /**
  * Create marker targets from parsed OpenPose keypoints (`detectAndParseJSON`
- * output: { joints: { name: { x, y, c } }, canvasWidth, canvasHeight }).
+ * output: { joints: { name: { x, y, c } }, handLeft, handRight, canvasWidth, canvasHeight }).
+ * Hand keypoints, when present, become enabled fingertip markers and switch
+ * the hand-marker mode from Off to All; body-only files behave as before.
  * Missing (c <= minConfidence or a 0,0 placeholder) keypoints stay disabled
  * without coordinates; the caller may fill them from the current projection.
  */
@@ -1254,6 +1603,7 @@ export function fittingStateFromOpenPose(parsed, { frame, fit = "stretch", minCo
     const warnings = [];
     let found = 0;
     for (const def of POSE_FITTING_MARKERS) {
+        if (def.group === "hand") continue;
         let point = joints[def.openpose];
         if ((!point || !(point.c > minConfidence)) && def.id === "neck"
             && joints.l_shoulder?.c > minConfidence && joints.r_shoulder?.c > minConfidence) {
@@ -1273,7 +1623,21 @@ export function fittingStateFromOpenPose(parsed, { frame, fit = "stretch", minCo
         next.markers[def.id] = { ...defaultFittingMarker(), u, v, enabled: true, confidence: clamp(confidence, 0, 1) };
         found++;
     }
-    if (!found) return null;
+    // 21-point hand keypoints (hand_left/right_keypoints_2d): fingertips 4, 8, 12, 16, 20.
+    let handFound = 0;
+    for (const def of POSE_FITTING_MARKERS) {
+        if (def.group !== "hand") continue;
+        const point = (def.side === "l" ? parsed.handLeft : parsed.handRight)?.[def.openposeHand];
+        const confidence = point && finite(point.c) ? point.c : (point ? 1 : 0);
+        if (!point || !finite(point.x) || !finite(point.y) || confidence <= minConfidence || (point.x === 0 && point.y === 0)) continue;
+        const x = normalized ? point.x * canvas.width : point.x;
+        const y = normalized ? point.y * canvas.height : point.y;
+        const { u, v } = sourcePixelToFrame(x, y, canvas, frame, fit);
+        next.markers[def.id] = { ...defaultFittingMarker(), u, v, enabled: true, confidence: clamp(confidence, 0, 1) };
+        handFound++;
+    }
+    if (!found && !handFound) return null;
+    if (handFound && next.settings.handMarkers === "off") next.settings.handMarkers = "all";
     const sourceAspect = canvas.width / canvas.height;
     const frameAspect = frame ? frame.width / frame.height : sourceAspect;
     if (fit === "stretch" && Math.abs(sourceAspect - frameAspect) > 0.01 * frameAspect) {
@@ -1286,25 +1650,26 @@ export function fittingStateFromOpenPose(parsed, { frame, fit = "stretch", minCo
         height: canvas.height,
         format: parsed.format || null,
     };
-    return { state: next, found, warnings, normalized };
+    return { state: next, found, handFound, warnings, normalized };
 }
 
 // =====================================================================
 // Viewer bridge (duck-typed Three.js objects, no import)
 // =====================================================================
 
-/** Snapshot the active viewer rig for the solver. */
-export function snapshotViewerRig(viewer, pointOffsets = {}) {
+/** Snapshot the active viewer rig for the solver (finger bones only while hand markers are on). */
+export function snapshotViewerRig(viewer, pointOffsets = {}, { handMarkers = "off" } = {}) {
     const bones = viewer?.bones;
     if (!bones?.pelvis) return null;
+    const rigBones = fittingRigBones(handMarkers);
     viewer.skinnedMesh?.updateMatrixWorld?.(true);
     const base = bones.pelvis.parent?.matrixWorld?.elements || viewer.skinnedMesh?.matrixWorld?.elements;
     if (!base) return null;
     const snapshot = { base: Array.from(base), bones: [], pointOffsets };
-    for (const name of POSE_FITTING_RIG_BONES) {
+    for (const name of rigBones) {
         const bone = bones[name];
         if (!bone) continue;
-        const parentName = bone.parent?.name && POSE_FITTING_RIG_BONES.includes(bone.parent.name) ? bone.parent.name : null;
+        const parentName = bone.parent?.name && rigBones.includes(bone.parent.name) ? bone.parent.name : null;
         const rest = viewer.initialBoneStates?.[name]?.rotation;
         snapshot.bones.push({
             name,
@@ -1329,6 +1694,27 @@ export function captureCameraProjector(camera, width, height) {
         width,
         height,
     });
+}
+
+/**
+ * Fingertip offsets in distal-bone (`_03`) space. The tip is the `_03` bone's
+ * tail: the MakeHuman joint `<finger>_03____tail` (mean of the fingertip
+ * vertices, re-solved with every body morph) stored in `bone.userData.tailPos`
+ * in bind space, mapped into the bone through the skeleton's bind inverse.
+ */
+export function viewerFingerTipOffsets(viewer) {
+    const out = {};
+    const skeleton = viewer?.skeleton;
+    for (const def of HAND_MARKERS) {
+        const bone = viewer?.bones?.[def.bone];
+        const tail = bone?.userData?.tailPos;
+        const boneIndex = bone && skeleton?.bones ? skeleton.bones.indexOf(bone) : -1;
+        const inverse = boneIndex >= 0 ? skeleton.boneInverses?.[boneIndex]?.elements : null;
+        if (!inverse || !tail || !(tail.length >= 3)) continue;
+        const offset = transformPoint(Array.from(inverse), [Number(tail[0]), Number(tail[1]), Number(tail[2])]);
+        if (offset.every(finite) && len(offset) > 1e-9) out[def.id] = offset;
+    }
+    return out;
 }
 
 /** Write an optimized state back to the viewer bones. */

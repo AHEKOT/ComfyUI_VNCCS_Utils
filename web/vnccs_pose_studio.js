@@ -17,7 +17,7 @@ import {
 import { HAND_PRESETS } from "./pose_studio/hand_presets.js";
 import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js?v=1791754604000";
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js?v=1791754604000";
-import { PoseFitting2DController } from "./pose_studio/pose_fitting2d_ui.mjs";
+import { PoseFitting2DController } from "./pose_studio/pose_fitting2d_ui.mjs?v=20261102.1";
 import { installCustomSelects } from "./shared/custom_select.mjs";
 import {
     DEFAULT_CHARACTER_COLORS,
@@ -1302,6 +1302,40 @@ const STYLES = `
 .vnccs-ps-fit-row > .vnccs-ps-slider {
     flex: 1;
     min-width: 0;
+}
+
+/* Labels, reset buttons and the Flip button keep their size; selects take the rest. */
+.vnccs-ps-fit-row > .vnccs-ps-label,
+.vnccs-ps-fit-row > .vnccs-ps-reset-btn,
+.vnccs-ps-fit-row > .vnccs-ps-fit-select + .vnccs-ps-btn {
+    flex: 0 0 auto;
+}
+
+.vnccs-ps-fit-row > .vnccs-ps-fit-select {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 4.5em;
+    padding: 4px 6px;
+}
+
+.vnccs-ps-fit-row > .vnccs-ps-fit-select + .vnccs-ps-btn {
+    padding: 5px 8px;
+}
+
+.vnccs-ps-fit-row > .vnccs-ps-value {
+    min-width: 2.6em;
+    margin-left: 0;
+    text-align: right;
+}
+
+.vnccs-ps-fit-group {
+    grid-column: 1 / -1;
+    margin-top: 4px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--ps-text-muted, #aaa);
 }
 
 .vnccs-ps-fit-toggle {
@@ -4370,6 +4404,8 @@ class PoseStudioWidget {
             animation_image_batch: false,
             hand_controls_v2: true,
             directional_skydome_enabled: false,
+            // 2D Pose Fitting: hide bone drag points while Fitting Mode is on (editor-only).
+            fit_hide_bone_handles: false,
         };
 
         const primaryCharacter = createPoseStudioCharacter({

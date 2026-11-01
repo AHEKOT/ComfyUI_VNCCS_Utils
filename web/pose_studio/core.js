@@ -6,7 +6,7 @@
 
 
 import { normalizeCaptureLens } from "./animation.mjs?v=1791754604000";
-import { cloneFittingState, normalizeFittingState } from "./pose_fitting2d.mjs";
+import { cloneFittingState, normalizeFittingState } from "./pose_fitting2d.mjs?v=20261102.1";
 
 // Determine the extension's base URL dynamically to support varied directory names
 const EXTENSION_URL = new URL(".", import.meta.url).toString();
@@ -1058,6 +1058,8 @@ export class PoseViewerCore {
         this._rtmwSavedCamera = null;
         this._rtmwCameraParented = true;
         this._mannequinVisible = true;
+        // Editor-only: hide bone drag points and IK helpers and make them unpickable.
+        this._boneHandlesHidden = false;
 
         // Default constraints based on standard UI Embedding requirements
         this.options = {
@@ -1211,6 +1213,7 @@ export class PoseViewerCore {
     }
 
     _shouldMarkerBeVisible(marker) {
+        if (this._boneHandlesHidden) return false;
         const bone = this.boneList?.[marker?.userData?.boneIndex];
         if (!bone) return false;
         if (!this.useHandControlPopover) return true;
@@ -1298,6 +1301,45 @@ export class PoseViewerCore {
         }
         this.updateMarkers();
         this.requestRender();
+    }
+
+    /**
+     * Hide the bone drag points (joint markers), IK effectors / pole targets and
+     * the rotation gizmo, and stop viewport picking of bones, so 2D overlays can
+     * be used without grabbing the rig by accident. Orbit, pan and zoom keep
+     * working. Captures never show these helpers either way.
+     */
+    setBoneHandlesHidden(hidden) {
+        const next = hidden === true;
+        if (this._boneHandlesHidden === next) return false;
+        this._boneHandlesHidden = next;
+        if (next) {
+            this.hoveredBoneName = null;
+            this._updateHoveredHand(null);
+            if (this.selectedIKEffector) this.deselectIKEffector();
+            if (this.selectedPoleTarget) this.deselectPoleTarget();
+            this.deselectBone({ source: 'viewer' });
+            this.transform?.detach();
+        }
+        if (this.transform) {
+            // TransformControls is visible exactly while attached.
+            this.transform.enabled = !next;
+            this.transform.visible = !next && !!this.transform.object;
+        }
+        if (this.jointMarkers) {
+            this.jointMarkers.forEach(marker => {
+                marker.visible = this._mannequinVisible !== false && this._shouldMarkerBeVisible(marker);
+            });
+        }
+        this.updateIKEffectorVisibility();
+        this.updatePoleTargetVisibility();
+        this.updateMarkers();
+        this.requestRender();
+        return true;
+    }
+
+    areBoneHandlesHidden() {
+        return this._boneHandlesHidden === true;
     }
 
     dispatchPoseChange() {
@@ -1888,6 +1930,8 @@ export class PoseViewerCore {
     handlePointerDown(e) {
         if (!this.initialized || !this.skinnedMesh) return;
         if (e.button !== 0) return;
+        // Hidden bone handles: no bone, hand, IK or gizmo picking (orbit is separate).
+        if (this._boneHandlesHidden) return;
         if (this._hoverPointerFrame) {
             cancelAnimationFrame(this._hoverPointerFrame);
             this._hoverPointerFrame = null;
@@ -2137,6 +2181,15 @@ export class PoseViewerCore {
 
     handlePointerMove(e) {
         if (!this.initialized || !this.skinnedMesh) return;
+        if (this._boneHandlesHidden && !this.directDrag?.active) {
+            if (this.hoveredBoneName || this._hoveredHandSide) {
+                this.hoveredBoneName = null;
+                this._updateHoveredHand(null);
+                this.updateMarkers();
+                this.requestRender();
+            }
+            return;
+        }
 
         if (this.directDrag?.active && !this.directDrag.hasDragged) {
             const movedX = e.clientX - this.directDrag.startClientX;
@@ -2340,6 +2393,8 @@ export class PoseViewerCore {
         // Attach transform for rotation (FK)
         this.transform.setMode("rotate");
         this.transform.attach(bone);
+        // External selection while bone handles are hidden keeps the gizmo hidden and inert.
+        if (this._boneHandlesHidden) this.transform.visible = false;
         this.updateMarkers();
 
         // Ensure IK effector is deselected if we just want FK bone rotation
@@ -2725,7 +2780,7 @@ export class PoseViewerCore {
             const chainKey = this.ikController.getChainForEffector(name);
             const chainActive = chainKey && this.ikController.getMode(chainKey) === 'ik';
             const shoulderVisible = !chainKey || !IK_CHAINS[chainKey]?.isShoulder || this.shoulderIKEnabled;
-            effector.visible = this.ikMode && chainActive && shoulderVisible;
+            effector.visible = !this._boneHandlesHidden && this.ikMode && chainActive && shoulderVisible;
         }
     }
 
@@ -2736,7 +2791,7 @@ export class PoseViewerCore {
             // Only show pole target if IK mode is on, chain is active, and pole is enabled
             const chainActive = this.ikController.getMode(chainKey) === 'ik';
             const poleEnabled = this.ikController.getPoleMode(chainKey) === 'on';
-            poleTarget.visible = this.ikMode && chainActive && poleEnabled;
+            poleTarget.visible = !this._boneHandlesHidden && this.ikMode && chainActive && poleEnabled;
         }
     }
 
@@ -2814,7 +2869,7 @@ export class PoseViewerCore {
 
         const chainActive = this.ikController.getMode(chainKey) === 'ik';
         const poleEnabled = this.ikController.getPoleMode(chainKey) === 'on';
-        poleHelper.visible = this.ikMode && chainActive && poleEnabled;
+        poleHelper.visible = !this._boneHandlesHidden && this.ikMode && chainActive && poleEnabled;
 
         this.scene.add(poleHelper);
 
@@ -2905,7 +2960,7 @@ export class PoseViewerCore {
 
                 // Check if this chain is active for IK
                 const chainActive = this.ikController.getMode(chainKey) === 'ik';
-                helper.visible = this.ikMode && chainActive;
+                helper.visible = !this._boneHandlesHidden && this.ikMode && chainActive;
 
                 // Position in world space (not attached to bone)
                 helper.position.copy(bonePos);
