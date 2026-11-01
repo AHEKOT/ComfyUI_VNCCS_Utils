@@ -4479,7 +4479,7 @@ export class PoseViewerCore {
             this._disposePassiveCharacter(entry);
         }
         this.passiveCharacters.clear();
-        this.requestRender?.();
+        this.requestRender();
     }
 
     _cloneActiveRigForPassiveCharacter(id) {
@@ -4790,11 +4790,8 @@ export class PoseViewerCore {
         // so the capture frame appears as a box in 3D space, not filling the whole view.
         // The editor lens scales with the capture lens instead, so the viewport shows
         // the capture perspective and the frame keeps its default 30 degree size.
-        const halfAngle = degrees => Math.tan(degrees * Math.PI / 360);
         this.camera.position.copy(this.captureCamera.position);
-        this.camera.fov = this._samProjectionCameraFrame
-            ? POSE_STUDIO_EDITOR_FOV
-            : Math.atan(halfAngle(this.captureLens.fov_deg) * halfAngle(POSE_STUDIO_EDITOR_FOV) / halfAngle(POSE_STUDIO_CAPTURE_FOV)) * 360 / Math.PI;
+        this.camera.fov = this._samProjectionCameraFrame ? POSE_STUDIO_EDITOR_FOV : this._editorFovForCaptureLens();
         this.camera.zoom = this._samProjectionCameraFrame ? zoom : this.captureCamera.zoom;
         this.camera.updateProjectionMatrix();
 
@@ -4813,8 +4810,34 @@ export class PoseViewerCore {
         this.orbit.target.copy(target);
         this.orbit.update();
         this._snappedView = { position: this.camera.position.clone(), target: this.orbit.target.clone() };
+        this._viewLensDistance = this.captureLens.distance;
 
         this.orbit.enableDamping = prevDamping;
+    }
+
+    _editorFovForCaptureLens() {
+        const halfAngle = degrees => Math.tan(degrees * Math.PI / 360);
+        return Math.atan(halfAngle(this.captureLens.fov_deg) * halfAngle(POSE_STUDIO_EDITOR_FOV) / halfAngle(POSE_STUDIO_CAPTURE_FOV)) * 360 / Math.PI;
+    }
+
+    // Lens edits on a view the user moved: keep its direction and pivot and show the
+    // capture perspective there. Distance moves the view along its own line of sight
+    // by the same ratio as the lens distance, so its own dolly is kept.
+    applyCaptureLensToView() {
+        if (!this.orbit || !this.camera || !this.captureCamera || this._samProjectionCameraFrame) return;
+        const distance = this.captureLens.distance;
+        const previous = this._viewLensDistance || distance;
+        this._viewLensDistance = distance;
+        const offset = this.camera.position.clone().sub(this.orbit.target).multiplyScalar(distance / previous);
+        this.camera.position.copy(this.orbit.target).add(offset);
+        this.camera.fov = this._editorFovForCaptureLens();
+        this.camera.zoom = this.captureCamera.zoom;
+        this.camera.updateProjectionMatrix();
+        const prevDamping = this.orbit.enableDamping;
+        this.orbit.enableDamping = false;
+        this.orbit.update();
+        this.orbit.enableDamping = prevDamping;
+        this.requestRender();
     }
 
     // True until the user orbits, pans or zooms the view away from the last snap.

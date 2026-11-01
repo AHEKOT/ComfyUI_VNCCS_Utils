@@ -504,26 +504,37 @@ test("the editor lens follows the capture lens and keeps the capture frame size"
     }
 });
 
-test("FOV and Distance keep a view the user moved and update only the capture camera", () => {
+test("FOV and Distance apply to a view the user moved without resetting it", () => {
     const scene = lensScene();
     const { w, viewer } = scene;
+    const T = viewer.THREE;
+    const frameFraction = () => tanHalf(viewer.captureCamera.fov) / tanHalf(viewer.camera.fov);
     w.applyCameraToViewer(true);
-    viewer.camera.position.add(new viewer.THREE.Vector3(9, 4, -6));
-    viewer.orbit.target.add(new viewer.THREE.Vector3(1, 2, 0));
+    const defaultFraction = frameFraction();
+    viewer.camera.position.add(new T.Vector3(9, 4, -6));
+    viewer.orbit.target.add(new T.Vector3(1, 2, 0));
     viewer.orbit.update();
-    viewer.camera.updateMatrixWorld(true);
-    const editor = { world: viewer.camera.matrixWorld.toArray(), projection: viewer.camera.projectionMatrix.toArray(), target: viewer.orbit.target.toArray() };
-    for (const [key, value] of [["cam_fov_deg", 62], ["cam_distance", 80], ["cam_fov_deg", 18]]) {
+    const target = viewer.orbit.target.toArray();
+    const direction = () => viewer.camera.position.clone().sub(viewer.orbit.target).normalize();
+    const startDirection = direction();
+    let viewDistance = viewer.camera.position.distanceTo(viewer.orbit.target);
+    let lensDistance = w.exportParams.cam_distance;
+    for (const [key, value] of [["cam_fov_deg", 62], ["cam_distance", 80], ["cam_fov_deg", 18], ["cam_distance", 30]]) {
         const before = cameraState(viewer);
         slide(scene, key, value);
-        viewer.camera.updateMatrixWorld(true);
-        assert.deepEqual(viewer.camera.matrixWorld.toArray(), editor.world, `${key} keeps the editor position and rotation`);
-        assert.deepEqual(viewer.camera.projectionMatrix.toArray(), editor.projection, `${key} keeps the editor lens`);
-        assert.deepEqual(viewer.orbit.target.toArray(), editor.target, `${key} keeps the orbit target`);
+        assert.deepEqual(viewer.orbit.target.toArray(), target, `${key} keeps the orbit pivot`);
+        close(direction().dot(startDirection), 1, 1e-12, `${key} keeps the view direction`);
+        // The view shows the capture perspective with the frame at its usual size.
+        close(frameFraction(), defaultFraction, 1e-9, `${key} frame size`);
+        // Distance scales the user's own view distance by the lens change.
+        viewDistance *= w.exportParams.cam_distance / lensDistance;
+        lensDistance = w.exportParams.cam_distance;
+        close(viewer.camera.position.distanceTo(viewer.orbit.target), viewDistance, 1e-9, `${key} view distance`);
         assert.notDeepEqual(cameraState(viewer), before, `${key} updates the capture camera`);
+        assert.notDeepEqual(viewer.camera.position.toArray(), viewer.captureCamera.position.toArray(), `${key} does not jump to the capture camera`);
     }
     assert.equal(viewer.captureCamera.fov, 18);
-    close(distanceToTarget(viewer), 80, 1e-9);
+    close(distanceToTarget(viewer), 30, 1e-9);
     // Yaw still previews from the capture camera, and lens edits follow the snapped view again.
     slide(scene, "cam_yaw_deg", 25);
     assert.deepEqual(viewer.camera.position.toArray(), viewer.captureCamera.position.toArray());

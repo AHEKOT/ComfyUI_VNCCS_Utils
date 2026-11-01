@@ -260,8 +260,9 @@ The lens is stored with each pose tab's `cameraParams` (`fov_deg`, `distance`,
 library asset's `camera` block. Poses and workflows saved without these fields load
 with the original 30° / 45 camera. When the view snaps to the capture camera, the
 viewport shows the capture perspective while the orange frame keeps its size. After you
-orbit, pan or zoom the view, FOV and Distance leave the view where it is and move only the
-capture camera and its frame; **Preview** snaps back. While an applied SAM camera is active its
+orbit, pan or zoom the view, FOV and Distance apply to that view instead of moving it back:
+it keeps its direction and pivot, shows the capture perspective, and Distance moves it along
+its line of sight by the same ratio. **Preview** snaps back to the capture camera. While an applied SAM camera is active its
 projection sets the lens, so FOV and Distance are disabled until it is paused or
 cleared; the stored manual lens is not overwritten.
 
