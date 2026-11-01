@@ -442,7 +442,11 @@ export class PoseCropGuideController {
                 this.refresh();
                 this.widget.syncToNode(false);
             });
+        // Two checkboxes per line keep the labels readable in the narrow side panel.
         const toggles = make("div", "vnccs-ps-row");
+        toggles.style.flexWrap = "wrap";
+        toggles.style.rowGap = "4px";
+        for (const field of [enabled.field, shown.field, dim.field]) field.style.flex = "1 1 40%";
         toggles.append(enabled.field, shown.field, dim.field);
         content.appendChild(toggles);
 
@@ -463,6 +467,7 @@ export class PoseCropGuideController {
 
         const aspectField = make("div", "vnccs-ps-field");
         const aspectRow = make("div", "vnccs-ps-row");
+        aspectRow.style.alignItems = "center";
         const aspect = make("select", "vnccs-ps-select");
         for (const preset of CROP_GUIDE_ASPECT_PRESETS) {
             const option = make("option");
@@ -489,13 +494,21 @@ export class PoseCropGuideController {
         }
         const lock = checkbox("Lock", "Keep the current aspect ratio while resizing (always on for fixed presets).",
             checked => this.commit(guide => ({ ...guide, aspect_ratio_locked: checked })));
-        aspectRow.append(make("span", "vnccs-ps-label", "Aspect"), aspect, customW, make("span", "vnccs-ps-label", ":"), customH, lock.field);
-        aspectField.appendChild(aspectRow);
+        aspect.style.flex = "2 1 0";
+        lock.field.style.flex = "1 1 0";
+        aspectRow.append(aspect, lock.field);
+        const customRow = make("div", "vnccs-ps-row");
+        customRow.style.alignItems = "center";
+        const colon = make("span", "vnccs-ps-label", ":");
+        colon.style.flex = "0 0 auto";
+        customRow.append(customW, colon, customH);
+        aspectField.append(make("div", "vnccs-ps-label", "Aspect"), aspectRow, customRow);
         content.appendChild(aspectField);
 
-        const numbers = make("div", "vnccs-ps-row");
+        // X / Y and W / H as two rows of two, like the Camera Width / Height row.
+        const numberRows = [make("div", "vnccs-ps-row"), make("div", "vnccs-ps-row")];
         const numberInputs = {};
-        for (const [key, labelText] of [["x", "X"], ["y", "Y"], ["width", "W"], ["height", "H"]]) {
+        for (const [index, [key, labelText]] of [["x", "X"], ["y", "Y"], ["width", "W"], ["height", "H"]].entries()) {
             const wrap = make("label", "vnccs-ps-field");
             const input = make("input", "vnccs-ps-input");
             input.type = "number";
@@ -509,11 +522,11 @@ export class PoseCropGuideController {
                 this.widget.setCropGuide(this.widget.activeTab, setCropGuidePixels(this.guide, key, input.value, width, height), { sync: false });
             });
             input.addEventListener("change", () => { this._signature = ""; this.syncControls({ force: true }); });
-            wrap.append(make("span", "vnccs-ps-label", labelText), input);
-            numbers.appendChild(wrap);
+            wrap.append(make("div", "vnccs-ps-label", `${labelText} (px)`), input);
+            numberRows[index >> 1].appendChild(wrap);
             numberInputs[key] = input;
         }
-        content.appendChild(numbers);
+        content.append(...numberRows);
 
         const readout = make("div", "vnccs-ps-label");
         content.appendChild(readout);
@@ -525,7 +538,7 @@ export class PoseCropGuideController {
 
         this.fields = {
             enabled: enabled.input, shown: shown.input, dim: dim.input, edit, center, fit,
-            aspect, customW, customH, lock: lock.input, numbers: numberInputs, readout, note,
+            aspect, customRow, customW, customH, lock: lock.input, numbers: numberInputs, readout, note,
         };
         this.refresh();
     }
@@ -551,7 +564,7 @@ export class PoseCropGuideController {
         setValue(fields.customW, guide.custom_aspect_ratio[0]);
         setValue(fields.customH, guide.custom_aspect_ratio[1]);
         const custom = guide.aspect_ratio === "custom";
-        fields.customW.style.display = fields.customH.style.display = custom ? "" : "none";
+        fields.customRow.style.display = custom ? "" : "none";
         fields.lock.checked = guide.aspect_ratio_locked;
         fields.lock.disabled = !available || guide.aspect_ratio !== "free";
         const rect = cropGuidePixelRect(guide, width, height);

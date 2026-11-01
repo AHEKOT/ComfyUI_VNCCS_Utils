@@ -31,7 +31,7 @@ import {
     normalizeCropGuide,
     poseCropGuideOutputNames,
 } from "./pose_studio/crop_guide.mjs?v=20261101.2";
-import { PoseCropGuideController } from "./pose_studio/crop_guide_overlay.mjs?v=20261101.2";
+import { PoseCropGuideController } from "./pose_studio/crop_guide_overlay.mjs?v=20261101.3";
 import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
