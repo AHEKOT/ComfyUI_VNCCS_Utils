@@ -4812,8 +4812,17 @@ export class PoseViewerCore {
             })();
         this.orbit.target.copy(target);
         this.orbit.update();
+        this._snappedView = { position: this.camera.position.clone(), target: this.orbit.target.clone() };
 
         this.orbit.enableDamping = prevDamping;
+    }
+
+    // True until the user orbits, pans or zooms the view away from the last snap.
+    isViewAtCaptureCamera() {
+        const snapped = this._snappedView;
+        if (!snapped || !this.camera || !this.orbit) return true;
+        return this.camera.position.distanceToSquared(snapped.position) < 1e-10
+            && this.orbit.target.distanceToSquared(snapped.target) < 1e-10;
     }
 
     // Align Camera to View: the reverse of snapToCaptureCamera(). Returns the lens

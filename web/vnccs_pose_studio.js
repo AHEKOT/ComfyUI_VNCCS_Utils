@@ -8454,7 +8454,9 @@ class PoseStudioWidget {
                     this.persistActivePoseCameraParams();
                 }
                 if (isCamParam && this.viewer) {
-                    this.applyCameraToViewer(true);
+                    // FOV and Distance keep a view the user moved; the frame shows the new capture camera.
+                    const lensKey = key === 'cam_fov_deg' || key === 'cam_distance';
+                    this.applyCameraToViewer(!lensKey || this.viewer.isViewAtCaptureCamera?.() !== false);
                 }
                 this.syncToNode(false, { skipCapture: true });
             } else {

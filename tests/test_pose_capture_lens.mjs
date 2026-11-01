@@ -504,6 +504,33 @@ test("the editor lens follows the capture lens and keeps the capture frame size"
     }
 });
 
+test("FOV and Distance keep a view the user moved and update only the capture camera", () => {
+    const scene = lensScene();
+    const { w, viewer } = scene;
+    w.applyCameraToViewer(true);
+    viewer.camera.position.add(new viewer.THREE.Vector3(9, 4, -6));
+    viewer.orbit.target.add(new viewer.THREE.Vector3(1, 2, 0));
+    viewer.orbit.update();
+    viewer.camera.updateMatrixWorld(true);
+    const editor = { world: viewer.camera.matrixWorld.toArray(), projection: viewer.camera.projectionMatrix.toArray(), target: viewer.orbit.target.toArray() };
+    for (const [key, value] of [["cam_fov_deg", 62], ["cam_distance", 80], ["cam_fov_deg", 18]]) {
+        const before = cameraState(viewer);
+        slide(scene, key, value);
+        viewer.camera.updateMatrixWorld(true);
+        assert.deepEqual(viewer.camera.matrixWorld.toArray(), editor.world, `${key} keeps the editor position and rotation`);
+        assert.deepEqual(viewer.camera.projectionMatrix.toArray(), editor.projection, `${key} keeps the editor lens`);
+        assert.deepEqual(viewer.orbit.target.toArray(), editor.target, `${key} keeps the orbit target`);
+        assert.notDeepEqual(cameraState(viewer), before, `${key} updates the capture camera`);
+    }
+    assert.equal(viewer.captureCamera.fov, 18);
+    close(distanceToTarget(viewer), 80, 1e-9);
+    // Yaw still previews from the capture camera, and lens edits follow the snapped view again.
+    slide(scene, "cam_yaw_deg", 25);
+    assert.deepEqual(viewer.camera.position.toArray(), viewer.captureCamera.position.toArray());
+    slide(scene, "cam_fov_deg", 40);
+    assert.deepEqual(viewer.camera.position.toArray(), viewer.captureCamera.position.toArray());
+});
+
 // --- Align Camera to View (editor -> capture; snapToCaptureCamera is capture -> editor) ---
 
 function findButton(scene, text) {
