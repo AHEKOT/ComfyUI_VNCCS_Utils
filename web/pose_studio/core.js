@@ -10,6 +10,7 @@ import { normalizeCaptureLens } from "./animation.mjs?v=1791754604000";
 // Determine the extension's base URL dynamically to support varied directory names
 const EXTENSION_URL = new URL(".", import.meta.url).toString();
 export const POSE_STUDIO_CAPTURE_FOV = 30;
+export const POSE_STUDIO_EDITOR_FOV = 45;
 
 export function computeEquivalentPerspectiveZoom(sourceFov, targetFov = POSE_STUDIO_CAPTURE_FOV) {
     const source = Number(sourceFov);
@@ -1479,7 +1480,7 @@ export class PoseViewerCore {
         this.scene.background = new THREE.Color(0x1a1a2e);
         this._createDirectionalSkydome();
 
-        this.camera = new THREE.PerspectiveCamera(45, this.width / this.height, 0.1, 1000);
+        this.camera = new THREE.PerspectiveCamera(POSE_STUDIO_EDITOR_FOV, this.width / this.height, 0.1, 1000);
         this.camera.position.set(0, 10, 30);
         this.scene.add(this.camera);
 
@@ -4775,7 +4776,13 @@ export class PoseViewerCore {
         // Copy capture camera to viewport camera
         // NOTE: do NOT copy fov/aspect — viewport camera keeps its own frustum
         // so the capture frame appears as a box in 3D space, not filling the whole view.
+        // The editor lens scales with the capture lens instead, so the viewport shows
+        // the capture perspective and the frame keeps its default 30 degree size.
+        const halfAngle = degrees => Math.tan(degrees * Math.PI / 360);
         this.camera.position.copy(this.captureCamera.position);
+        this.camera.fov = this._samProjectionCameraFrame
+            ? POSE_STUDIO_EDITOR_FOV
+            : Math.atan(halfAngle(this.captureLens.fov_deg) * halfAngle(POSE_STUDIO_EDITOR_FOV) / halfAngle(POSE_STUDIO_CAPTURE_FOV)) * 360 / Math.PI;
         this.camera.zoom = zoom;
         this.camera.updateProjectionMatrix();
 
@@ -4789,18 +4796,6 @@ export class PoseViewerCore {
                     baseTarget.z
                 );
             })();
-        if (!this._samProjectionCameraFrame) {
-            // Keep the capture frame as large in the viewport as the default
-            // 30 degree lens did: a wide lens moves the capture camera closer,
-            // so the editor camera backs off along the same view ray instead.
-            const lens = this.captureLens;
-            const halfAngle = degrees => Math.tan(degrees * Math.PI / 360);
-            const editDistance = lens.distance * halfAngle(lens.fov_deg) / halfAngle(POSE_STUDIO_CAPTURE_FOV);
-            if (editDistance > lens.distance + 1e-6) {
-                const direction = this.captureCamera.position.clone().sub(target).normalize();
-                this.camera.position.copy(target).addScaledVector(direction, editDistance);
-            }
-        }
         this.orbit.target.copy(target);
         this.orbit.update();
 

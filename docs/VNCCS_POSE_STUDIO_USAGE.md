@@ -257,7 +257,8 @@ Common settings:
 The lens is stored with each pose tab's `cameraParams` (`fov_deg`, `distance`,
 `maintain_subject_size`), mirrored on every character like yaw/pitch, and in the
 library asset's `camera` block. Poses and workflows saved without these fields load
-with the original 30° / 45 camera. While an applied SAM camera is active its
+with the original 30° / 45 camera. When the view snaps to the capture camera, the
+viewport shows the capture perspective while the orange frame keeps its size. While an applied SAM camera is active its
 projection sets the lens, so FOV and Distance are disabled until it is paused or
 cleared; the stored manual lens is not overwritten.
 

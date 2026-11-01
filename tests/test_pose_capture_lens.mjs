@@ -461,6 +461,7 @@ test("SAM projection owns the lens while applied and the manual lens returns aft
     w.applyCameraToViewer(true);
     w.syncCameraWidgets();
     assert.equal(viewer.captureCamera.fov, 30, "SAM projection keeps its own FOV");
+    close(viewer.camera.fov, 45, 1e-9, "SAM keeps the default editor view");
     close(viewer.captureCamera.position.z, 40, 1e-9);
     close(viewer.captureCamera.zoom, 0.8, 1e-9);
     assert.equal(w.exportWidgets.cam_fov_deg.disabled, true);
@@ -473,18 +474,32 @@ test("SAM projection owns the lens while applied and the manual lens returns aft
     assert.equal(w.exportWidgets.cam_fov_deg.disabled, false);
     assert.equal(viewer.captureCamera.fov, 60);
     close(distanceToTarget(viewer), 70, 1e-9);
+    close(tanHalf(viewer.camera.fov), tanHalf(60) * tanHalf(45) / tanHalf(30), 1e-9, "editor lens follows the manual lens again");
 });
 
-test("the editor camera backs off for wide lenses so the capture frame stays in view", () => {
+test("the editor lens follows the capture lens and keeps the capture frame size", () => {
     const scene = lensScene();
     const { w, viewer } = scene;
+    // Fraction of the editor viewport height that the capture frame covers.
+    const frameFraction = () => tanHalf(viewer.captureCamera.fov) / tanHalf(viewer.camera.fov);
     w.applyCameraToViewer(true);
-    assert.deepEqual(viewer.camera.position.toArray(), viewer.captureCamera.position.toArray());
-    slide(scene, "cam_fov_deg", 75);
-    const target = viewer.orbit.target;
-    close(viewer.camera.position.distanceTo(target), 45 * tanHalf(75) / tanHalf(30), 1e-6);
-    close(viewer.camera.fov, 40, 1e-9, "the editor FOV is not copied from the capture camera");
-    const toCapture = viewer.captureCamera.position.clone().sub(target).normalize();
-    const toEditor = viewer.camera.position.clone().sub(target).normalize();
-    close(toCapture.dot(toEditor), 1, 1e-9, "editor stays on the capture view ray");
+    close(viewer.camera.fov, 45, 1e-9, "the default lens keeps the 45 degree editor view");
+    const defaultFraction = frameFraction();
+    for (const fov of [15, 22, 30, 50, 75]) {
+        w.exportWidgets.cam_fov_deg.emit("pointerdown");
+        w.exportWidgets.cam_fov_deg.value = String(fov);
+        w.exportWidgets.cam_fov_deg.emit("input");
+        // The viewport updates during the drag, before the gesture ends.
+        assert.equal(viewer.captureCamera.fov, fov);
+        close(frameFraction(), defaultFraction, 1e-9, `frame size at ${fov} degrees`);
+        assert.deepEqual(viewer.camera.position.toArray(), viewer.captureCamera.position.toArray(),
+            "the editor views the subject from the capture position, with its perspective");
+        const head = viewer.orbit.target.clone().add(new viewer.THREE.Vector3(1.5, 6, 2));
+        const projected = head.clone().project(viewer.camera);
+        const captured = head.clone().project(viewer.captureCamera);
+        close(projected.x, captured.x * defaultFraction, 1e-9, "subject sits where the capture puts it inside the frame");
+        close(projected.y, captured.y * defaultFraction, 1e-9, "subject sits where the capture puts it inside the frame");
+        w.exportWidgets.cam_fov_deg.emit("change");
+        w.exportWidgets.cam_fov_deg.emit("pointerup");
+    }
 });
