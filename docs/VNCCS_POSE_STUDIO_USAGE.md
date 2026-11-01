@@ -353,14 +353,17 @@ markers together.
 
 ### How it solves
 
-- The solver uses the output (capture) camera: its FOV, zoom, yaw, pitch and
-  output aspect. The editor camera and the camera itself are never moved.
+- The solver uses the output (capture) camera: its FOV, Distance, zoom, yaw,
+  pitch, an aligned view from Align Camera to View, and the output aspect.
+  Neither the editor camera nor the capture camera is moved.
 - Damped least squares with Levenberg-Marquardt step control: only steps that
   lower the energy are accepted, so conflicting or unreachable markers do not
   make the pose jump. The energy is the weighted 2D reprojection error plus a
   prior that keeps the pose close to where the drag or fit started, joint
   limits (shoulders, hips, neck and head swing/twist; elbows and knees are
-  hinges that never hyperextend), and the depth hints.
+  hinges that never hyperextend), and the depth hints. The prior is scaled by
+  the figure's size in the frame, so Stiffness behaves the same for any FOV,
+  Distance, zoom and output size.
 - Only joint rotations change (plus the pelvis position with Move root);
   bone lengths and body proportions never change.
 - Drags solve a few iterations per animation frame (bounded time) and refine

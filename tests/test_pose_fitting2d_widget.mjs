@@ -330,3 +330,47 @@ test("each character keeps its own constraints for the same pose tab", async () 
     const saved = JSON.parse(s.node.widgets[0].value);
     assert.deepEqual(saved.characters.map(item => item.poses[0].fitting2d?.markers.l_wrist.u), [0.71, 0.29]);
 });
+
+test("fitting follows an edited capture lens and an aligned view and never moves the camera", () => {
+    const s = fittingScene();
+    const { controller, viewer, w, THREE } = s;
+    const section = { content: new Element("div") };
+    w.createCaptureLensControls(section);
+    const slide = (key, value) => {
+        const slider = w.exportWidgets[key];
+        slider.emit("pointerdown"); slider.value = String(value); slider.emit("input"); slider.emit("change"); slider.emit("pointerup");
+    };
+    const walk = node => node.children?.flatMap(child => [child, ...walk(child)]) || [];
+    const camera = () => { viewer.captureCamera.updateMatrixWorld(true); return [...viewer.captureCamera.matrixWorld.toArray(), ...viewer.captureCamera.projectionMatrix.toArray()]; };
+    const check = label => {
+        // Markers from a known arm pose, then fit from the rest arm.
+        const arm = viewer.bones.upperarm_l;
+        arm.rotation.set(0.35, -0.2, 0.45);
+        arm.updateMatrixWorld(true);
+        controller.setActive(true);
+        controller.resetTargets();
+        arm.rotation.set(0, 0, 0);
+        arm.updateMatrixWorld(true);
+        const marker = controller.state.markers.l_wrist;
+        const before = camera();
+        const result = controller.fitPose();
+        assert.ok(result.maxError < 1, `${label}: ${JSON.stringify(result.markers.map(m => [m.id, +m.error.toFixed(2)]))} ${result.reason} ${result.iterations}`);
+        assert.deepEqual(camera(), before, `${label}: the capture camera never moves`);
+        // Independent check with three.js projection through the real capture camera.
+        const world = viewer.bones.hand_l.getWorldPosition(new THREE.Vector3());
+        const ndc = world.project(viewer.captureCamera);
+        const x = (ndc.x + 1) / 2, y = (1 - ndc.y) / 2;
+        assert.ok(Math.hypot((x - marker.u) * 1024, (y - marker.v) * 1024) < 1, `${label}: three.js projection matches the marker`);
+    };
+    slide("cam_fov_deg", 50);
+    slide("cam_distance", 70);
+    assert.equal(viewer.captureCamera.fov, 50);
+    check("FOV 50 / distance 70");
+    viewer.camera.position.set(17, 23, 29);
+    viewer.orbit.target.set(2, 9, -3);
+    viewer.orbit.update();
+    viewer.camera.updateMatrixWorld(true);
+    walk(section.content).find(element => element.tagName === "BUTTON" && element.innerText === "Align Camera to View").click();
+    assert.ok(w.exportParams.cam_view, "aligned view stored");
+    check("aligned view");
+});

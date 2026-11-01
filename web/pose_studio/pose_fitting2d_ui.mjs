@@ -13,7 +13,7 @@
  *   projected with the editor camera, so markers stay glued to the frame while
  *   the editor view orbits.
  */
-import { detectAndParseJSON } from "./imports/openpose.js";
+import { detectAndParseJSON } from "./imports/openpose.js?v=1791754604000";
 import * as F from "./pose_fitting2d.mjs";
 
 const SIDE_COLORS = { l: "#4fd1ff", r: "#ff9f43", c: "#ffe066" };
@@ -119,12 +119,16 @@ export class PoseFitting2DController {
         return F.captureCameraProjector(this.viewer?.captureCamera, frame.width, frame.height);
     }
 
-    solverOptions(extra = {}) {
+    solverOptions(extra = {}, context = null) {
         const settings = this.settings();
+        // The prior is in radians and the markers in pixels: rescale the prior by
+        // the figure's on-screen size so the same Stiffness feels the same for
+        // every lens, distance, zoom and output size.
+        const scale = Number.isFinite(context?.priorScale) ? context.priorScale : 1;
         return {
             scope: settings.scope,
             moveRoot: settings.moveRoot,
-            poseStiffness: F.POSE_FITTING_DEFAULTS.poseStiffness * (settings.stiffness || 1),
+            poseStiffness: F.POSE_FITTING_DEFAULTS.poseStiffness * (settings.stiffness || 1) * scale,
             ...extra,
         };
     }
@@ -139,7 +143,9 @@ export class PoseFitting2DController {
         const projector = this.projector();
         if (!model || !projector) return null;
         const anchor = F.captureFittingState(model);
-        return { model, projector, anchor, state: anchor };
+        // Figure size in the frame, fixed for the whole gesture.
+        const priorScale = F.projectionPriorScale(model, projector, anchor);
+        return { model, projector, anchor, state: anchor, priorScale };
     }
 
     runSolve(context, budget) {
@@ -150,7 +156,7 @@ export class PoseFitting2DController {
             maxIterations: budget.iterations,
             timeBudgetMs: budget.timeMs,
             tolerance: 1e-7,
-        }));
+        }, context));
         this.recordTiming(now() - started);
         // Reject broken results and keep the last valid pose visible.
         const broken = !result.valid || !Number.isFinite(result.energy)
@@ -437,7 +443,7 @@ export class PoseFitting2DController {
         camera.getWorldDirection(forward);
         const anchor = viewer.captureFrame?.position || viewer.meshCenter || viewer.orbit?.target;
         let distance = anchor ? anchor.clone().sub(origin).dot(forward) : 0;
-        if (!(distance > camera.near)) distance = 45;
+        if (!(distance > camera.near)) distance = Number(viewer.captureLens?.distance) || 45;
         const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(forward, origin.clone().addScaledVector(forward, distance));
         return { plane, origin, forward, distance };
     }

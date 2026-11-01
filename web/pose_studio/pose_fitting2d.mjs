@@ -449,6 +449,29 @@ export function projectFittingJoints(model, projector, state = null) {
     return out;
 }
 
+/** Pixels per world unit of the default capture (1024 px frame, FOV 30, distance 45, zoom 1). */
+export const POSE_FITTING_REFERENCE_PX_PER_UNIT = 512 / Math.tan(Math.PI / 12) / 45;
+
+/**
+ * Pose-prior multiplier that keeps the balance between the pixel reprojection
+ * error and the radian pose prior independent of how large the figure appears
+ * in the frame (lens FOV, distance, zoom, output size). It is the squared ratio
+ * of the figure's pixels per world unit to the default capture's.
+ */
+export function projectionPriorScale(model, projector, state = null) {
+    const joints = projectFittingJoints(model, projector, state);
+    const points = ["neck", "l_hip", "r_hip"].map(id => joints[id]?.world).filter(Boolean);
+    if (!points.length || !projector?.forward) return 1;
+    const centre = [0, 1, 2].map(axis => points.reduce((sum, point) => sum + point[axis], 0) / points.length);
+    const forward = projector.forward;
+    const side = normalize(cross(forward, Math.abs(forward[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0]));
+    const a = projector.project(centre);
+    const b = projector.project([centre[0] + side[0], centre[1] + side[1], centre[2] + side[2]]);
+    if (!a.valid || !b.valid) return 1;
+    const ratio = Math.hypot(b.x - a.x, b.y - a.y) / POSE_FITTING_REFERENCE_PX_PER_UNIT;
+    return finite(ratio) && ratio > 0 ? clamp(ratio * ratio, 0.01, 100) : 1;
+}
+
 // =====================================================================
 // Joint limits
 // =====================================================================

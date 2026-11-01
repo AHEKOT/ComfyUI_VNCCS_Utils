@@ -293,6 +293,20 @@ test("camera FOV and angle changes are evaluated with the real capture projectio
     resetRig();
 });
 
+test("the pose prior scales with the figure's size in the frame", () => {
+    resetRig();
+    const close = (actual, expected, label) => assert.ok(Math.abs(actual / expected - 1) < 0.03, `${label}: ${actual} vs ${expected}`);
+    const base = F.projectionPriorScale(model(), projector());
+    assert.ok(Math.abs(base - 1) < 0.1, `default capture: ${base}`);
+    close(F.projectionPriorScale(model(), projector({ width: 2048, height: 2048 })), 4 * base, "twice the output size");
+    viewer.setCaptureLens({ fov_deg: 50, distance: 70 });
+    viewer.updateCaptureCamera(FRAME.width, FRAME.height, 1, 0, 0, 0, 0);
+    const ratio = (45 * Math.tan(Math.PI / 12)) / (70 * Math.tan(25 * Math.PI / 180));
+    close(F.projectionPriorScale(model(), projector()), base * ratio * ratio, "FOV 50 / distance 70");
+    viewer.setCaptureLens({ fov_deg: 30, distance: 45 });
+    resetRig();
+});
+
 test("missing and invalid markers are ignored and their joints stay fixed", () => {
     resetRig();
     const start = model();
