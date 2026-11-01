@@ -530,15 +530,10 @@ export class PoseCropGuideController {
 
         const readout = make("div", "vnccs-ps-label");
         content.appendChild(readout);
-        const note = make("div", "vnccs-ps-label");
-        note.innerText = "Editor-only framing rectangle: images stay uncropped. crop_json / crop_image / crop_preview "
-            + "follow each pose tab in Studio Image mode with LIST output; GRID, Animation and Pose Manager runs stop "
-            + "while a crop output is linked. Use VNCCS Apply Crop Guide to crop generated images.";
-        content.appendChild(note);
 
         this.fields = {
             enabled: enabled.input, shown: shown.input, dim: dim.input, edit, center, fit,
-            aspect, customRow, customW, customH, lock: lock.input, numbers: numberInputs, readout, note,
+            aspect, customRow, customW, customH, lock: lock.input, numbers: numberInputs, readout,
         };
         this.refresh();
     }
