@@ -4269,6 +4269,7 @@ class PoseStudioWidget {
             cam_fov_deg: DEFAULT_CAPTURE_FOV_DEG,
             cam_distance: DEFAULT_CAPTURE_DISTANCE,
             cam_maintain_subject_size: false,
+            cam_view: null,
             output_mode: "LIST",
             grid_columns: 2,
             bg_color: [255, 255, 255],
@@ -4428,6 +4429,9 @@ class PoseStudioWidget {
         document.removeEventListener("pointerdown", this._boundHandleDocumentPointerDown);
         document.removeEventListener("pointerup", this._boundHandleDocumentPointerUp);
         document.removeEventListener("pointercancel", this._boundHandleDocumentPointerCancel);
+        document.removeEventListener("pointerdown", this._boundTrackPoseStudioFocus, true);
+        document.removeEventListener("focusin", this._boundTrackPoseStudioFocus, true);
+        window.removeEventListener("keydown", this._boundHandleCaptureViewShortcut, true);
         clearTimeout(this._animationCacheUploadTimer);
         this._animationCacheUploadTimer = null;
         this._activeVideoImportClose?.();
@@ -4516,6 +4520,7 @@ class PoseStudioWidget {
     }
 
     createUI() {
+        this.installCaptureViewShortcut();
         this._createLayout();
         this._createLeftPanel();
         this._createCenterPanel();
@@ -7137,6 +7142,7 @@ class PoseStudioWidget {
                     fov_deg: cameraParams.fov_deg,
                     distance: cameraParams.distance,
                     maintain_subject_size: cameraParams.maintain_subject_size,
+                    view: cameraParams.view,
                 };
                 sceneCharacter.poses[this.activeTab] = scenePose;
             }
@@ -7166,6 +7172,7 @@ class PoseStudioWidget {
             fov_deg: this.exportParams.cam_fov_deg,
             distance: this.exportParams.cam_distance,
             maintain_subject_size: this.exportParams.cam_maintain_subject_size,
+            view: this.exportParams.cam_view,
         });
     }
 
@@ -7175,6 +7182,7 @@ class PoseStudioWidget {
         this.exportParams.cam_fov_deg = lens.fov_deg;
         this.exportParams.cam_distance = lens.distance;
         this.exportParams.cam_maintain_subject_size = lens.maintain_subject_size;
+        this.exportParams.cam_view = lens.view;
         return lens;
     }
 
@@ -7234,6 +7242,7 @@ class PoseStudioWidget {
                         params.fov_deg = activeCamera.fov_deg;
                         params.distance = activeCamera.distance;
                         params.maintain_subject_size = activeCamera.maintain_subject_size;
+                        params.view = activeCamera.view;
                     }
                     pose.cameraParams = params;
                     character.poses[index] = pose;
@@ -8039,6 +8048,64 @@ class PoseStudioWidget {
             if (widget._vnccsNumberInput) widget._vnccsNumberInput.disabled = samLens;
         }
         if (this._captureLensSamNote) this._captureLensSamNote.style.display = samLens ? "block" : "none";
+        // An aligned view owns the camera rotation; Yaw and Pitch apply again in orbit mode.
+        const aligned = !!this.exportParams.cam_view;
+        for (const key of ['cam_yaw_deg', 'cam_pitch_deg']) {
+            if (this.exportWidgets?.[key]) this.exportWidgets[key].disabled = aligned;
+        }
+        if (this._alignCaptureViewButton) this._alignCaptureViewButton.disabled = samLens;
+        if (this._orbitCaptureViewButton) this._orbitCaptureViewButton.disabled = !aligned;
+        if (this._captureViewNote) this._captureViewNote.style.display = aligned ? "block" : "none";
+    }
+
+    // Align Camera to View (Ctrl+Shift+F): copy the editor view to the capture
+    // camera. snapToCaptureCamera() is the opposite direction.
+    alignCaptureCameraToView() {
+        if (!this.viewer?.computeCaptureViewFromEditor || this.viewer._samProjectionCameraFrame) return false;
+        const aligned = this.viewer.computeCaptureViewFromEditor();
+        if (!aligned) return false;
+        if (!this.isAnimationMode()) this.viewer.recordState?.();
+        this.setExportCaptureLens({ ...this.currentCaptureLens(), ...aligned });
+        this._subjectSizeAnchor = null;
+        this.persistActivePoseCameraParams();
+        // The editor keeps its view: the capture camera now shows exactly that view.
+        this.applyCameraToViewer(false);
+        this.syncToNode(true);
+        return true;
+    }
+
+    useOrbitCaptureCamera() {
+        if (!this.exportParams.cam_view) return false;
+        if (!this.isAnimationMode()) this.viewer?.recordState?.();
+        this.setExportCaptureLens({ ...this.currentCaptureLens(), view: null });
+        this.persistActivePoseCameraParams();
+        this.applyCameraToViewer(true);
+        this.syncToNode(true);
+        return true;
+    }
+
+    installCaptureViewShortcut() {
+        // Ctrl+Shift+F belongs to Pose Studio only after the user last pointed or
+        // focused inside it; otherwise the browser and ComfyUI keep the shortcut.
+        this._boundTrackPoseStudioFocus = event => {
+            this._poseStudioHasFocus = !!this.container?.contains(event.target);
+        };
+        this._boundHandleCaptureViewShortcut = event => this.handleCaptureViewShortcut(event);
+        document.addEventListener("pointerdown", this._boundTrackPoseStudioFocus, true);
+        document.addEventListener("focusin", this._boundTrackPoseStudioFocus, true);
+        window.addEventListener("keydown", this._boundHandleCaptureViewShortcut, true);
+    }
+
+    handleCaptureViewShortcut(event) {
+        if (!event.ctrlKey || !event.shiftKey || event.altKey || event.metaKey) return false;
+        if (event.code !== "KeyF" && String(event.key || "").toLowerCase() !== "f") return false;
+        if (!this._poseStudioHasFocus || this._disposed || this.host?.embedded === true) return false;
+        if (!this.container?.isConnected) return false;
+        if (event.target?.matches?.("input, select, textarea, [contenteditable='true']")) return false;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        this.alignCaptureCameraToView();
+        return true;
     }
 
     createCaptureLensControls(section) {
@@ -8099,6 +8166,30 @@ class PoseStudioWidget {
         samNote.innerText = "SAM camera is applied: its projection sets the lens. FOV and Distance apply again when SAM camera is paused or cleared.";
         section.content.appendChild(samNote);
         this._captureLensSamNote = samNote;
+
+        const viewRow = document.createElement("div");
+        viewRow.className = "vnccs-ps-row";
+        const alignButton = document.createElement("button");
+        alignButton.className = "vnccs-ps-btn";
+        alignButton.innerText = "Align Camera to View";
+        alignButton.title = "Copy the editor view (position, rotation, FOV and zoom) to the capture camera (Ctrl+Shift+F)";
+        alignButton.addEventListener("click", () => this.alignCaptureCameraToView());
+        const orbitButton = document.createElement("button");
+        orbitButton.className = "vnccs-ps-btn";
+        orbitButton.innerText = "Orbit Camera";
+        orbitButton.title = "Return to the regular capture camera driven by Yaw, Pitch, FOV and Distance";
+        orbitButton.addEventListener("click", () => this.useOrbitCaptureCamera());
+        viewRow.append(alignButton, orbitButton);
+        section.content.appendChild(viewRow);
+        this._alignCaptureViewButton = alignButton;
+        this._orbitCaptureViewButton = orbitButton;
+
+        const viewNote = document.createElement("div");
+        viewNote.className = "vnccs-ps-label";
+        viewNote.style.display = "none";
+        viewNote.innerText = "Capture camera is aligned to a saved view. Yaw and Pitch apply again after Orbit Camera.";
+        section.content.appendChild(viewNote);
+        this._captureViewNote = viewNote;
         this.syncCaptureLensControls();
     }
 
@@ -16145,6 +16236,7 @@ class PoseStudioWidget {
                     fov_deg: data.export.cam_fov_deg,
                     distance: data.export.cam_distance,
                     maintain_subject_size: data.export.cam_maintain_subject_size,
+                    view: data.export.cam_view,
                 });
                 if (!data.export.editor_mode && data.export.content_mode) {
                     this.exportParams.editor_mode = data.export.content_mode;

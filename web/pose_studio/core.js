@@ -4712,6 +4712,8 @@ export class PoseViewerCore {
             baseTarget.z
         );
         const dist = this.captureLens.distance;
+        const view = this.captureLens.view;
+        const captureZoom = view ? zoom * view.zoom : zoom;
 
         // Positioning relative to offset target
         const yawRad = this.THREE.MathUtils.degToRad(Number(yawDeg) || 0);
@@ -4720,10 +4722,19 @@ export class PoseViewerCore {
         cameraOffset.applyEuler(new this.THREE.Euler(pitchRad, yawRad, 0, 'YXZ'));
         this.captureCamera.aspect = width / height;
         this.captureCamera.fov = this.captureLens.fov_deg;
-        this.captureCamera.zoom = zoom;
+        this.captureCamera.zoom = captureZoom;
         this.captureCamera.updateProjectionMatrix();
         this.captureCamera.position.copy(target).add(cameraOffset);
         this.captureCamera.lookAt(target);
+        if (view) {
+            // Aligned view: keep the copied pivot and rotation; Distance moves along the copied view ray.
+            target.set(view.target[0] - offsetX, view.target[1] - offsetY, view.target[2]);
+            const direction = new this.THREE.Vector3().fromArray(view.position)
+                .sub(new this.THREE.Vector3().fromArray(view.target))
+                .normalize();
+            this.captureCamera.position.copy(target).addScaledVector(direction, dist);
+            this.captureCamera.quaternion.fromArray(view.quaternion);
+        }
 
         // Update Reference Plane
         if (this.refPlane) {
@@ -4737,7 +4748,7 @@ export class PoseViewerCore {
             // So visible height = height / zoom.
 
             const vFOV = (this.captureCamera.fov * Math.PI) / 180;
-            const h = 2 * planeDist * Math.tan(vFOV / 2) / Math.max(0.1, zoom);
+            const h = 2 * planeDist * Math.tan(vFOV / 2) / Math.max(0.1, captureZoom);
             const w = h * this.captureCamera.aspect;
 
             this.refPlane.position.set(0, 0, -planeDist);
@@ -4748,12 +4759,13 @@ export class PoseViewerCore {
         if (this.captureFrame) {
             const vFOV = (this.captureCamera.fov * Math.PI) / 180;
             // Frame at target distance
-            const h = 2 * dist * Math.tan(vFOV / 2) / Math.max(0.1, zoom);
+            const h = 2 * dist * Math.tan(vFOV / 2) / Math.max(0.1, captureZoom);
             const w = h * this.captureCamera.aspect;
 
             this.captureFrame.position.copy(target);
             this.captureFrame.scale.set(w / 2, h / 2, 1);
-            this.captureFrame.lookAt(this.captureCamera.position);
+            if (view) this.captureFrame.quaternion.copy(this.captureCamera.quaternion);
+            else this.captureFrame.lookAt(this.captureCamera.position);
             this.captureFrame.visible = true;
         }
 
@@ -4783,13 +4795,15 @@ export class PoseViewerCore {
         this.camera.fov = this._samProjectionCameraFrame
             ? POSE_STUDIO_EDITOR_FOV
             : Math.atan(halfAngle(this.captureLens.fov_deg) * halfAngle(POSE_STUDIO_EDITOR_FOV) / halfAngle(POSE_STUDIO_CAPTURE_FOV)) * 360 / Math.PI;
-        this.camera.zoom = zoom;
+        this.camera.zoom = this._samProjectionCameraFrame ? zoom : this.captureCamera.zoom;
         this.camera.updateProjectionMatrix();
 
         const target = this._samProjectionCameraFrame
             ? this._getSAMProjectionViewTarget(this.captureCamera)
             : (() => {
-                const baseTarget = this.sceneCameraTarget || this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+                const baseTarget = this.captureLens.view
+                    ? new this.THREE.Vector3().fromArray(this.captureLens.view.target)
+                    : this.sceneCameraTarget || this.meshCenter || new this.THREE.Vector3(0, 10, 0);
                 return new this.THREE.Vector3(
                     baseTarget.x - offsetX,
                     baseTarget.y - offsetY,
@@ -4800,6 +4814,34 @@ export class PoseViewerCore {
         this.orbit.update();
 
         this.orbit.enableDamping = prevDamping;
+    }
+
+    // Align Camera to View: the reverse of snapToCaptureCamera(). Returns the lens
+    // that makes the capture camera reproduce the editor camera's position,
+    // rotation and vertical field of view; the output aspect sets the width.
+    computeCaptureViewFromEditor() {
+        if (!this.THREE || !this.camera || !this.orbit) return null;
+        const camera = this.camera;
+        camera.updateMatrixWorld(true);
+        const forward = new this.THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+        // The pivot only decides where Distance moves the camera, so it is placed on
+        // the view ray inside the Distance range without changing the image.
+        const depth = this.orbit.target.clone().sub(camera.position).dot(forward);
+        const distance = normalizeCaptureLens({ distance: depth }).distance;
+        const target = camera.position.clone().addScaledVector(forward, distance);
+        // A FOV outside the lens range is carried by zoom; the projection is unchanged.
+        const fov = normalizeCaptureLens({ fov_deg: camera.fov }).fov_deg;
+        const halfAngle = degrees => Math.tan(degrees * Math.PI / 360);
+        return {
+            fov_deg: fov,
+            distance,
+            view: {
+                position: camera.position.toArray(),
+                target: target.toArray(),
+                quaternion: camera.quaternion.toArray(),
+                zoom: (camera.zoom || 1) * halfAngle(fov) / halfAngle(camera.fov),
+            },
+        };
     }
 
     computeModelFitZoom(width = 1024, height = 1024, offsetX = 0, offsetY = 0, yawDeg = 0, pitchDeg = 0, margin = 0.08) {

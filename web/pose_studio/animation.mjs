@@ -1024,6 +1024,31 @@ export function normalizeCaptureLens(source = {}) {
             MAX_CAPTURE_DISTANCE,
         ),
         maintain_subject_size: source?.maintain_subject_size === true,
+        view: normalizeCaptureView(source?.view),
+    };
+}
+
+// Capture camera pose copied by Align Camera to View. Missing or degenerate
+// data means the regular yaw/pitch camera.
+export function normalizeCaptureView(source) {
+    if (!source || typeof source !== "object") return null;
+    const vector = (value, length) => (
+        Array.isArray(value) && value.length === length && value.every(item => typeof item === "number" && Number.isFinite(item))
+            ? [...value]
+            : null
+    );
+    const position = vector(source.position, 3);
+    const target = vector(source.target, 3);
+    const quaternion = vector(source.quaternion, 4);
+    if (!position || !target || !quaternion) return null;
+    const length = Math.hypot(...quaternion);
+    const reach = Math.hypot(position[0] - target[0], position[1] - target[1], position[2] - target[2]);
+    if (length < 1e-6 || reach < 1e-6) return null;
+    return {
+        position,
+        target,
+        quaternion: quaternion.map(value => value / length),
+        zoom: clamp(typeof source.zoom === "number" ? finiteNumber(source.zoom, 1) : 1, 0.05, 20),
     };
 }
 

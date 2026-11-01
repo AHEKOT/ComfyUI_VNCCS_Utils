@@ -248,6 +248,7 @@ Common settings:
 | camera yaw/pitch | Shared viewing direction for the whole scene. |
 | FOV / Distance | Shared capture lens in **Camera Angle**: vertical field of view (15–75°, default 30°) and camera distance (10–250, default 45). Wide angles exaggerate perspective; narrow angles flatten it. |
 | Maintain Subject Size | When on, changing FOV moves the camera so the subject keeps its size and only the perspective changes (`distance * tan(FOV / 2)` stays constant). |
+| Align Camera to View | Copies the current viewport camera (position, rotation, FOV, zoom) to the capture camera, like Unity's Align With View. Shortcut: `Ctrl+Shift+F` while Pose Studio has focus. **Orbit Camera** returns to the Yaw/Pitch camera. |
 | Camera positioning radar | Moves the selected character; every character keeps its own X/Y. |
 | Camera Zoom | Scales the selected character; every character keeps its own zoom. |
 | model rotation | Rotate the mannequin without changing the viewport UI state. |
@@ -261,6 +262,25 @@ with the original 30° / 45 camera. When the view snaps to the capture camera, t
 viewport shows the capture perspective while the orange frame keeps its size. While an applied SAM camera is active its
 projection sets the lens, so FOV and Distance are disabled until it is paused or
 cleared; the stored manual lens is not overwritten.
+
+**Align Camera to View** is the reverse of the automatic snap from the capture camera
+to the viewport. The capture camera takes the viewport camera's exact position and
+rotation; characters, their placement and their joints do not change. Framing rules:
+
+- The vertical field of view and the image centre match the viewport. When the output
+  aspect differs from the viewport, a wider output shows more at the sides and a
+  narrower one crops the sides; the orange frame marks the captured area.
+- FOV outside 15–75° is stored as the nearest lens value plus a matching zoom, and a
+  pivot closer than 10 or farther than 250 is moved along the view ray. Neither changes
+  the image.
+- While aligned, Yaw and Pitch are disabled; FOV and Distance still work (Distance moves
+  the camera along the copied view ray). **Orbit Camera** or the camera reset returns to
+  the regular camera.
+- The view is stored per pose tab as `cameraParams.view` (and `export.cam_view`), shared
+  by every character, saved to the Pose Library and workflows, and used by RUN captures.
+  Pose Manager cards keep fitting each pose into the card, through the aligned angle and
+  lens. An applied SAM camera takes precedence; the aligned view returns when SAM is
+  paused or cleared.
 
 Tips:
 

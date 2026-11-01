@@ -79,21 +79,21 @@ function distanceToTarget(viewer) {
 }
 
 test("lens normalization keeps the legacy camera and rejects invalid values", () => {
-    assert.deepEqual(normalizeCaptureLens(), { fov_deg: 30, distance: 45, maintain_subject_size: false });
-    assert.deepEqual(normalizeCaptureLens(null), { fov_deg: 30, distance: 45, maintain_subject_size: false });
+    assert.deepEqual(normalizeCaptureLens(), { fov_deg: 30, distance: 45, maintain_subject_size: false, view: null });
+    assert.deepEqual(normalizeCaptureLens(null), { fov_deg: 30, distance: 45, maintain_subject_size: false, view: null });
     for (const value of [NaN, Infinity, -Infinity, "abc", "", " ", null, undefined, true, {}, []]) {
         assert.deepEqual(
             normalizeCaptureLens({ fov_deg: value, distance: value, maintain_subject_size: value }),
-            { fov_deg: 30, distance: 45, maintain_subject_size: value === true },
+            { fov_deg: 30, distance: 45, maintain_subject_size: value === true, view: null },
             String(value),
         );
     }
-    assert.deepEqual(normalizeCaptureLens({ fov_deg: 1, distance: 0 }), { fov_deg: 15, distance: 10, maintain_subject_size: false });
-    assert.deepEqual(normalizeCaptureLens({ fov_deg: 179, distance: 1e9 }), { fov_deg: 75, distance: 250, maintain_subject_size: false });
-    assert.deepEqual(normalizeCaptureLens({ fov_deg: "50", distance: "60", maintain_subject_size: true }), { fov_deg: 50, distance: 60, maintain_subject_size: true });
+    assert.deepEqual(normalizeCaptureLens({ fov_deg: 1, distance: 0 }), { fov_deg: 15, distance: 10, maintain_subject_size: false, view: null });
+    assert.deepEqual(normalizeCaptureLens({ fov_deg: 179, distance: 1e9 }), { fov_deg: 75, distance: 250, maintain_subject_size: false, view: null });
+    assert.deepEqual(normalizeCaptureLens({ fov_deg: "50", distance: "60", maintain_subject_size: true }), { fov_deg: 50, distance: 60, maintain_subject_size: true, view: null });
     assert.deepEqual(
         resolveCaptureCameraParams({ yaw_deg: 10 }, {}),
-        { zoom: 1, offset_x: 0, offset_y: 0, yaw_deg: 10, pitch_deg: 0, fov_deg: 30, distance: 45, maintain_subject_size: false },
+        { zoom: 1, offset_x: 0, offset_y: 0, yaw_deg: 10, pitch_deg: 0, fov_deg: 30, distance: 45, maintain_subject_size: false, view: null },
     );
 });
 
@@ -502,4 +502,358 @@ test("the editor lens follows the capture lens and keeps the capture frame size"
         w.exportWidgets.cam_fov_deg.emit("change");
         w.exportWidgets.cam_fov_deg.emit("pointerup");
     }
+});
+
+// --- Align Camera to View (editor -> capture; snapToCaptureCamera is capture -> editor) ---
+
+function findButton(scene, text) {
+    const walk = node => node.children?.flatMap(child => [child, ...walk(child)]) || [];
+    return walk(scene.section.content).find(element => element.tagName === "BUTTON" && element.innerText === text);
+}
+
+function moveEditor(viewer, { position, target, fov, zoom = 1 }) {
+    viewer.camera.position.set(...position);
+    viewer.orbit.target.set(...target);
+    viewer.orbit.update();
+    viewer.camera.fov = fov;
+    viewer.camera.zoom = zoom;
+    viewer.camera.updateProjectionMatrix();
+    viewer.camera.updateMatrixWorld(true);
+}
+
+function meshPoints(viewer) {
+    viewer.skinnedMesh.updateMatrixWorld(true);
+    const positions = viewer.skinnedMesh.geometry.attributes.position;
+    const points = [];
+    for (let index = 0; index < positions.count; index += 53) {
+        points.push(new viewer.THREE.Vector3().fromBufferAttribute(positions, index).applyMatrix4(viewer.skinnedMesh.matrixWorld));
+    }
+    return points;
+}
+
+// Every sampled mannequin vertex lands on the same image position in both cameras.
+// scaleX converts the editor's horizontal NDC when the output aspect differs.
+function assertSameComposition(points, editor, capture, message, scaleX = 1) {
+    editor.updateMatrixWorld(true);
+    capture.updateMatrixWorld(true);
+    for (const point of points) {
+        const a = point.clone().project(editor);
+        const b = point.clone().project(capture);
+        close(b.x, a.x * scaleX, 1e-9, `${message} x`);
+        close(b.y, a.y, 1e-9, `${message} y`);
+    }
+}
+
+function sceneSnapshot(scene) {
+    const { w, viewer } = scene;
+    viewer.skinnedMesh.updateMatrixWorld(true);
+    return {
+        transforms: JSON.stringify(w.characters.map(character => character.transform)),
+        mesh: viewer.skinnedMesh.matrixWorld.toArray(),
+        // The pose without the scene camera it also reports.
+        pose: JSON.stringify({ ...viewer.getPose(), camera: null, cameraParams: null }),
+    };
+}
+
+const editorView = { position: [17, 23, 29], target: [2, 9, -3], fov: 52, zoom: 1.3 };
+
+test("Align Camera to View copies the editor position, rotation, FOV and zoom without touching characters", () => {
+    const scene = lensScene();
+    const { w, viewer } = scene;
+    const second = scene.context.createPoseStudioCharacter({ index: 1, mesh: w.meshParams, transform: { x: 6, y: 1, zoom: 0.9 } });
+    w.characters.push(second); w.ensurePoseCameraParams();
+    w.updateCharacterScene();
+    moveEditor(viewer, editorView);
+    const before = sceneSnapshot(scene);
+    const editorWorld = viewer.camera.matrixWorld.toArray();
+    const editorProjection = viewer.camera.projectionMatrix.toArray();
+    findButton(scene, "Align Camera to View").click();
+
+    const view = w.exportParams.cam_view;
+    assert.deepEqual(view.position, editorView.position);
+    viewer.captureCamera.updateMatrixWorld(true);
+    viewer.captureCamera.matrixWorld.toArray().forEach((value, index) => close(value, editorWorld[index], 1e-9, `world[${index}]`));
+    for (const index of [0, 5, 8, 9]) close(viewer.captureCamera.projectionMatrix.elements[index], editorProjection[index], 1e-9, `projection[${index}]`);
+    assert.equal(viewer.captureCamera.fov, 52);
+    close(viewer.captureCamera.zoom, 1.3, 1e-12);
+    assert.equal(w.exportParams.cam_fov_deg, 52, "the FOV control shows the copied lens");
+    close(w.exportParams.cam_distance, new viewer.THREE.Vector3(...editorView.position).distanceTo(new viewer.THREE.Vector3(...editorView.target)), 1e-9);
+    assertSameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, "aligned capture");
+    assert.deepEqual(sceneSnapshot(scene), before, "characters keep their position, size and joints");
+    assert.deepEqual(viewer.camera.matrixWorld.toArray(), editorWorld, "the editor keeps its view");
+
+    // The final RUN capture renders through exactly that camera.
+    const expected = cameraState(viewer);
+    scene.renders.length = 0;
+    w.syncToNode(true, { executionCapture: true, skipCaptureUpload: true });
+    assert.equal(scene.renders.length, 1);
+    assertSameCamera(scene.renders[0], expected, "RUN output");
+
+    // Moving the editor afterwards does not move the capture camera.
+    moveEditor(viewer, { position: [-30, 4, 10], target: [0, 10, 0], fov: 45 });
+    w.applyCameraToViewer(false);
+    assertSameCamera(cameraState(viewer), expected, "capture after editor orbit");
+    for (const character of w.characters) {
+        assert.deepEqual(character.poses[0].cameraParams.view, view, "every character shares the aligned view");
+    }
+});
+
+test("aligned captures keep the editor's vertical framing when the output aspect differs", () => {
+    const scene = lensScene();
+    const { w, viewer } = scene;
+    moveEditor(viewer, editorView);
+    w.alignCaptureCameraToView();
+    w.exportParams.view_width = 2048;
+    w.exportParams.view_height = 1024;
+    w.applyCameraToViewer(false);
+    // Height and centre match the editor view; a wider output shows more at the sides.
+    assertSameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, "wide output", viewer.camera.aspect / 2);
+    w.exportParams.view_width = 512;
+    w.applyCameraToViewer(false);
+    assertSameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, "tall output", viewer.camera.aspect / 0.5);
+});
+
+test("editor FOV and distance outside the lens range keep the exact image", () => {
+    const scene = lensScene();
+    const { w, viewer } = scene;
+    // A 75 degree lens snaps the editor to about 99.7 degrees.
+    slide(scene, "cam_fov_deg", 75);
+    assert.ok(viewer.camera.fov > 75);
+    w.alignCaptureCameraToView();
+    assert.equal(viewer.captureCamera.fov, 75);
+    assertSameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, "clamped FOV carried by zoom");
+
+    // Closer than the minimum distance: the pivot moves along the ray, the camera does not.
+    moveEditor(viewer, { position: [0, 12, 6], target: [0, 11, 2], fov: 40 });
+    const editorWorld = viewer.camera.matrixWorld.toArray();
+    w.alignCaptureCameraToView();
+    assert.equal(w.exportParams.cam_distance, 10);
+    viewer.captureCamera.updateMatrixWorld(true);
+    viewer.captureCamera.matrixWorld.toArray().forEach((value, index) => close(value, editorWorld[index], 1e-9, `world[${index}]`));
+    assertSameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, "short distance");
+});
+
+test("aligned view: Distance moves along the view ray, Yaw/Pitch wait for Orbit Camera, reset clears it", () => {
+    const scene = lensScene();
+    const { w, viewer } = scene;
+    moveEditor(viewer, editorView);
+    w.alignCaptureCameraToView();
+    const quaternion = viewer.captureCamera.quaternion.toArray();
+    assert.equal(w.exportWidgets.cam_yaw_deg.disabled, true);
+    assert.equal(w.exportWidgets.cam_pitch_deg.disabled, true);
+    assert.equal(findButton(scene, "Orbit Camera").disabled, false);
+    assert.equal(w._captureViewNote.style.display, "block");
+
+    slide(scene, "cam_distance", 80);
+    const target = new viewer.THREE.Vector3(...w.exportParams.cam_view.target);
+    close(viewer.captureCamera.position.distanceTo(target), 80, 1e-9);
+    const direction = viewer.captureCamera.position.clone().sub(target).normalize();
+    const original = new viewer.THREE.Vector3(...editorView.position).sub(new viewer.THREE.Vector3(...editorView.target)).normalize();
+    close(direction.dot(original), 1, 1e-12, "same view ray");
+    viewer.captureCamera.quaternion.toArray().forEach((value, index) => close(value, quaternion[index], 1e-12));
+    slide(scene, "cam_fov_deg", 35);
+    assert.equal(viewer.captureCamera.fov, 35);
+    close(viewer.captureCamera.position.distanceTo(target), 80, 1e-9, "FOV alone keeps the camera in place");
+
+    findButton(scene, "Orbit Camera").click();
+    assert.equal(w.exportParams.cam_view, null);
+    assert.equal(w.exportWidgets.cam_yaw_deg.disabled, false);
+    assert.equal(viewer.captureCamera.fov, 35, "orbit mode keeps the lens");
+    close(distanceToTarget(viewer), 80, 1e-9);
+    slide(scene, "cam_yaw_deg", 40);
+    const back = viewer.captureCamera.position.clone().sub(viewer.sceneCameraTarget).normalize();
+    close(back.x, Math.sin(40 * Math.PI / 180), 1e-9, "yaw drives the camera again");
+
+    w.alignCaptureCameraToView();
+    w.resetCameraParams();
+    w.applyCameraToViewer(true);
+    assert.equal(w.exportParams.cam_view, null, "camera reset returns to the default composition");
+    assert.equal(viewer.captureCamera.fov, 30);
+});
+
+test("undo and redo restore the capture camera around Align Camera to View", () => {
+    const scene = lensScene();
+    const { w, viewer } = scene;
+    slide(scene, "cam_yaw_deg", 20);
+    const orbit = cameraState(viewer);
+    moveEditor(viewer, editorView);
+    w.alignCaptureCameraToView();
+    const aligned = cameraState(viewer);
+    viewer.undo();
+    assert.equal(w.exportParams.cam_view, null);
+    assertSameCamera(cameraState(viewer), orbit, "undo");
+    viewer.redo();
+    assert.deepEqual(w.exportParams.cam_view.position, editorView.position);
+    assertSameCamera(cameraState(viewer), aligned, "redo");
+    findButton(scene, "Orbit Camera").click();
+    viewer.undo();
+    assertSameCamera(cameraState(viewer), aligned, "undo Orbit Camera");
+});
+
+test("pose tabs, characters, RUN and Pose Manager cards each use their own aligned view", async () => {
+    const scene = lensScene();
+    const { w, viewer } = scene;
+    const second = scene.context.createPoseStudioCharacter({ index: 1, mesh: w.meshParams, transform: { x: 6, y: 0, zoom: 1 } });
+    w.characters.push(second); w.ensurePoseCameraParams();
+    moveEditor(viewer, editorView);
+    w.alignCaptureCameraToView();
+    const first = cameraState(viewer);
+    w.addTab();
+    assert.equal(w.exportParams.cam_view, null, "a new pose tab starts with the orbit camera");
+    const orbit = cameraState(viewer);
+    w.switchTab(0);
+    assertSameCamera(cameraState(viewer), first, "tab 0");
+    await w.selectCharacter(second.id);
+    assertSameCamera(cameraState(viewer), first, "switching character keeps the shared view");
+    w.switchTab(1);
+    assertSameCamera(cameraState(viewer), orbit, "tab 1");
+    for (const character of w.characters) {
+        assert.deepEqual(character.poses[0].cameraParams.view.position, editorView.position);
+        assert.equal(character.poses[1].cameraParams.view, null);
+    }
+
+    scene.renders.length = 0;
+    w.syncToNode(true, { executionCapture: true, skipCaptureUpload: true });
+    assert.equal(scene.renders.length, 2);
+    assertSameCamera(scene.renders[0], first, "RUN tab 0");
+    assertSameCamera(scene.renders[1], orbit, "RUN tab 1");
+
+    w.interfaceMode = "manager";
+    w.renderPoseManager = noop;
+    w.updatePoseManagerPreviewImage = noop;
+    scene.renders.length = 0;
+    w.scheduleAllManagerPreviewRefresh();
+    for (const [id, frame] of [...scene.frames]) { scene.frames.delete(id); frame(); }
+    // Manager cards fit every pose into the card (zoom and pan) through each pose's
+    // own camera angle and lens, as they do for the orbit camera.
+    const rotation = world => [0, 1, 2, 4, 5, 6, 8, 9, 10].map(index => world[index]);
+    for (const [render, expected] of [[scene.renders[0], first], [scene.renders[1], orbit]]) {
+        assert.equal(render.fov, expected.fov);
+        rotation(render.world).forEach((value, index) => close(value, rotation(expected.world)[index], 1e-9, "manager card rotation"));
+    }
+    const cards = w.poseCaptures.slice();
+    scene.renders.length = 0;
+    w.syncToNode(true, { executionCapture: true, skipCaptureUpload: true });
+    assert.equal(scene.renders.length, 0, "RUN reuses the manager cards");
+    assert.deepEqual(w._executionCaptureSnapshot, cards);
+});
+
+test("Pose Library and workflows reproduce the aligned composition after reload", async () => {
+    const source = lensScene();
+    const { w } = source;
+    const second = source.context.createPoseStudioCharacter({ index: 1, mesh: w.meshParams, transform: { x: 7, y: -2, zoom: 1.2 } });
+    w.characters.push(second); w.ensurePoseCameraParams();
+    w.updateCharacterScene();
+    moveEditor(source.viewer, editorView);
+    w.alignCaptureCameraToView();
+    const expected = cameraState(source.viewer);
+    const expectedBounds = source.projection();
+    source.renders.length = 0;
+    const record = await saveLibraryScene(source);
+    assertSameCamera(source.renders[0], expected, "library preview");
+    const saved = JSON.parse(JSON.stringify(record.pose));
+    for (const holder of [saved.camera, saved.cameraParams, ...saved.characters.map(character => character.poses[0].cameraParams)]) {
+        assert.deepEqual(holder.view.position, editorView.position);
+    }
+
+    // Another workflow with its own orbit camera and lens.
+    const target = lensScene();
+    const targetSecond = target.context.createPoseStudioCharacter({ index: 1, mesh: target.w.meshParams });
+    target.w.characters.push(targetSecond); target.w.ensurePoseCameraParams();
+    slide(target, "cam_yaw_deg", -50);
+    slide(target, "cam_fov_deg", 18);
+    await loadLibraryPose(target, saved);
+    assertSameCamera(cameraState(target.viewer), expected, "library load");
+    assert.deepEqual(target.projection(), expectedBounds);
+    target.renders.length = 0;
+    target.w.syncToNode(true, { executionCapture: true, skipCaptureUpload: true });
+    assertSameCamera(target.renders[0], expected, "RUN after library load");
+    const resaved = await saveLibraryScene(target);
+    assert.deepEqual(resaved.pose.camera.view, saved.camera.view, "re-saving keeps the view");
+
+    // Workflow save and reload.
+    const workflow = target.node.widgets[0].value;
+    assert.deepEqual(JSON.parse(workflow).export.cam_view.position, editorView.position);
+    const restored = lensScene();
+    restored.node.widgets[0].value = workflow;
+    restored.w.loadFromNode();
+    restored.w.applyCameraToViewer(true);
+    assertSameCamera(cameraState(restored.viewer), expected, "workflow reload");
+
+    // Data without a view, or with a broken one, uses the orbit camera.
+    const legacy = JSON.parse(workflow);
+    delete legacy.export.cam_view;
+    for (const pose of legacy.characters.flatMap(character => character.poses)) delete pose.cameraParams.view;
+    restored.node.widgets[0].value = JSON.stringify(legacy);
+    restored.w.loadFromNode();
+    assert.equal(restored.w.exportParams.cam_view, null);
+    const broken = JSON.parse(workflow);
+    broken.export.cam_view = { position: [1, "x", 3], target: [0, 0, 0], quaternion: [0, 0, 0, 1] };
+    broken.characters[0].poses[0].cameraParams.view = { position: [0, 0, 0], target: [0, 0, 0], quaternion: [0, 0, 0, 1] };
+    restored.node.widgets[0].value = JSON.stringify(broken);
+    assert.doesNotThrow(() => restored.w.loadFromNode());
+    assert.equal(restored.w.exportParams.cam_view, null);
+});
+
+test("an applied SAM camera blocks Align Camera to View and keeps the stored view", () => {
+    const scene = lensScene();
+    const { w, viewer } = scene;
+    moveEditor(viewer, editorView);
+    w.alignCaptureCameraToView();
+    const aligned = cameraState(viewer);
+    viewer.setSAMProjectionCameraFrame({ fov: 30, cameraPosition: { x: 1, y: 12, z: 40 }, projection_zoom: 0.8 });
+    w._samCameraModeActive = true;
+    w.applyCameraToViewer(true);
+    w.syncCameraWidgets();
+    assert.equal(findButton(scene, "Align Camera to View").disabled, true);
+    moveEditor(viewer, { position: [0, 30, 30], target: [0, 10, 0], fov: 45 });
+    assert.equal(w.alignCaptureCameraToView(), false);
+    close(viewer.captureCamera.position.z, 40, 1e-9, "SAM owns the capture camera");
+    w.clearSAMCameraMode();
+    w.applyCameraToViewer(true);
+    assertSameCamera(cameraState(viewer), aligned, "the aligned view returns after SAM");
+    assert.equal(findButton(scene, "Align Camera to View").disabled, false);
+});
+
+test("Ctrl+Shift+F aligns only while Pose Studio has the interaction focus", () => {
+    const scene = lensScene();
+    const { w, viewer, context } = scene;
+    const listeners = {};
+    scene.document.addEventListener = (type, fn) => { listeners[type] = fn; };
+    context.window.addEventListener = (type, fn) => { listeners[type] = fn; };
+    const inside = new Element();
+    const outside = new Element();
+    w.container.contains = node => node === inside || node === w.container;
+    w.container.isConnected = true;
+    w.installCaptureViewShortcut();
+    const press = values => {
+        const event = { ctrlKey: true, shiftKey: true, altKey: false, metaKey: false, key: "F", code: "KeyF", target: inside,
+            prevented: false, stopped: false, preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; }, ...values };
+        listeners.keydown(event);
+        return event;
+    };
+    moveEditor(viewer, editorView);
+
+    let event = press({ target: scene.document.body });
+    assert.equal(event.prevented, false, "no focus yet: the browser and ComfyUI keep the shortcut");
+    assert.equal(w.exportParams.cam_view, null);
+    listeners.pointerdown({ target: outside });
+    assert.equal(press({ target: outside }).prevented, false);
+    listeners.pointerdown({ target: inside });
+    assert.equal(press({ ctrlKey: false }).prevented, false, "Shift+F alone is not the shortcut");
+    assert.equal(press({ shiftKey: false }).prevented, false, "Ctrl+F stays the browser's find");
+    assert.equal(press({ target: { ...inside, matches: () => true } }).prevented, false, "typing in a field is left alone");
+    assert.equal(w.exportParams.cam_view, null);
+    event = press({ key: "f" });
+    assert.equal(event.prevented, true);
+    assert.equal(event.stopped, true);
+    assert.deepEqual(w.exportParams.cam_view.position, editorView.position);
+
+    listeners.pointerdown({ target: outside });
+    w.useOrbitCaptureCamera();
+    assert.equal(press({ target: outside }).prevented, false, "focus left Pose Studio");
+    assert.equal(w.exportParams.cam_view, null);
+    listeners.focusin({ target: inside });
+    w.host = { embedded: true };
+    assert.equal(press().prevented, false, "UniCanvas hides the camera controls and the shortcut");
 });
