@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 from PIL import Image, ImageOps
 from . import generation as factory3d_generation
+from . import texturing as factory3d_texturing
 from .gaussian_scene import inspect_ply, normalize_transform, validate_ply_payload
 from .schema import normalize_object_editor_properties
 
@@ -191,6 +192,16 @@ def _weights_status() -> dict[str, Any]:
     return _provider_weights_status(factory3d_generation.TRIPOSPLAT)
 
 
+def _texturing_weights_status() -> dict[str, Any]:
+    files = []
+    ready = True
+    for relative in factory3d_texturing.QI2_WEIGHT_FILES:
+        path = next((candidate for candidate in _weight_candidates(relative) if _valid_weight(candidate)), None)
+        ready = ready and path is not None
+        files.append({"path": relative, "ready": path is not None})
+    return {"ready": ready, "files": files}
+
+
 def capabilities() -> dict[str, Any]:
     device = "unknown"
     torch_version = ""
@@ -267,6 +278,7 @@ def capabilities() -> dict[str, Any]:
         "runtime_error": error,
         "weights": _weights_status(),
         "splat_cache": backend.splat_cache_status(),
+        "texturing": _texturing_weights_status(),
     }
 
 
@@ -967,6 +979,30 @@ def _generate_mesh_object(
                 f"{settings['upsample_steps']}/{settings['texture_steps']}"
             ),
         )
+        texturing_views = None
+        if effective_settings.get("texture_pass"):
+            texturing_views = [
+                {"label": label, "base_url": "", "refined_url": ""}
+                for label in factory3d_texturing.VIEW_LABELS
+            ]
+            job["texturing"] = {"views": texturing_views}
+
+        def _emit_stage(stage: str, progress: float, message: str, detail: str = "") -> None:
+            _emit(job, stage, progress, message, detail=detail)
+            if texturing_views is None:
+                return
+            index = stage.rsplit("_", 1)[-1]
+            if stage.startswith("texture_view_") and index.isdigit():
+                texturing_views[int(index)]["base_url"] = (
+                    f"{backend.API_BASE}/scenes/{scene_id}/objects/{object_id}/asset/texturing"
+                    f"?file=view_{int(index)}_base.png"
+                )
+            elif stage.startswith("texture_refined_") and index.isdigit():
+                texturing_views[int(index)]["refined_url"] = (
+                    f"{backend.API_BASE}/scenes/{scene_id}/objects/{object_id}/asset/texturing"
+                    f"?file=view_{int(index)}_refined.png"
+                )
+
         with _FactoryModelOperation(job):
             _release_cached_triposplat_pipeline()
             result = factory3d_generation.run_mesh_generation(
@@ -975,16 +1011,12 @@ def _generate_mesh_object(
                 model_path,
                 prepared_path,
                 effective_settings,
-                emit=lambda stage, progress, message, detail="": _emit(
-                    job,
-                    stage,
-                    progress,
-                    message,
-                    detail=detail,
-                ),
+                emit=_emit_stage,
                 check_cancel=lambda: _check_cancel(job),
             )
         _check_cancel(job)
+        if texturing_views is not None:
+            result["texturing"] = job["texturing"]
 
         relative_root = Path("objects") / object_id
         item = backend._standard_model_item(

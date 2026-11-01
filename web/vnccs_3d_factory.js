@@ -83,7 +83,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = FACTORY_EDITOR_SCHEMA_VERSION;
-const FRONTEND_BUILD = "20260908.4";
+const FRONTEND_BUILD = "20261101.1";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_PLY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_MODEL_TOTAL_BYTES = 4 * 1024 * 1024 * 1024;
@@ -107,6 +107,9 @@ const DEFAULT_SETTINGS = Object.freeze({
     mesh_shape_steps: 20,
     mesh_upsample_steps: 12,
     mesh_texture_steps: 12,
+    mesh_texture_pass: false,
+    mesh_texture_prompt: "",
+    mesh_texture_strength: 0.6,
 });
 const DEFAULT_EXPORT_SETTINGS = Object.freeze({
     width: 1024,
@@ -229,7 +232,7 @@ const ICONS = Object.freeze({
 
 
 function installStyles() {
-    const href = new URL("./factory3d/styles.css?v=20260908.2", import.meta.url).href;
+    const href = new URL("./factory3d/styles.css?v=20261101.1", import.meta.url).href;
     const existing = document.getElementById("vnccs-3d-factory-styles");
     if (existing) {
         if (existing.href !== href) existing.href = href;
@@ -786,6 +789,22 @@ class Factory3DWidget {
                                     <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Texture</span><input class="vnccs-i3s__input vnccs-i3s__mesh-texture-steps" type="number" min="1" max="100" step="1" /></label>
                                 </div>
                             </details>
+                            <details class="vnccs-i3s__advanced-settings vnccs-i3s__texture-refinement">
+                                <summary>Texture refinement</summary>
+                                <div class="vnccs-i3s__switch-row vnccs-i3s__texture-pass-row">
+                                    <span class="vnccs-i3s__texture-pass-title">Refine from views</span>
+                                    <button class="vnccs-i3s__switch vnccs-i3s__texture-pass" type="button" role="switch" aria-checked="false" aria-label="Refine mesh textures from camera views"></button>
+                                </div>
+                                <div class="vnccs-i3s__texture-pass-note" hidden></div>
+                                <label class="vnccs-i3s__field">
+                                    <span class="vnccs-i3s__label">Master prompt</span>
+                                    <textarea class="vnccs-i3s__input vnccs-i3s__texture-prompt" rows="2" placeholder="Character description used to refine every view"></textarea>
+                                </label>
+                                <label class="vnccs-i3s__field">
+                                    <span class="vnccs-i3s__label"><span>Strength</span><span class="vnccs-i3s__texture-strength-value">0.60</span></span>
+                                    <input class="vnccs-i3s__range vnccs-i3s__texture-strength" type="range" min="0.1" max="1" step="0.05" value="0.6" />
+                                </label>
+                            </details>
                         </div>
                         <div class="vnccs-i3s__switch-row vnccs-i3s__background-row">
                             <span class="vnccs-i3s__background-title">Remove background</span>
@@ -1065,6 +1084,7 @@ class Factory3DWidget {
                             </div>
                             <div class="vnccs-i3s__progress-track"><div class="vnccs-i3s__progress-bar"></div></div>
                             <div class="vnccs-i3s__job-detail"></div>
+                            <div class="vnccs-i3s__texturing-views" hidden></div>
                         </div>
                         <button class="vnccs-i3s__button vnccs-i3s__button--danger vnccs-i3s__cancel-job" type="button">${ICONS.stop}<span>Cancel</span></button>
                     </div>
@@ -1260,6 +1280,12 @@ class Factory3DWidget {
             meshShapeSteps: $(".vnccs-i3s__mesh-shape-steps"),
             meshUpsampleSteps: $(".vnccs-i3s__mesh-upsample-steps"),
             meshTextureSteps: $(".vnccs-i3s__mesh-texture-steps"),
+            texturePass: $(".vnccs-i3s__texture-pass"),
+            texturePassNote: $(".vnccs-i3s__texture-pass-note"),
+            texturePrompt: $(".vnccs-i3s__texture-prompt"),
+            textureStrength: $(".vnccs-i3s__texture-strength"),
+            textureStrengthValue: $(".vnccs-i3s__texture-strength-value"),
+            texturingViews: $(".vnccs-i3s__texturing-views"),
             removeBackground: $(".vnccs-i3s__remove-background"),
             seed: $(".vnccs-i3s__seed"),
             seedDice: $(".vnccs-i3s__seed-dice"),
@@ -1576,6 +1602,8 @@ class Factory3DWidget {
             [this.els.meshShapeSteps, "mesh_shape_steps", "integer"],
             [this.els.meshUpsampleSteps, "mesh_upsample_steps", "integer"],
             [this.els.meshTextureSteps, "mesh_texture_steps", "integer"],
+            [this.els.texturePrompt, "mesh_texture_prompt", "string"],
+            [this.els.textureStrength, "mesh_texture_strength", "number"],
         ];
         for (const [control, key, kind] of settings) {
             const update = () => {
@@ -1584,6 +1612,7 @@ class Factory3DWidget {
                 this.els.guidanceValue.textContent = Number(this.settings.guidance_scale).toFixed(1);
                 if (key === "num_gaussians") this._syncDensityMode();
                 if (key === "mesh_quality") this._syncMeshQuality();
+                if (key === "mesh_texture_strength") this._syncTexturePass();
                 this._scheduleStateSave();
             };
             this._listen(control, "input", update);
@@ -1592,6 +1621,11 @@ class Factory3DWidget {
         this._listen(this.els.removeBackground, "click", () => {
             this.settings.remove_background = !this.settings.remove_background;
             this._syncBackgroundRemoval();
+            this._scheduleStateSave();
+        });
+        this._listen(this.els.texturePass, "click", () => {
+            this.settings.mesh_texture_pass = !this.settings.mesh_texture_pass;
+            this._syncTexturePass();
             this._scheduleStateSave();
         });
         this._listen(this.els.seedDice, "click", () => {
@@ -9407,6 +9441,15 @@ class Factory3DWidget {
             form.append("shape_steps", String(this.settings.mesh_shape_steps));
             form.append("upsample_steps", String(this.settings.mesh_upsample_steps));
             form.append("texture_steps", String(this.settings.mesh_texture_steps));
+            if (this.settings.mesh_texture_pass) {
+                if (!String(this.settings.mesh_texture_prompt || "").trim()) {
+                    this.toast("Texture refinement needs the master prompt.", "error");
+                    return;
+                }
+                form.append("texture_pass", "1");
+                form.append("texture_prompt", this.settings.mesh_texture_prompt);
+                form.append("texture_strength", String(this.settings.mesh_texture_strength));
+            }
         }
         form.append("seed", String(this.settings.seed));
         form.append("remove_background", this.settings.remove_background ? "1" : "0");
@@ -9710,6 +9753,7 @@ class Factory3DWidget {
                     });
                 }
                 this._setProgress(true, job.progress, job.message || job.stage, job.detail);
+                this._renderTexturingViews(job.texturing);
                 if (TERMINAL.has(job.status)) {
                     if (job.status === "completed") {
                         if (job.kind === "generation") {
@@ -12029,6 +12073,9 @@ class Factory3DWidget {
         this.els.meshUpsampleSteps.value = String(this.settings.mesh_upsample_steps);
         this.els.meshTextureSteps.value = String(this.settings.mesh_texture_steps);
         this.els.seed.value = String(this.settings.seed);
+        this.els.texturePrompt.value = this.settings.mesh_texture_prompt || "";
+        this.els.textureStrength.value = String(this.settings.mesh_texture_strength);
+        this._syncTexturePass();
         this._syncBackgroundRemoval();
         this._syncSeedMode();
         this._syncDensityMode();
@@ -12046,6 +12093,46 @@ class Factory3DWidget {
             "aria-checked",
             String(this.settings.remove_background !== false),
         );
+    }
+
+    _syncTexturePass() {
+        const enabled = this.settings.mesh_texture_pass === true;
+        this.els.texturePass.setAttribute("aria-checked", String(enabled));
+        this.els.textureStrengthValue.textContent = Number(this.settings.mesh_texture_strength).toFixed(2);
+        const missing = enabled && this.capabilities?.texturing?.ready === false;
+        this.els.texturePassNote.hidden = !missing;
+        this.els.texturePassNote.textContent = missing
+            ? "Qwen Image 2.1 weights are not installed. Install them or disable texture refinement."
+            : "";
+    }
+
+    _renderTexturingViews(texturing) {
+        const strip = this.els.texturingViews;
+        if (!strip) return;
+        const views = Array.isArray(texturing?.views) ? texturing.views : [];
+        const signature = views.map((view) => `${view?.label || ""}|${view?.base_url || ""}|${view?.refined_url || ""}`).join(";");
+        if (signature === (this._texturingViewsSignature ?? "")) return;
+        this._texturingViewsSignature = signature;
+        strip.hidden = views.length === 0;
+        strip.replaceChildren();
+        for (const view of views) {
+            const card = document.createElement("div");
+            card.className = "vnccs-i3s__texturing-view";
+            const label = document.createElement("span");
+            label.className = "vnccs-i3s__texturing-view-label";
+            label.textContent = view?.label || "";
+            card.appendChild(label);
+            for (const [key, tone] of [["base_url", "base"], ["refined_url", "refined"]]) {
+                const url = view?.[key];
+                if (!url) continue;
+                const image = document.createElement("img");
+                image.className = `vnccs-i3s__texturing-view-${tone}`;
+                image.src = url;
+                image.alt = `${view?.label || "view"} ${tone} pass`;
+                card.appendChild(image);
+            }
+            strip.appendChild(card);
+        }
     }
 
     _syncSeedMode() {

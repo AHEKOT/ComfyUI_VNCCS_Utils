@@ -224,6 +224,9 @@ def normalize_mesh_settings(values: Any) -> dict[str, Any]:
     remove_background = str(data.get("remove_background", "1")).strip().lower() in {
         "1", "true", "yes", "on",
     }
+    from .texturing import normalize_texture_settings
+
+    texture = normalize_texture_settings(data)
     return {
         "provider": normalize_provider(data.get("provider")),
         "quality": quality,
@@ -240,6 +243,9 @@ def normalize_mesh_settings(values: Any) -> dict[str, Any]:
         "ao_samples": preset["ao_samples"],
         "remove_background": remove_background,
         "seed": max(-1, min(2**31 - 1, int(data.get("seed", -1)))),
+        "texture_pass": texture["texture_pass"],
+        "texture_prompt": texture["texture_prompt"],
+        "texture_strength": texture["texture_strength"],
     }
 
 
@@ -877,6 +883,30 @@ def run_mesh_generation(
     )[0]
     textured = _call_node("MeshSmoothNormals", mesh=textured, crease_angle=180.0)[0]
     check_cancel()
+
+    if settings.get("texture_pass"):
+        from .texturing import run_texture_pass
+
+        refined_base, _texture_views = run_texture_pass(
+            textured,
+            settings,
+            target_glb.parents[1] / "texturing",
+            prepared_path,
+            settings["seed"],
+            emit=emit,
+            check_cancel=check_cancel,
+        )
+        textured = _call_node(
+            "ApplyTextureToMesh",
+            mesh=low_poly,
+            base_color=refined_base,
+            metallic=metallic,
+            roughness=roughness,
+            occlusion=occlusion,
+            normal_map=normal_map,
+        )[0]
+        textured = _call_node("MeshSmoothNormals", mesh=textured, crease_angle=180.0)[0]
+        check_cancel()
 
     emit("serialize", 96, "Serializing textured GLB", key)
     file3d = _call_node("MeshToFile3D", mesh=textured)[0]

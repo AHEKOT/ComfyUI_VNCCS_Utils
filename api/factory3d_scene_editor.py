@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import re
 from typing import Any
 from ..nodes.factory3d import storage as factory, runtime, generation as factory3d_generation
 
@@ -532,8 +533,28 @@ def register_routes(routes: Any) -> None:
             kind = request.match_info["kind"]
             if kind not in {
                 "ply", "splat", "prepared", "reference", "thumbnail", "model", "resource",
+                "texturing",
             }:
                 raise FileNotFoundError("unknown object asset")
+            if kind == "texturing":
+                file_name = request.query.get("file", "")
+                if not re.fullmatch(r"view_[0-9]{1,2}_(base|refined)\.png", file_name):
+                    raise FileNotFoundError("unknown texturing view")
+                path = (
+                    factory.resolve_scene_dir(
+                        factory._validate_id(request.match_info["scene_id"], "scene id")
+                    )
+                    / "objects"
+                    / factory._validate_id(request.match_info["object_id"], "object id")
+                    / "texturing"
+                    / file_name
+                )
+                if not path.is_file():
+                    raise FileNotFoundError("texturing view is not available")
+                return web.FileResponse(
+                    path,
+                    headers={"Cache-Control": "private, max-age=31536000, immutable"},
+                )
             scene = await asyncio.to_thread(factory.load_scene, request.match_info["scene_id"])
             item = factory._object_by_id(scene, request.match_info["object_id"])
             if kind == "splat":

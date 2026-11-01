@@ -55,8 +55,8 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260908\.4"/);
-    assert.match(studio, /factory3d\/styles\.css\?v=20260908\.2/);
+    assert.match(studio, /FRONTEND_BUILD = "20261101\.1"/);
+    assert.match(studio, /factory3d\/styles\.css\?v=20261101\.1/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -1970,4 +1970,17 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(right.scale.x, 2);
     assert.deepEqual(groupEvents.map(item => item.objectId), ["left", "right"]);
     assert.ok(groupEvents.every(item => item.options.final && item.options.group_id === "group-a"));
+});
+
+test("Mesh texture refinement form, live view strip, and payload are wired", () => {
+    assert.match(studio, /mesh_texture_pass: false,/);
+    assert.match(studio, /mesh_texture_strength: 0\.6,/);
+    assert.match(studio, /vnccs-i3s__texture-refinement/);
+    assert.match(studio, /aria-label="Refine mesh textures from camera views"/);
+    assert.match(studio, /vnccs-i3s__texture-prompt/);
+    assert.match(studio, /form\.append\("texture_pass", "1"\)/);
+    assert.match(studio, /this\._renderTexturingViews\(job\.texturing\)/);
+    assert.match(studio, /_syncTexturePass\(\)/);
+    assert.match(styles, /\.vnccs-i3s__texturing-views/);
+    assert.match(styles, /\.vnccs-i3s__texture-pass-note/);
 });
