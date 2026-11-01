@@ -47,6 +47,9 @@ Outputs:
 | `silhouette` | `IMAGE` list | White characters on black aligned with `images`. |
 | `mask` | `MASK` list | Character coverage (1 = character) aligned with `images`. |
 | `character_id` | `IMAGE` list | One flat colour per character slot on black, aligned with `images`. |
+| `crop_json` | `STRING` list | The crop guide of each image, aligned with `images`. See [Crop Guide](#crop-guide). |
+| `crop_image` | `IMAGE` list | Crop of each full image with its guide (the full image when the guide is disabled). |
+| `crop_preview` | `IMAGE` list | Each full image with the outside dimmed and the guide border drawn. |
 
 Important backend behavior:
 
@@ -277,6 +280,124 @@ unchanged either way.
 The workflow records the linked auxiliary outputs in `pose_data.export.conditioning_outputs`
 so linking one re-executes the node. The passes reuse the 3D Factory conditioning renderer
 (`web/shared/conditioning_render.mjs`).
+
+## Crop Guide
+
+The **Crop Guide** section (left panel, below Camera Angle) adds a framing rectangle
+inside the orange capture frame. Use it to compose a wide 3D shot that keeps every
+joint in the frame (so OpenPose, depth and normal conditioning stay complete), mark the
+final crop, generate from the uncropped image and crop the generated image afterwards.
+
+- **The guide never changes the capture.** `images`, the auxiliary outputs, the camera,
+  FOV, Distance and the pose are identical with the guide on or off. It is an editor
+  overlay drawn on its own 2D layer, so it never appears in a capture.
+- **One rectangle per pose tab**, shared by every character (scene level, like the
+  prompt and the lens). New tabs start with a disabled guide.
+- **Enabled** makes the tab's rectangle drive the crop outputs. **Show** hides or shows
+  the overlay; **Dim Outside** darkens the frame around it (both are editor preferences).
+- **Edit Crop** turns on editing: drag inside the rectangle to move it, drag a corner or
+  edge handle to resize it. Orbit, pan, zoom and bone editing keep working outside the
+  rectangle, and nothing is intercepted while editing is off. Editing works from any
+  orbited view: the pointer is projected onto the frame's plane.
+- **Aspect**: Free, 1:1, 4:3, 3:4, 16:9, 9:16 or Custom (W : H). Ratios are of the final
+  crop in output **pixels**, so 1:1 is square on a 1280 x 720 output too. Fixed ratios
+  are always locked; with Free, **Lock** keeps the current shape while resizing.
+- **X / Y / W / H** are exact output pixels and update the rectangle while you type; the
+  overlay updates the fields while you drag. **Center** centres the rectangle; **Fit to
+  Frame** makes it the largest centred rectangle of the selected ratio. The readout shows
+  the size, position and actual ratio.
+- Every drag, field edit or button is one **Undo** step; edits are realtime and persist
+  when the gesture ends. Rectangles stay inside the image with a minimum of 8 x 8 pixels.
+- The rectangle lives in post-projection image space, so FOV, Distance, Maintain Subject
+  Size, Align Camera to View, Orbit Camera, Yaw/Pitch, Zoom and output resolution changes
+  keep its normalized coordinates. It never moves the camera or the pose. After an output
+  resolution change a fixed ratio can be off by the aspect change; the readout says so
+  until you resize or Fit.
+
+### Coordinates and crop_json
+
+The rectangle is stored normalized: origin top-left, +x right, +y down, `0..1`, no
+rotation, always fully inside the image. Workflows store it per tab in
+`pose_data.crop_guides`; static Pose Library assets store the active tab's guide as
+`crop_guide` (animation scenes store `crop_guides`). Workflows and library assets saved
+before the crop guide existed load with a disabled guide; loading a static library pose
+applies its guide to the current tab, like its lens. No image data is stored.
+
+Stored guide fields: `schema_version` (1), `enabled`, `x`, `y`, `width`, `height`,
+`aspect_ratio` (`free`, `1:1`, `4:3`, `3:4`, `16:9`, `9:16`, `custom`),
+`custom_aspect_ratio` (`[w, h]`) and `aspect_ratio_locked`. NaN, Infinity, negative,
+non-numeric or oversized values are rejected (the guide loads disabled) or clamped inside.
+
+Pixel conversion, identical in the browser, in Pose Studio and in Apply Crop Guide:
+left and top use `floor(x * width)`, right and bottom use `ceil((x + w) * width)` and
+are exclusive, all clamped to the image, at least 1 pixel; width and height are the
+differences of the boundaries. Products within 1e-6 pixel of an integer count as that
+integer, so float error (`0.1 + 0.2`) never shifts a boundary. The editor snaps the
+rectangle to whole output pixels, so the fields, the overlay and `pixel_rect` agree.
+
+Example `crop_json`:
+
+```json
+{
+  "schema_version": 1,
+  "type": "vnccs_crop_guide",
+  "enabled": true,
+  "coordinate_system": "top_left_normalized",
+  "source": {"width": 1280, "height": 720},
+  "rect": {"x": 0.25, "y": 0.1, "width": 0.4375, "height": 0.7777777777777778},
+  "pixel_rect": {"x": 320, "y": 72, "width": 560, "height": 560},
+  "aspect_ratio": "1:1",
+  "aspect_ratio_value": 1.0,
+  "aspect_ratio_locked": true,
+  "pose_index": 0
+}
+```
+
+`pose_index` is the pose tab (`null` for a Debug Mode library pose); `custom_aspect_ratio`
+is added for Custom. Runs where the guide does not apply add `"unsupported": "<reason>"`.
+
+### Output modes
+
+| Mode | Crop outputs |
+| --- | --- |
+| Studio, Image mode, LIST | One `crop_json`, `crop_image` and `crop_preview` per pose tab, in the order of `images`. |
+| Debug Mode | The single library pose uses that asset's saved guide (disabled if it has none). |
+| GRID, Animation (VIDEO or IMAGE batch), Pose Manager | Not supported: their images are not the Studio capture frame of each tab. A linked crop output stops the run with an error; unlinked outputs return disabled `crop_json` and black placeholders. |
+
+`crop_preview` is only drawn while it is linked (otherwise a black placeholder); linking
+it records `export.crop_outputs` in `pose_data` so the node runs again. `crop_image` is a
+copy of the crop and never shares pixels with `images`. Pose Manager RUN and its card
+cache are unchanged.
+
+### VNCCS Apply Crop Guide
+
+`VNCCS Apply Crop Guide` (`VNCCS_ApplyCropGuide`, category `VNCCS/pose`) crops any image
+with a `crop_json`: inputs `image` (IMAGE), `crop_json` (STRING) and `aspect_mismatch`;
+output `cropped_image` (IMAGE list). It parses and validates the JSON, uses the input
+image's real resolution, converts the normalized rectangle with the same rounding and
+crops without resizing or interpolation. Invalid JSON, unknown schema versions,
+non-numeric or out-of-range rectangles stop with a clear error. A disabled guide returns
+the image unchanged.
+
+Pairing: one `crop_json` crops every image (each batch keeps its size); N images and N
+`crop_json` values pair in order; one batch of N images and N `crop_json` values is split
+per pose. Crops of different sizes are separate list items and are never stacked into one
+tensor. The same `crop_json` crops the depth, normal, outline, silhouette and Character ID
+outputs identically.
+
+Typical workflow: `images` -> ControlNet / generation -> `VNCCS Apply Crop Guide`
+(`crop_json` from Pose Studio) -> Save Image.
+
+Applying the rectangle to an image of a different resolution:
+
+1. **Pure resize** (same content scaled, e.g. 1280 x 720 -> 1920 x 1080): supported; the
+   same normalized rectangle is converted at the new resolution.
+2. **Letterbox, padding or center crop**: the rectangle must go through the same geometric
+   transform first. Apply Crop Guide refuses an aspect ratio that differs by more than 1 %
+   by default; choose `stretch` only when the image was resized without padding or
+   cropping (stretched).
+3. **The generator moved or reframed the subject**: no guarantee; the rectangle marks the
+   image region, not the subject.
 
 ## Camera and Framing
 

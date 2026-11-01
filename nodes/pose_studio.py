@@ -27,6 +27,16 @@ from .posestudio.conditioning import (
     requested_conditioning_outputs,
     silhouette_from_character_ids,
 )
+from .posestudio.crop_guide import (
+    POSE_CROP_GUIDE_OUTPUTS,
+    build_crop_json,
+    capture_crop_guides,
+    crop_guide_unsupported_reason,
+    crop_image,
+    draw_crop_preview,
+    requested_crop_outputs,
+    unsupported_crop_json,
+)
 _CAPTURED_IMAGE_MAX_COUNT = 600
 _CAPTURED_IMAGE_MAX_TOTAL_CHARS = 64 * 1024 * 1024
 _CAPTURED_IMAGE_MAX_BYTES = 32 * 1024 * 1024
@@ -251,9 +261,14 @@ class VNCCS_PoseStudio:
     # union makes every workflow variant valid during server-side validation.
     # Auxiliary control images are appended after the original two slots so
     # existing links keep their indices; they align with ``images``.
-    RETURN_TYPES = ("IMAGE,VIDEO", "STRING", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "MASK", "IMAGE")
-    RETURN_NAMES = ("images", "lighting_prompt") + POSE_CONDITIONING_OUTPUTS
-    OUTPUT_IS_LIST = (True,) * 8
+    # The crop guide outputs follow them: crop_json (one per image), crop_image
+    # (the crop of each full image) and crop_preview (the full image with the guide).
+    RETURN_TYPES = (
+        "IMAGE,VIDEO", "STRING", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "MASK", "IMAGE",
+        "STRING", "IMAGE", "IMAGE",
+    )
+    RETURN_NAMES = ("images", "lighting_prompt") + POSE_CONDITIONING_OUTPUTS + POSE_CROP_GUIDE_OUTPUTS
+    OUTPUT_IS_LIST = (True,) * 11
     FUNCTION = "generate"
     CATEGORY = "VNCCS/pose"
     
@@ -538,7 +553,7 @@ class VNCCS_PoseStudio:
         # lists. This instance-level flag is read by the executor after
         # generate() returns, while the legacy image-mode LIST output keeps the
         # class-level list contract.
-        self.OUTPUT_IS_LIST = (not animation_outputs_image_batch,) + (True,) * 7
+        self.OUTPUT_IS_LIST = (not animation_outputs_image_batch,) + (True,) * (len(self.RETURN_TYPES) - 1)
         conditioning_outputs = requested_conditioning_outputs(export)
         if conditioning_outputs and editor_mode == "animation":
             raise RuntimeError(
@@ -580,9 +595,11 @@ class VNCCS_PoseStudio:
                     np_img = np.array(img).astype(np.float32) / 255.0
                     tensors.append(torch.from_numpy(np_img))
 
+                crop_reason = crop_guide_unsupported_reason(export, editor_mode, output_mode)
                 if editor_mode == "animation":
                     frame_batch = torch.stack(tensors, dim=0)
                     placeholders = self._conditioning_placeholders(rendered_images[:1])
+                    placeholders += self._crop_outputs(data, export, rendered_images[:1], None, crop_reason)
                     if animation_outputs_image_batch:
                         return (frame_batch, lighting_prompts, *placeholders)
                     video = _create_comfy_video(
@@ -601,6 +618,7 @@ class VNCCS_PoseStudio:
                     auxiliary = self._conditioning_tensors(
                         conditioning_outputs, passes, rendered_images, lambda images: images
                     )
+                    auxiliary += self._crop_outputs(data, export, rendered_images, tensor_list, crop_reason)
                     return (tensor_list, lighting_prompts, *auxiliary)
                 else:
                     grid_img = self._make_grid(rendered_images, grid_columns, tuple(bg_color))
@@ -615,6 +633,7 @@ class VNCCS_PoseStudio:
                         conditioning_outputs, passes, [grid_img],
                         lambda images: [self._make_grid(images, grid_columns, (0, 0, 0))],
                     )
+                    auxiliary += self._crop_outputs(data, export, [grid_img], None, crop_reason)
                     return ([grid_tensor], [combined_prompt], *auxiliary)
 
         raise RuntimeError(
@@ -681,6 +700,38 @@ class VNCCS_PoseStudio:
                     values.append(torch.from_numpy(array).unsqueeze(0))
             result.append(values)
         return result
+
+    def _crop_outputs(self, data, export, layout_images, image_tensors, unsupported_reason):
+        """crop_json, crop_image and crop_preview lists aligned with ``images``.
+
+        ``images`` itself is never cropped. crop_preview is only drawn while it is
+        linked; unsupported modes (GRID, Animation, Pose Manager) never apply a
+        rectangle to an image it was not drawn for: they stop when a crop output
+        is linked and otherwise return disabled placeholders.
+        """
+        requested = requested_crop_outputs(export)
+        if unsupported_reason:
+            if requested:
+                raise RuntimeError(
+                    "Pose Studio crop outputs (" + ", ".join(requested) + ") are available for "
+                    "Studio Image mode with LIST output; " + unsupported_reason + " is not supported. "
+                    "Disconnect them or switch to Studio, Image mode and LIST."
+                )
+            jsons = [json.dumps(unsupported_crop_json(*img.size, unsupported_reason)) for img in layout_images]
+            blanks = [torch.zeros((1, 1, 1, 3)).expand(1, img.size[1], img.size[0], 3) for img in layout_images]
+            return [jsons, blanks, list(blanks)]
+        jsons, crops, previews = [], [], []
+        for (guide, pose_index), img, image in zip(
+            capture_crop_guides(data, len(layout_images)), layout_images, image_tensors
+        ):
+            record = build_crop_json(guide, img.size[0], img.size[1], pose_index)
+            jsons.append(json.dumps(record))
+            crops.append(crop_image(image, record["pixel_rect"]) if record["enabled"] else image)
+            if "crop_preview" not in requested:
+                previews.append(torch.zeros((1, 1, 1, 3)).expand(1, img.size[1], img.size[0], 3))
+            else:
+                previews.append(draw_crop_preview(image, record["pixel_rect"]) if record["enabled"] else image)
+        return [jsons, crops, previews]
 
     def _make_grid(self, images, columns, bg_color=(40, 40, 40)):
         """Combine images into a grid."""

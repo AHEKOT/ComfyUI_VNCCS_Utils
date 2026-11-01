@@ -26,6 +26,13 @@ import {
     snapshotPoseCaptureCamera,
 } from "./pose_studio/conditioning.mjs?v=20261101.1";
 import {
+    defaultCropGuide,
+    ensurePoseCropGuideOutputs,
+    normalizeCropGuide,
+    poseCropGuideOutputNames,
+} from "./pose_studio/crop_guide.mjs?v=20261101.2";
+import { PoseCropGuideController } from "./pose_studio/crop_guide_overlay.mjs?v=20261101.2";
+import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
     cameraFramingToCharacterTransform,
@@ -4222,6 +4229,8 @@ class PoseStudioWidget {
             },
         }];  // Array of pose data
         this.posePrompts = [""]; // User prompt per pose tab
+        this.cropGuides = [defaultCropGuide()]; // Scene-level crop guide per pose tab
+        this.cropGuideController = null;
         this.activeTab = 0;
         this.poseCaptures = []; // Cache for captured images
         this.animationState = createDefaultAnimationState({}, {
@@ -4297,6 +4306,8 @@ class PoseStudioWidget {
             animation_image_batch: false,
             hand_controls_v2: true,
             directional_skydome_enabled: false,
+            crop_guide_visible: true, // Editor-only crop guide overlay preferences
+            crop_guide_dim: true,
         };
 
         const primaryCharacter = createPoseStudioCharacter({
@@ -4447,6 +4458,7 @@ class PoseStudioWidget {
         this.animationTimeline?.destroy?.();
         this._customSelectController?.disconnect();
         this._customSelectController = null;
+        this.cropGuideController?.dispose();
         if (this._containerResizeObserver) {
             this._containerResizeObserver.disconnect();
             this._containerResizeObserver = null;
@@ -5177,6 +5189,12 @@ class PoseStudioWidget {
         leftPanel.appendChild(camAngleSection.el);
         this.hideSectionInUniCanvas(camAngleSection);
 
+        // --- CROP GUIDE SECTION ---
+        const cropSection = this.createSection("Crop Guide", false);
+        this.ensureCropGuideController().createControls(cropSection.content);
+        leftPanel.appendChild(cropSection.el);
+        this.hideSectionInUniCanvas(cropSection);
+
         // --- EXPORT SETTINGS SECTION ---
         const exportSection = this.createSection("Export Settings", false);
 
@@ -5300,6 +5318,7 @@ class PoseStudioWidget {
 
         this.canvas = document.createElement("canvas");
         this.canvasContainer.appendChild(this.canvas);
+        this.ensureCropGuideController().attach(this.canvasContainer, this.canvas);
         this._createHandPopover();
         centerPanel.appendChild(this.canvasContainer);
 
@@ -6309,6 +6328,7 @@ class PoseStudioWidget {
             // Model/pose/camera restoration can finish after the initial pad draw.
             onViewportRender: () => {
                 this.radarRedraw?.();
+                this.cropGuideController?.draw();
                 this.host.onViewportRender?.();
             },
             transparentBackground: this.host.embedded === true,
@@ -6336,10 +6356,7 @@ class PoseStudioWidget {
                     { reveal: true },
                 );
             },
-            captureHistoryContext: () => ({
-                mesh: { ...this.meshParams }, transform: { ...this.getActiveCharacter()?.transform },
-                cameraParams: this.currentCameraParams(), prompt: this.getPosePrompt(),
-            }),
+            captureHistoryContext: () => this.imageHistoryContext(),
             onHistoryRestore: pose => this.restoreImageHistory(pose),
             onPoseChange: (pose) => {
                 this.updateRotationSliders();
@@ -7339,6 +7356,56 @@ class PoseStudioWidget {
             this.animationState.basePose.prompt = prompt;
         }
         if (index === this.activeTab) this.exportParams.user_prompt = prompt;
+    }
+
+    imageHistoryContext() {
+        return {
+            mesh: { ...this.meshParams }, transform: { ...this.getActiveCharacter()?.transform },
+            cameraParams: this.currentCameraParams(), prompt: this.getPosePrompt(),
+            cropGuide: { ...this.getCropGuide() },
+        };
+    }
+
+    // One crop guide per static pose tab, scene-level like the prompt and the lens.
+    // Data saved before the crop guide existed loads as a disabled guide.
+    ensureCropGuides() {
+        if (!Array.isArray(this.cropGuides)) this.cropGuides = [];
+        while (this.cropGuides.length < this.poses.length) this.cropGuides.push(defaultCropGuide());
+        while (this.cropGuides.length > this.poses.length) this.cropGuides.pop();
+    }
+
+    getCropGuide(index = this.activeTab) {
+        this.ensureCropGuides();
+        return this.cropGuides[index] || defaultCropGuide();
+    }
+
+    setCropGuide(index, guide, { sync = true } = {}) {
+        this.ensureCropGuides();
+        if (index < 0 || index >= this.cropGuides.length) return;
+        this.cropGuides[index] = normalizeCropGuide(guide);
+        this.cropGuideController?.refresh();
+        if (sync) this.syncToNode(false);
+    }
+
+    restoreCropGuides(guides) {
+        this.cropGuides = Array.isArray(guides) ? guides.map(normalizeCropGuide) : [];
+        this.ensureCropGuides();
+        this.cropGuideController?.refresh();
+    }
+
+    ensureCropGuideController() {
+        if (!this.cropGuideController) this.cropGuideController = new PoseCropGuideController(this, { document });
+        return this.cropGuideController;
+    }
+
+    // A crop guide gesture is one image-history step, like a camera control gesture.
+    beginCropGuideGesture() {
+        this._finishPoseGesture?.();
+        if (!this.isAnimationMode()) this.viewer?.recordState?.();
+    }
+
+    finishCropGuideGesture() {
+        this.syncToNode(false);
     }
 
     syncPromptFieldToActiveTab() {
@@ -9708,6 +9775,7 @@ class PoseStudioWidget {
             this.applyCameraToViewer(false);
         }
         if (context?.prompt !== undefined) this.setPosePrompt(this.activeTab, context.prompt);
+        if (context && "cropGuide" in context) this.setCropGuide(this.activeTab, context.cropGuide, { sync: false });
         this.syncCharacterEditorControls();
         this.syncPromptFieldToActiveTab();
     }
@@ -9753,6 +9821,7 @@ class PoseStudioWidget {
         if (this.viewer) {
             this.updateCaptureCameraPreview();
         }
+        this.cropGuideController?.refresh();
 
         this.syncToNode(false);
     }
@@ -9786,6 +9855,7 @@ class PoseStudioWidget {
         }
         this.poses = this.getActiveCharacter().poses;
         this.posePrompts.push("");
+        this.ensureCropGuides();
         this.activeTab = this.poses.length - 1;
         this.updateTabs();
         this.clearSAMCameraMode();
@@ -9825,6 +9895,9 @@ class PoseStudioWidget {
         if (this.posePrompts && this.posePrompts.length > idx) {
             this.posePrompts.splice(idx, 1);
         }
+        if (this.cropGuides && this.cropGuides.length > idx) {
+            this.cropGuides.splice(idx, 1);
+        }
 
         // Adjust active tab logic
         if (idx < this.activeTab) {
@@ -9845,6 +9918,7 @@ class PoseStudioWidget {
 
         this.updateTabs();
         this.syncPromptFieldToActiveTab();
+        this.cropGuideController?.refresh();
         this.syncToNode(false);
     }
 
@@ -13332,6 +13406,9 @@ class PoseStudioWidget {
                 timeline: { ...this.sharedTimeline },
                 activeTab: animationMode ? this.activeTab : 0,
                 pose_prompts: animationMode ? scenePrompts : [savePrompt],
+                ...(animationMode
+                    ? { crop_guides: this.cropGuides.map(guide => ({ ...guide })) }
+                    : { crop_guide: { ...this.getCropGuide() } }),
                 camera: {
                     yaw_deg: this.exportParams.cam_yaw_deg || 0,
                     pitch_deg: this.exportParams.cam_pitch_deg || 0,
@@ -13592,6 +13669,9 @@ class PoseStudioWidget {
             ? asset.pose_prompts.map(value => String(value ?? ""))
             : [String(asset.prompt || "")];
         while (this.posePrompts.length < (active?.poses?.length || 1)) this.posePrompts.push("");
+        this.cropGuides = Array.isArray(asset.crop_guides)
+            ? asset.crop_guides.map(normalizeCropGuide)
+            : [];
 
         this.sharedTimeline = {
             fps: Number(asset.timeline?.fps) || 12,
@@ -13636,6 +13716,7 @@ class PoseStudioWidget {
         this.syncPromptFieldToActiveTab();
         this.syncCharacterEditorControls();
         this.renderCharactersUI();
+        this.restoreCropGuides(this.cropGuides);
         this.syncToNode(false, { skipCapture: true, skipAnimationHistory: true });
     }
 
@@ -13668,6 +13749,7 @@ class PoseStudioWidget {
             while (character.poses.length > this.poses.length) character.poses.pop();
         }
         this.posePrompts = this.poses.map(pose => String(pose?.prompt || ""));
+        this.restoreCropGuides(asset?.crop_guides);
         this.poseCaptures = [];
         this.lightingPrompts = [];
         this.activeTab = 0;
@@ -13819,6 +13901,9 @@ class PoseStudioWidget {
                     }
                     if (savedSAMProjection && this.host?.embedded !== true) {
                         this.applyLibrarySAMProjection(savedSAMProjection);
+                    }
+                    if (this.host?.embedded !== true) {
+                        this.setCropGuide(this.activeTab, data.pose?.crop_guide, { sync: false });
                     }
                     if (this.isAnimationMode()) {
                         this.animationState.basePose.prompt = pose.prompt ?? this.animationState.basePose.prompt ?? "";
@@ -15628,6 +15713,15 @@ class PoseStudioWidget {
         return this._nodeWidgetCache.byName.get(name);
     }
 
+    // Crop guides of the images an execution captures, in capture order. Debug Mode
+    // renders one library pose, so it uses that asset's guide (disabled if none).
+    cropGuidesForCapture(debugAsset = null) {
+        if (this.isAnimationMode()) return null;
+        if (debugAsset) return [{ ...normalizeCropGuide(debugAsset.crop_guide), pose_index: null }];
+        this.ensureCropGuides();
+        return this.cropGuides.map((guide, index) => ({ ...guide, pose_index: index }));
+    }
+
     queueCaptureUpload(captureId) {
         const captures = this.poseCaptures || [];
         if (
@@ -15775,6 +15869,7 @@ class PoseStudioWidget {
             this._executionCaptureSnapshot = null;
             this._executionLightingPromptSnapshot = null;
             this._executionConditioningSnapshot = null;
+            this._executionCropGuideSnapshot = this.cropGuidesForCapture(isDebugExecution ? debugPose : null);
         }
         if (reusePoseManagerCaptures) {
             const managerCapturesReady = this.poseCaptures.length === outputCount
@@ -16009,6 +16104,10 @@ class PoseStudioWidget {
         delete exportToSave.debugPortraitMode;
         delete exportToSave.conditioning_outputs;
         if (linkedConditioningOutputs.length) exportToSave.conditioning_outputs = linkedConditioningOutputs;
+        delete exportToSave.crop_outputs;
+        const linkedCropOutputs = poseCropGuideOutputNames(this.node);
+        if (linkedCropOutputs.length) exportToSave.crop_outputs = linkedCropOutputs;
+        this.ensureCropGuides();
 
         // captured_images are excluded from the widget to avoid inflating workflow size
         // (each 1024×1024 PNG is ~500KB base64; multiple poses exceed ComfyUI localStorage limit)
@@ -16087,6 +16186,7 @@ class PoseStudioWidget {
             characters: serializedCharacters,
             timeline: { ...this.sharedTimeline },
             pose_prompts: [...this.posePrompts],
+            crop_guides: this.cropGuides.map(guide => ({ ...guide })),
             // Legacy mirrors keep older Pose Studio builds able to open the
             // primary character without understanding the v3 scene schema.
             mesh: primaryCharacter?.mesh || this.meshParams,
@@ -16240,6 +16340,7 @@ class PoseStudioWidget {
                 "schema_version", "mesh", "export", "poses", "image_poses", "animation",
                 "lights", "activeTab", "capture_id", "lighting_prompts", "background_url",
                 "captured_images", "node_id", "characters", "active_character_id", "timeline", "pose_prompts",
+                "crop_guides",
             ]);
             this._passthroughPoseData = Object.fromEntries(
                 Object.entries(data).filter(([key]) => !knownRootKeys.has(key)),
@@ -16384,6 +16485,7 @@ class PoseStudioWidget {
             if (Array.isArray(data.pose_prompts)) {
                 this.posePrompts = data.pose_prompts.map(value => String(value ?? ""));
             }
+            this.restoreCropGuides(data.crop_guides);
 
             let cachedAnimationReference = null;
             const restoredAnimationSource = Array.isArray(data.characters)
@@ -16694,9 +16796,11 @@ app.registerExtension({
                 || widget.lightingPrompts
                 || []).slice();
             const capturedConditioning = widget._executionConditioningSnapshot;
+            const capturedCropGuides = widget._executionCropGuideSnapshot;
             widget._executionCaptureSnapshot = null;
             widget._executionLightingPromptSnapshot = null;
             widget._executionConditioningSnapshot = null;
+            widget._executionCropGuideSnapshot = null;
             const animationCacheReady = await widget.flushAnimationCacheUpload();
             assertCurrent();
             const payload = {
@@ -16712,6 +16816,7 @@ app.registerExtension({
                 captured_images: capturedImages,
                 lighting_prompts: capturedLightingPrompts,
                 ...(capturedConditioning ? { captured_conditioning: capturedConditioning } : {}),
+                ...(capturedCropGuides ? { captured_crop_guides: capturedCropGuides } : {}),
             };
 
             return api.fetchApi('/vnccs/pose_sync/upload_capture', {
@@ -17047,6 +17152,7 @@ app.registerExtension({
             ensureAnimationImageBatchWidget(this);
             hideInternalWidget(this, "animation_image_batch");
             ensurePoseConditioningOutputs(this);
+            ensurePoseCropGuideOutputs(this);
             this.setSize([900, 740]);
 
             // Create widget
@@ -17114,6 +17220,7 @@ app.registerExtension({
         nodeType.prototype.onConfigure = function (info) {
             if (onConfigure) onConfigure.apply(this, arguments);
             ensurePoseConditioningOutputs(this);
+            ensurePoseCropGuideOutputs(this);
 
             if (this.studioWidget) {
                 syncStudioDOMWidgetWidth(this);
@@ -17129,6 +17236,19 @@ app.registerExtension({
                     this.onResize(this.size); // Force correct aspect ratio on config
                 }, 500);
             }
+        };
+
+        // crop_preview is only drawn while linked, so record crop output links in
+        // pose_data at once; the changed state re-executes the node on the next run.
+        const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+        nodeType.prototype.onConnectionsChange = function (type, slot) {
+            const result = onConnectionsChange?.apply(this, arguments);
+            // type 2 is LiteGraph.OUTPUT; restoring a workflow is guarded by the widget itself.
+            const name = type === 2 ? this.outputs?.[slot]?.name : null;
+            if (name && poseCropGuideOutputNames({ outputs: [{ name, links: [0] }] }).length) {
+                this.studioWidget?.syncToNode(false);
+            }
+            return result;
         };
 
         // Re-capture with fresh random params on each execution when Debug Mode is enabled

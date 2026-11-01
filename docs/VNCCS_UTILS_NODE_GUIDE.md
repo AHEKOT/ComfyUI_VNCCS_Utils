@@ -11,6 +11,7 @@ Registered nodes:
 | VNCCS Visual Camera Control | `VNCCS_VisualPositionControl` | `VNCCS` | Same prompt builder, controlled by the custom visual JS widget. |
 | VNCCS BBox Extractor | `VNCCS_BBox_Extractor` | `VNCCS/detailing` | Crop detected bounding-box regions into an image batch. |
 | VNCCS Pose Studio | `VNCCS_PoseStudio` | `VNCCS/pose` | Interactive 3D pose, body, camera, lighting, and pose-library workspace. |
+| VNCCS Apply Crop Guide | `VNCCS_ApplyCropGuide` | `VNCCS/pose` | Crop any image with a Pose Studio `crop_json` at the image's own resolution. |
 
 The bundled `vnccs_sam3d` package is used by Pose Studio for image-to-pose import
 and also contains standalone SAM 3D Body node classes. Those classes are not
@@ -139,6 +140,29 @@ Outputs:
 | --- | --- | --- |
 | `images` | `IMAGE` list | One image per pose tab in LIST mode, or one grid image in GRID mode. |
 | `lighting_prompt` | `STRING` list | Combined lighting, pose, and connected camera prompt per output image. |
+| `depth` … `character_id` | `IMAGE` / `MASK` lists | Auxiliary control images aligned with `images`. |
+| `crop_json` | `STRING` list | Crop guide of each image (see [Crop Guide](VNCCS_POSE_STUDIO_USAGE.md#crop-guide)). |
+| `crop_image` | `IMAGE` list | Crop of each full image, for checking the composition. |
+| `crop_preview` | `IMAGE` list | Each full image with the guide drawn. |
+
+## VNCCS Apply Crop Guide
+
+Crops images with the rectangle of a Pose Studio `crop_json`, typically the images
+generated from Pose Studio's uncropped `images`. Pure image processing: no resize and
+no interpolation; the normalized rectangle is converted to pixels of each input image
+with the same rounding as Pose Studio.
+
+| Input | Type | Notes |
+| --- | --- | --- |
+| `image` | `IMAGE` | Image(s) to crop. |
+| `crop_json` | `STRING` | Pose Studio `crop_json` output. |
+| `aspect_mismatch` | `error` / `stretch` | When the image aspect ratio differs from the capture by more than 1 %: stop (default) or scale the rectangle per axis (only for images that were resized without padding or cropping). |
+
+| Output | Type | Notes |
+| --- | --- | --- |
+| `cropped_image` | `IMAGE` list | One item per input pairing; crops of different sizes stay separate list items. |
+
+Details are in [Apply Crop Guide](VNCCS_POSE_STUDIO_USAGE.md#vnccs-apply-crop-guide).
 
 ## Troubleshooting
 

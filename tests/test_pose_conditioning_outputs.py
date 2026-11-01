@@ -83,16 +83,18 @@ class PoseConditioningOutputTests(unittest.TestCase):
         node = POSE_STUDIO.VNCCS_PoseStudio
         self.assertEqual(node.RETURN_NAMES, (
             "images", "lighting_prompt", "depth", "normal", "outline", "silhouette", "mask", "character_id",
+            "crop_json", "crop_image", "crop_preview",
         ))
         self.assertEqual(node.RETURN_TYPES, (
             "IMAGE,VIDEO", "STRING", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "MASK", "IMAGE",
+            "STRING", "IMAGE", "IMAGE",
         ))
-        self.assertEqual(node.OUTPUT_IS_LIST, (True,) * 8)
+        self.assertEqual(node.OUTPUT_IS_LIST, (True,) * 11)
 
     def test_list_outputs_align_with_images_and_derive_silhouette_and_mask(self):
         _node, result, ids = _run()
-        self.assertEqual(len(result), 8)
-        images, prompts, depth, normal, outline, silhouette, mask, character_id = result
+        self.assertEqual(len(result), 11)
+        images, prompts, depth, normal, outline, silhouette, mask, character_id = result[:8]
         self.assertEqual(len(images), 2)
         self.assertEqual(len(prompts), 2)
         for output in (depth, normal, outline, silhouette, character_id):
@@ -113,7 +115,7 @@ class PoseConditioningOutputTests(unittest.TestCase):
 
     def test_grid_outputs_share_the_rgb_grid_layout_on_black(self):
         _node, result, ids = _run(count=3, output_mode="GRID")
-        images, prompts, depth, normal, outline, silhouette, mask, character_id = result
+        images, prompts, depth, normal, outline, silhouette, mask, character_id = result[:8]
         self.assertEqual(len(images), 1)
         self.assertEqual(tuple(images[0].shape), (1, HEIGHT * 2, WIDTH * 2, 3))
         for output in (depth, normal, outline, silhouette, character_id):
@@ -133,7 +135,7 @@ class PoseConditioningOutputTests(unittest.TestCase):
     def test_unrequested_outputs_are_black_placeholders_matching_the_images(self):
         _node, result, _ids = _run(outputs=[], conditioning=False)
         images = result[0]
-        for index, output in enumerate(result[2:]):
+        for index, output in enumerate(result[2:8]):
             self.assertEqual(len(output), len(images))
             for tensor, image in zip(output, images):
                 expected = tuple(image.shape) if index != 4 else tuple(image.shape[:3])
@@ -173,8 +175,8 @@ class PoseConditioningOutputTests(unittest.TestCase):
         node, result, _ids = _run(count=2, outputs=[], conditioning=False, editor_mode="animation",
                                   mutate=lambda data: data["export"].update(animation_image_batch=True))
         self.assertEqual(tuple(result[0].shape), (2, HEIGHT, WIDTH, 3))
-        self.assertEqual(node.OUTPUT_IS_LIST, (False,) + (True,) * 7)
-        self.assertEqual(len(result), 8)
+        self.assertEqual(node.OUTPUT_IS_LIST, (False,) + (True,) * 10)
+        self.assertEqual(len(result), 11)
 
     def test_character_id_palette_matches_the_widget(self):
         source = (ROOT / "web" / "pose_studio" / "conditioning.mjs").read_text(encoding="utf-8")
@@ -185,7 +187,7 @@ class PoseConditioningOutputTests(unittest.TestCase):
         self.assertEqual(colors, CONDITIONING.POSE_CHARACTER_ID_COLORS)
         names = re.findall(r'name: "(\w+)", type: "(\w+)"', source)
         self.assertEqual(tuple(name for name, _type in names), CONDITIONING.POSE_CONDITIONING_OUTPUTS)
-        self.assertEqual(tuple(kind for _name, kind in names), POSE_STUDIO.VNCCS_PoseStudio.RETURN_TYPES[2:])
+        self.assertEqual(tuple(kind for _name, kind in names), POSE_STUDIO.VNCCS_PoseStudio.RETURN_TYPES[2:8])
 
 
 if __name__ == "__main__":
