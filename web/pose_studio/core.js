@@ -4848,6 +4848,29 @@ export class PoseViewerCore {
             && this.orbit.target.distanceToSquared(snapped.target) < 1e-10;
     }
 
+    // Yaw and Pitch of an aligned view, in the convention updateCaptureCamera() orbits with.
+    captureViewAngles(view) {
+        const direction = new this.THREE.Vector3().fromArray(view.position)
+            .sub(new this.THREE.Vector3().fromArray(view.target))
+            .normalize();
+        return {
+            yaw_deg: this.THREE.MathUtils.radToDeg(Math.atan2(direction.x, direction.z)),
+            pitch_deg: this.THREE.MathUtils.radToDeg(-Math.asin(Math.max(-1, Math.min(1, direction.y)))),
+        };
+    }
+
+    // Orbits an aligned view around its pivot to Yaw/Pitch; pivot, distance and zoom stay.
+    rotateCaptureView(view, yawDeg, pitchDeg) {
+        const THREE = this.THREE;
+        const target = new THREE.Vector3().fromArray(view.target);
+        const radius = new THREE.Vector3().fromArray(view.position).distanceTo(target);
+        const position = new THREE.Vector3(0, 0, radius)
+            .applyEuler(new THREE.Euler(THREE.MathUtils.degToRad(pitchDeg), THREE.MathUtils.degToRad(yawDeg), 0, 'YXZ'))
+            .add(target);
+        const rotation = new THREE.Matrix4().lookAt(position, target, new THREE.Vector3(0, 1, 0));
+        return { ...view, position: position.toArray(), quaternion: new THREE.Quaternion().setFromRotationMatrix(rotation).toArray() };
+    }
+
     // Align Camera to View: the reverse of snapToCaptureCamera(). Returns the lens
     // that puts the capture camera at the editor camera's position and rotation and
     // captures what the orange frame covers there; the output aspect sets the width.

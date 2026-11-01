@@ -696,14 +696,19 @@ test("editor FOV and distance outside the lens range keep the exact image", () =
     assertFrameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, "short distance");
 });
 
-test("aligned view: Distance moves along the view ray, Yaw/Pitch wait for Orbit Camera, reset clears it", () => {
+test("aligned view: Distance moves along the view ray, Yaw/Pitch orbit it around its pivot, reset clears it", () => {
     const scene = lensScene();
     const { w, viewer } = scene;
     moveEditor(viewer, editorView);
     w.alignCaptureCameraToView();
     const quaternion = viewer.captureCamera.quaternion.toArray();
-    assert.equal(w.exportWidgets.cam_yaw_deg.disabled, true);
-    assert.equal(w.exportWidgets.cam_pitch_deg.disabled, true);
+    // Yaw and Pitch show the aligned direction and stay usable.
+    const ray = [15, 14, 32];
+    const length = Math.hypot(...ray);
+    close(w.exportParams.cam_yaw_deg, Math.atan2(15, 32) * 180 / Math.PI, 1e-9);
+    close(w.exportParams.cam_pitch_deg, -Math.asin(14 / length) * 180 / Math.PI, 1e-9);
+    assert.notEqual(w.exportWidgets.cam_yaw_deg.disabled, true);
+    assert.notEqual(w.exportWidgets.cam_pitch_deg.disabled, true);
     assert.equal(findButton(scene, "Orbit Camera").disabled, false);
     assert.equal(w._captureViewNote.style.display, "block");
 
@@ -718,14 +723,34 @@ test("aligned view: Distance moves along the view ray, Yaw/Pitch wait for Orbit 
     assert.equal(viewer.captureCamera.fov, 35);
     close(viewer.captureCamera.position.distanceTo(target), 80, 1e-9, "FOV alone keeps the camera in place");
 
+    // Setting the aligned angles again changes nothing; new angles orbit the pivot.
+    const aligned = cameraState(viewer);
+    slide(scene, "cam_yaw_deg", w.exportParams.cam_yaw_deg);
+    assertSameCamera(cameraState(viewer), aligned, "same yaw");
+    const viewZoom = w.exportParams.cam_view.zoom;
+    slide(scene, "cam_yaw_deg", -50);
+    slide(scene, "cam_pitch_deg", 20);
+    const offset = new viewer.THREE.Vector3(0, 0, 80).applyEuler(new viewer.THREE.Euler(20 * Math.PI / 180, -50 * Math.PI / 180, 0, "YXZ"));
+    const expectedPosition = target.clone().add(offset);
+    viewer.captureCamera.position.toArray().forEach((value, index) => close(value, expectedPosition.toArray()[index], 1e-9, `orbit position[${index}]`));
+    const forward = new viewer.THREE.Vector3(0, 0, -1).applyQuaternion(viewer.captureCamera.quaternion);
+    close(forward.dot(offset.clone().normalize().negate()), 1, 1e-12, "the camera looks at the pivot");
+    assert.deepEqual(w.exportParams.cam_view.target, target.toArray(), "the pivot stays");
+    assert.equal(w.exportParams.cam_view.zoom, viewZoom);
+    assert.equal(viewer.captureCamera.fov, 35);
+    for (const character of w.characters) {
+        assert.deepEqual(character.poses[0].cameraParams.view, w.exportParams.cam_view, "the rotated view is stored with the pose");
+    }
+    assert.equal(w._captureViewNote.style.display, "block");
+
     findButton(scene, "Orbit Camera").click();
     assert.equal(w.exportParams.cam_view, null);
-    assert.equal(w.exportWidgets.cam_yaw_deg.disabled, false);
+    assert.notEqual(w.exportWidgets.cam_yaw_deg.disabled, true);
     assert.equal(viewer.captureCamera.fov, 35, "orbit mode keeps the lens");
     close(distanceToTarget(viewer), 80, 1e-9);
     slide(scene, "cam_yaw_deg", 40);
     const back = viewer.captureCamera.position.clone().sub(viewer.sceneCameraTarget).normalize();
-    close(back.x, Math.sin(40 * Math.PI / 180), 1e-9, "yaw drives the camera again");
+    close(back.x, Math.sin(40 * Math.PI / 180) * Math.cos(20 * Math.PI / 180), 1e-9, "yaw drives the camera again, pitch carries over");
 
     w.alignCaptureCameraToView();
     w.resetCameraParams();
@@ -866,6 +891,9 @@ test("an applied SAM camera blocks Align Camera to View and keeps the stored vie
     const aligned = cameraState(viewer);
     viewer.setSAMProjectionCameraFrame({ fov: 30, cameraPosition: { x: 1, y: 12, z: 40 }, projection_zoom: 0.8 });
     w._samCameraModeActive = true;
+    // Applying a SAM projection clears the orbit angles, as applySAM3DPoseData() does.
+    w.exportParams.cam_yaw_deg = 0;
+    w.exportParams.cam_pitch_deg = 0;
     w.applyCameraToViewer(true);
     w.syncCameraWidgets();
     assert.equal(findButton(scene, "Align Camera to View").disabled, true);

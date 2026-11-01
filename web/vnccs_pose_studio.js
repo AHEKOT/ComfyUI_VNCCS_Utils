@@ -8048,11 +8048,7 @@ class PoseStudioWidget {
             if (widget._vnccsNumberInput) widget._vnccsNumberInput.disabled = samLens;
         }
         if (this._captureLensSamNote) this._captureLensSamNote.style.display = samLens ? "block" : "none";
-        // An aligned view owns the camera rotation; Yaw and Pitch apply again in orbit mode.
         const aligned = !!this.exportParams.cam_view;
-        for (const key of ['cam_yaw_deg', 'cam_pitch_deg']) {
-            if (this.exportWidgets?.[key]) this.exportWidgets[key].disabled = aligned;
-        }
         if (this._alignCaptureViewButton) this._alignCaptureViewButton.disabled = samLens;
         if (this._orbitCaptureViewButton) this._orbitCaptureViewButton.disabled = !aligned;
         if (this._captureViewNote) this._captureViewNote.style.display = aligned ? "block" : "none";
@@ -8066,6 +8062,11 @@ class PoseStudioWidget {
         if (!aligned) return false;
         if (!this.isAnimationMode()) this.viewer.recordState?.();
         this.setExportCaptureLens({ ...this.currentCaptureLens(), ...aligned });
+        // Yaw and Pitch show the aligned direction and orbit the view from there.
+        const angles = this.viewer.captureViewAngles(aligned.view);
+        this.exportParams.cam_yaw_deg = angles.yaw_deg;
+        this.exportParams.cam_pitch_deg = angles.pitch_deg;
+        this.syncCameraWidgets();
         this._subjectSizeAnchor = null;
         this.persistActivePoseCameraParams();
         // The editor keeps its view: the capture camera now shows exactly that view.
@@ -8187,7 +8188,7 @@ class PoseStudioWidget {
         const viewNote = document.createElement("div");
         viewNote.className = "vnccs-ps-label";
         viewNote.style.display = "none";
-        viewNote.innerText = "Capture camera is aligned to a saved view. Yaw and Pitch apply again after Orbit Camera.";
+        viewNote.innerText = "Capture camera is aligned to a saved view. Yaw and Pitch orbit it around its pivot; Orbit Camera returns to the regular camera.";
         section.content.appendChild(viewNote);
         this._captureViewNote = viewNote;
         this.syncCaptureLensControls();
@@ -8449,6 +8450,11 @@ class PoseStudioWidget {
                 if (key === 'cam_fov_deg') this.applySubjectSizeDistance(previousValue);
                 // Live preview for camera params - sync viewport too
                 const isCamParam = ['cam_zoom', 'cam_offset_x', 'cam_offset_y', 'cam_yaw_deg', 'cam_pitch_deg', 'cam_fov_deg', 'cam_distance'].includes(key);
+                if ((key === 'cam_yaw_deg' || key === 'cam_pitch_deg') && this.exportParams.cam_view && this.viewer?.rotateCaptureView) {
+                    // An aligned view orbits around its own pivot.
+                    this.exportParams.cam_view = this.viewer.rotateCaptureView(
+                        this.exportParams.cam_view, this.exportParams.cam_yaw_deg || 0, this.exportParams.cam_pitch_deg || 0);
+                }
                 if (isCamParam) {
                     this.pendingAgeCameraFit = false;
                     this.persistActivePoseCameraParams();
