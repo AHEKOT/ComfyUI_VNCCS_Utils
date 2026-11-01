@@ -622,6 +622,7 @@ def run_mesh_generation(
             batch_size=4,
             force_projection=True,
             apply_mask=True,
+            refine_steps=3,
         )[0]
         fov = _call_node(
             "MoGeGeometryToFOV",
