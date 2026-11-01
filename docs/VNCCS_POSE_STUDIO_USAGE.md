@@ -148,6 +148,7 @@ The center is the interactive 3D editor:
 The right side focuses on prompt, pose library, and lighting:
 
 - Pose Library button and modal.
+- Collapsed-by-default 2D Pose Fitting panel (see [2D Pose Fitting](#2d-pose-fitting)).
 - Per-pose prompt text.
 - Collapsed-by-default Characters scene panel.
 - Lighting setup.
@@ -293,6 +294,101 @@ Tips:
 - Use the preview frame to check the final crop.
 - For pose-control images, keep the subject fully visible unless you are intentionally making a close-up.
 - For grid sheets, choose dimensions and column count before final capture.
+
+## 2D Pose Fitting
+
+**2D Pose Fitting** (right panel, below the Pose Library button, collapsed by
+default) bends the mannequin so that its joints, seen through the output
+camera, land on 2D markers you place in the orange output frame. It is meant
+for matching a reference drawing or an OpenPose skeleton without posing every
+bone by hand.
+
+Markers: Head (nose), Neck, and left/right Shoulder, Elbow, Wrist, Hip, Knee
+and Ankle. Left and right are the character's own sides, exactly as in
+OpenPose (`L Wrist` is the character's left hand, drawn on the image right
+when the character faces the camera).
+
+### Workflow
+
+1. Open **2D Pose Fitting** and press **Fitting Mode: Off** to switch it on.
+   Without markers, the mode creates one marker on every joint of the current
+   pose, so nothing moves yet.
+2. Optional: **Load OpenPose JSON** creates markers from an OpenPose
+   COCO-18 or BODY_25 file (the first person). Keypoints are mapped onto the
+   output frame the same way the background reference image is stretched over
+   it: pixel `x / canvas_width`, `y / canvas_height`. Normalized (0..1)
+   keypoints are detected. Missing keypoints (confidence 0 or `0,0`) become
+   disabled markers at the current joint. A warning appears when the JSON
+   aspect ratio differs from the output size.
+3. Drag markers in the viewport. The mannequin follows while you drag; every
+   enabled marker is solved together. Clicks away from a marker still select
+   bones and orbit the editor camera.
+4. Press **Fit Pose** for a full-accuracy solve of all enabled markers.
+5. Check the residual lines (marker to projected joint, red above 6 px) and
+   the per-marker errors in the panel list.
+
+### Controls
+
+| Control | Purpose |
+| --- | --- |
+| Fitting Mode | Shows the marker overlay and makes markers draggable. |
+| Load OpenPose JSON | Replaces the marker targets with OpenPose keypoints. |
+| Fit Pose | Solves all enabled markers to full accuracy. |
+| Reset Targets | Moves unpinned markers back onto the current joints. |
+| Clear Constraints | Removes all markers from this pose. |
+| Optimize | `Limbs + head` keeps the pelvis and spine fixed; `Whole body` also rotates them. |
+| Move root | Whole body only: the pelvis may also translate (for scale/offset mismatches). |
+| Stiffness | How strongly the next solve stays near the pose it starts from (0.06..16). Lower follows markers more freely, higher keeps the current 3D depth. |
+| Refit after FK/IK edits | Runs Fit Pose after a gizmo or IK drag ends. |
+| Show markers | Hides the overlay without deleting markers. |
+| Enabled | Uses this marker in the solve. |
+| Pinned | Weight x10; Reset Targets keeps the marker in place. |
+| Weight | 0..10 per marker; edits refit live. |
+| Depth | `Auto`, `Near` or `Far`: the joint is closer to (Near) or farther from (Far) the camera than its parent joint. |
+| Flip | Mirrors the joint's depth around its parent while keeping the 2D position (for example an elbow pointing toward or away from the camera). Refused when the mirrored pose breaks the joint limits. |
+
+Every marker drag, Fit Pose, Reset Targets, Clear Constraints, marker edit and
+weight-slider gesture is one Undo step, and Undo restores the pose and the
+markers together.
+
+### How it solves
+
+- The solver uses the output (capture) camera: its FOV, zoom, yaw, pitch and
+  output aspect. The editor camera and the camera itself are never moved.
+- Damped least squares with Levenberg-Marquardt step control: only steps that
+  lower the energy are accepted, so conflicting or unreachable markers do not
+  make the pose jump. The energy is the weighted 2D reprojection error plus a
+  prior that keeps the pose close to where the drag or fit started, joint
+  limits (shoulders, hips, neck and head swing/twist; elbows and knees are
+  hinges that never hyperextend), and the depth hints.
+- Only joint rotations change (plus the pelvis position with Move root);
+  bone lengths and body proportions never change.
+- Drags solve a few iterations per animation frame (bounded time) and refine
+  once on release. Invalid results (NaN, energy increase, broken limits) are
+  dropped and the last valid pose stays.
+- A marker that cannot be reached keeps its residual; after a solve the status
+  line lists the markers more than 6 px off, and the panel shows mean and max
+  error and the solve time.
+
+### Storage
+
+Markers, pins, weights, depth hints and the panel settings are stored on the
+pose as `fitting2d` (normalized `u`/`v` output-frame coordinates, top-left
+origin). Every character and every pose tab has its own markers, and they are
+saved with the workflow and with Pose Library entries. Poses without
+`fitting2d` load exactly as before; Clear Constraints removes the field.
+
+### Limitations
+
+- One person per OpenPose file (`people[0]`); hands and face keypoints are
+  ignored, and BODY_25 MidHip and feet points are not used.
+- The camera is not fitted. If the reference figure is much larger, smaller
+  or offset, adjust Camera Zoom or the positioning radar first, or use Whole
+  body with Move root.
+- A single 2D view cannot tell toward-camera from away-from-camera bends;
+  use the Depth hint or Flip.
+- Not available in Animation mode, and hidden when Pose Studio is embedded in
+  UniCanvas.
 
 ## Lighting and Lighting Prompts
 

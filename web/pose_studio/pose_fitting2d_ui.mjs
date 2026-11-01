@@ -724,11 +724,12 @@ export class PoseFitting2DController {
         const moveRoot = checkbox("Move root", "Whole body only: allow the pelvis to translate (camera never moves)", value => this.updateSettings({ moveRoot: value }));
         const autoRefit = checkbox("Refit after FK/IK edits", "Run Fit Pose automatically when an FK/IK drag ends", value => this.updateSettings({ autoRefit: value }));
         const scope = make("select", "vnccs-ps-fit-select");
-        for (const [value, label] of [["limbs", "Limbs + head (torso fixed)"], ["body", "Whole body"]]) {
+        for (const [value, label] of [["limbs", "Limbs + head"], ["body", "Whole body"]]) {
             const option = make("option", "", label);
             option.value = value;
             scope.appendChild(option);
         }
+        scope.title = "Limbs + head keeps the pelvis and spine fixed; Whole body also rotates them";
         scope.addEventListener("change", () => this.updateSettings({ scope: scope.value }));
         content.appendChild(row(make("span", "vnccs-ps-label", "Optimize"), scope));
         content.appendChild(row(show.wrap, moveRoot.wrap));
@@ -789,19 +790,19 @@ export class PoseFitting2DController {
         weight.addEventListener("pointercancel", finishWeight);
         weight.addEventListener("blur", finishWeight);
         const depth = make("select", "vnccs-ps-fit-select");
-        for (const [value, label] of [["auto", "Depth: auto"], ["near", "Toward camera"], ["far", "Away from camera"]]) {
+        for (const [value, label] of [["auto", "Auto"], ["near", "Near"], ["far", "Far"]]) {
             const option = make("option", "", label);
             option.value = value;
             depth.appendChild(option);
         }
-        depth.title = "Depth / bend hint: this joint relative to its parent joint";
+        depth.title = "Depth / bend hint: Near = this joint is closer to the camera than its parent joint, Far = farther";
         depth.addEventListener("change", () => this.editMarker(this.selectedId, { depth: depth.value }));
         const flip = button("Flip", "Mirror this segment's depth across the camera ray (keeps the 2D position), then refit", () => this.flipDepth(this.selectedId));
         const markerError = make("span", "vnccs-ps-value", "");
         editor.appendChild(row(editorTitle, markerError));
         editor.appendChild(row(enabled.wrap, pinned.wrap));
         editor.appendChild(row(make("span", "vnccs-ps-label", "Weight"), weight, weightLabel));
-        editor.appendChild(row(depth, flip));
+        editor.appendChild(row(make("span", "vnccs-ps-label", "Depth"), depth, flip));
         content.appendChild(editor);
 
         const fileInput = make("input");
