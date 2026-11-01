@@ -17,6 +17,7 @@ import {
 import { HAND_PRESETS } from "./pose_studio/hand_presets.js";
 import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js?v=1791754604000";
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js?v=1791754604000";
+import { PoseFitting2DController } from "./pose_studio/pose_fitting2d_ui.mjs";
 import { installCustomSelects } from "./shared/custom_select.mjs";
 import {
     DEFAULT_CHARACTER_COLORS,
@@ -1278,6 +1279,85 @@ const STYLES = `
     width: 100% !important;
     height: 100% !important;
     display: block;
+}
+
+/* === 2D Pose Fitting === */
+.vnccs-ps-canvas-wrap canvas.vnccs-ps-fit-overlay {
+    position: absolute;
+    left: 0;
+    top: 0;
+    pointer-events: none;
+    z-index: 2;
+}
+
+.vnccs-ps-fit-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.vnccs-ps-fit-row > .vnccs-ps-btn,
+.vnccs-ps-fit-row > .vnccs-ps-fit-select,
+.vnccs-ps-fit-row > .vnccs-ps-slider {
+    flex: 1;
+    min-width: 0;
+}
+
+.vnccs-ps-fit-toggle {
+    width: 100%;
+}
+
+.vnccs-ps-fit-toggle.active {
+    border-color: var(--ps-accent, #ff8fa3);
+    color: var(--ps-accent, #ff8fa3);
+}
+
+.vnccs-ps-fit-check {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--ps-text, #ddd);
+}
+
+.vnccs-ps-fit-status {
+    margin-top: 6px;
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: pre-line;
+    color: var(--ps-text-muted, #aaa);
+}
+
+.vnccs-ps-fit-list {
+    margin-top: 6px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px 8px;
+    font-size: 11px;
+}
+
+.vnccs-ps-fit-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 4px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.vnccs-ps-fit-item.selected {
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.vnccs-ps-fit-item.unreached .vnccs-ps-fit-error {
+    color: #ff6b6b;
+}
+
+.vnccs-ps-fit-editor {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid var(--ps-border, #333);
 }
 
 /* === Action Bar === */
@@ -4514,6 +4594,7 @@ class PoseStudioWidget {
             }
             this._morphWorker = null;
         }
+        this.poseFitting2D?.dispose();
         if (this.viewer) {
             this.viewer.dispose();
         }
@@ -5540,6 +5621,7 @@ class PoseStudioWidget {
             }
         }
         if (sync) this.syncToNode(false, { skipCapture: normalized === "animation" });
+        this.poseFitting2D?.onPoseChanged();
     }
 
     applyEditorMode() {
@@ -6186,6 +6268,18 @@ class PoseStudioWidget {
         libBtnWrap.appendChild(libBtn);
         rightSidebar.appendChild(libBtnWrap);
 
+        // 2D Pose Fitting (markers in the capture frame drive joint angles)
+        const fittingSection = this.createSection("2D Pose Fitting", false);
+        this.poseFitting2D = new PoseFitting2DController(this, {
+            document,
+            requestAnimationFrame: callback => requestAnimationFrame(callback),
+            cancelAnimationFrame: id => cancelAnimationFrame(id),
+        });
+        this.poseFitting2D.buildSection(fittingSection.content);
+        this.poseFitting2D.attachViewport(this.canvasContainer, this.canvas);
+        rightSidebar.appendChild(fittingSection.el);
+        this.hideSectionInUniCanvas(fittingSection);
+
         // Lighting Section
         const lightSection = this.createSection("Lighting", true);
         this.lightListContainer = document.createElement("div");
@@ -6302,8 +6396,10 @@ class PoseStudioWidget {
             // Model/pose/camera restoration can finish after the initial pad draw.
             onViewportRender: () => {
                 this.radarRedraw?.();
+                this.poseFitting2D?.redraw();
                 this.host.onViewportRender?.();
             },
+            onInteractionEnd: () => this.poseFitting2D?.onViewerInteractionEnd(),
             transparentBackground: this.host.embedded === true,
             skinMode: 'naked',
             enableTextureSkinning: true,
@@ -6343,6 +6439,7 @@ class PoseStudioWidget {
                 });
                 if (this.isAnimationMode()) this.captureAnimationEdits(pose);
                 this.syncToNode();
+                this.poseFitting2D?.onPoseChanged();
             }
         });
 
@@ -9687,6 +9784,7 @@ class PoseStudioWidget {
             this.viewer.setPose(newPose, true);
             this.updateCharacterScene({ poseIndex: this.activeTab });
             this.updateRotationSliders();
+            this.poseFitting2D?.onPoseChanged();
         }
 
         // Force Camera Snap
@@ -9734,7 +9832,10 @@ class PoseStudioWidget {
 
         if (this.viewer && this.viewer.isInitialized()) {
             this.viewer.resetPose();
+            // A new pose starts without the previous pose's 2D fitting markers.
+            this.viewer.fitting2d = null;
             this.updateCharacterScene({ poseIndex: this.activeTab });
+            this.poseFitting2D?.onPoseChanged();
         }
         this.updateCaptureCameraPreview();
 
