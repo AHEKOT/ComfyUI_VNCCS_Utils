@@ -69,7 +69,7 @@ def _decode_png(value, width, height, label):
         return np.array(image.convert("RGB"))
 
 
-def _bbox(mask):
+def mask_bbox(mask):
     """Inclusive-exclusive pixel bounds of a boolean mask, or None when it is empty."""
     rows, cols = np.any(mask, axis=1), np.any(mask, axis=0)
     if not rows.any():
@@ -204,8 +204,8 @@ def build_character_sets(decoded, sizes):
                 "id_color": character_id_color(slot),
                 "list_index": len(passes) - 1,
                 "z_order": z_order[slot],
-                "bbox_full": _bbox(coverage),
-                "bbox_visible": _bbox(seen),
+                "bbox_full": mask_bbox(coverage),
+                "bbox_visible": mask_bbox(seen),
                 "pixels_full": int(coverage.sum()),
                 "pixels_visible": int(seen.sum()),
                 "depth": {

@@ -18,6 +18,7 @@ from .character_passes import (
     POSE_DEPTH_FAR_LEVEL,
     POSE_DEPTH_NEAR_LEVEL,
     character_id_color,
+    mask_bbox,
 )
 from .conditioning import POSE_CHARACTER_ID_COLORS
 
@@ -100,15 +101,6 @@ def character_crop_rect(bbox, width, height, margin, align):
     x, w = axis(bbox["x"], bbox["width"], width)
     y, h = axis(bbox["y"], bbox["height"], height)
     return {"x": int(x), "y": int(y), "width": int(w), "height": int(h)}
-
-
-def _bbox(mask):
-    rows, cols = np.any(mask, axis=1), np.any(mask, axis=0)
-    if not rows.any():
-        return None
-    y0, y1 = np.flatnonzero(rows)[[0, -1]]
-    x0, x1 = np.flatnonzero(cols)[[0, -1]]
-    return {"x": int(x0), "y": int(y0), "width": int(x1 - x0 + 1), "height": int(y1 - y0 + 1)}
 
 
 def normalize_character_depth(levels, mask, mode):
@@ -200,10 +192,10 @@ def export_characters(images, character_ids, records, character_passes, margin=6
             slot = character["slot"]
             mask_full = frames[2, :, :, 0] > 0.5
             mask_visible = np.all(ids == np.array(POSE_CHARACTER_ID_COLORS[slot], dtype=np.uint8), axis=-1)
-            bbox_full = _bbox(mask_full)
+            bbox_full = mask_bbox(mask_full)
             if bbox_full is None:
                 raise ValueError(f"character_passes item {list_index} has an empty silhouette")
-            bbox_visible = _bbox(mask_visible)
+            bbox_visible = mask_bbox(mask_visible)
             rect = character_crop_rect(bbox_full, width, height, margin, align)
             ys = slice(rect["y"], rect["y"] + rect["height"])
             xs = slice(rect["x"], rect["x"] + rect["width"])
