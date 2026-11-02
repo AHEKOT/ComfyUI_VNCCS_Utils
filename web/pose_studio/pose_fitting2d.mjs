@@ -36,9 +36,10 @@
  * ("off" / "middle" / "all", version 2) with `settings.fingertips`. Older data
  * loads unchanged; "all" becomes Fingertips on. Version 4 makes Whole body the
  * default Optimize scope; a stored scope is always kept, and pre-4 data without
- * one keeps the old "limbs" default.
+ * one keeps the old "limbs" default. Version 5 adds per-marker `locked` and
+ * `hidden` flags (older data: unlocked and visible).
  */
-export const POSE_FITTING_VERSION = 4;
+export const POSE_FITTING_VERSION = 5;
 
 const DEG = Math.PI / 180;
 const RAD = 180 / Math.PI;
@@ -102,6 +103,52 @@ export const POSE_FITTING_MARKER_IDS = Object.freeze(POSE_FITTING_MARKERS.map(ma
 export const POSE_FITTING_BODY_MARKER_IDS = Object.freeze(BODY_MARKERS.map(marker => marker.id));
 const MARKER_INDEX = new Map(POSE_FITTING_MARKERS.map((marker, index) => [marker.id, index]));
 const MARKER_DEFS = new Map(POSE_FITTING_MARKERS.map(marker => [marker.id, marker]));
+
+// =====================================================================
+// Marker tree (panel outliner): skeleton parentage, display only
+// =====================================================================
+
+/** Display-only root that groups the torso chain and both hips. */
+export const POSE_FITTING_TREE_ROOT = "body";
+
+/**
+ * Tree parent of a marker: its rigid-segment parent, except that fingertips
+ * hang under their L/R Hand and the parentless markers (Neck, hips) under the
+ * Body root. Neck > Head, shoulders > elbows > wrists > hands > fingertips;
+ * hips > knees > ankles.
+ */
+export function fittingTreeParent(id) {
+    const def = MARKER_DEFS.get(id);
+    if (!def) return null;
+    if (def.group === "hand") return `${def.side}_hand`;
+    return def.parent || POSE_FITTING_TREE_ROOT;
+}
+
+/**
+ * The tree of visible markers: [{ id, label, group, children }] with one
+ * display-only root node (`group: true`). Fingertips appear only with
+ * Fingertips on.
+ */
+export function fittingMarkerTree(settings = null) {
+    const visible = new Set(visibleFittingMarkerIds(settings));
+    const build = parent => POSE_FITTING_MARKERS
+        .filter(def => visible.has(def.id) && fittingTreeParent(def.id) === parent)
+        .map(def => ({ id: def.id, label: def.label, group: false, children: build(def.id) }));
+    return [{ id: POSE_FITTING_TREE_ROOT, label: "Body", group: true, children: build(POSE_FITTING_TREE_ROOT) }];
+}
+
+/**
+ * Marker ids in a subtree (the node itself when it is a marker), including
+ * fingertips that are currently not shown, so a cascade also covers them.
+ */
+export function fittingTreeDescendants(id) {
+    const out = [];
+    if (MARKER_DEFS.has(id)) out.push(id);
+    for (const def of POSE_FITTING_MARKERS) {
+        if (fittingTreeParent(def.id) === id) out.push(...fittingTreeDescendants(def.id));
+    }
+    return out;
+}
 
 /** True when a marker is shown and solved (body markers always; fingertips with Fingertips on). */
 export function isFittingMarkerVisible(id, settings = null) {
@@ -1120,8 +1167,11 @@ export function solvePoseFitting(model, projector, markers, options = {}) {
         // One view leaves two hand directions per 2D target (toward or away from
         // the camera). Started on the wrong one, the wrist runs into its side-bend
         // and roll limits and stops short. Then restart from both solutions on the
-        // target's camera ray (least-cost roll) and keep the lowest energy.
-        const stuck = result.valid && options.handRestarts !== false
+        // target's camera ray (least-cost roll) and keep the lowest energy. In a
+        // drag frame this only runs while half the frame budget is left; the
+        // release refinement always gets it.
+        const budget = finite(options.timeBudgetMs) ? options.timeBudgetMs : Infinity;
+        const stuck = result.valid && options.handRestarts !== false && now() - started < budget / 2
             ? result.markers.filter(item => !item.valid || item.error > POSE_FITTING_DEFAULTS.unreachedPx) : [];
         for (const item of stuck) {
             const marker = handPoints.find(entry => entry.id === item.id);
@@ -1587,7 +1637,7 @@ export function defaultFittingSettings() {
 }
 
 export function defaultFittingMarker() {
-    return { u: null, v: null, enabled: false, pinned: false, weight: 1, confidence: 1, depth: "auto" };
+    return { u: null, v: null, enabled: false, pinned: false, weight: 1, confidence: 1, depth: "auto", locked: false, hidden: false };
 }
 
 export function createFittingState() {
@@ -1624,6 +1674,9 @@ export function normalizeFittingState(raw) {
             weight: normalizeNumber(source.weight, 1, 0, 10),
             confidence: normalizeNumber(source.confidence, 1, 0, 1),
             depth: POSE_FITTING_DEPTH_HINTS.includes(source.depth) ? source.depth : "auto",
+            // Version 5: panel Lock / Hide. Absent in older data: unlocked, visible.
+            locked: source.locked === true,
+            hidden: source.hidden === true,
         };
         if (hasPoint) usable = true;
     }
@@ -1688,7 +1741,8 @@ export function resetFittingTargets(state, projected, frame, { keepPinned = true
     for (const id of visibleFittingMarkerIds(next.settings)) {
         const point = projected[id];
         const marker = next.markers[id];
-        if (!point || !point.valid || (keepPinned && marker.pinned && marker.u !== null)) continue;
+        // Locked targets never move; pinned ones stay unless asked to.
+        if (!point || !point.valid || (marker.locked && marker.u !== null) || (keepPinned && marker.pinned && marker.u !== null)) continue;
         marker.u = point.x / frame.width;
         marker.v = point.y / frame.height;
         marker.confidence = 1;
@@ -1780,6 +1834,13 @@ export function fittingStateFromOpenPose(parsed, { frame, fit = "stretch", minCo
     }
     if (!found && !handFound && !handPointFound) return null;
     if (handFound) next.settings.fingertips = true;
+    // Lock and Hide carry over; locked targets keep their previous position.
+    for (const id of POSE_FITTING_MARKER_IDS) {
+        const before = previous?.markers?.[id];
+        if (!before) continue;
+        if (before.locked === true && finite(before.u) && finite(before.v)) next.markers[id] = { ...defaultFittingMarker(), ...before };
+        else next.markers[id] = { ...next.markers[id], locked: before.locked === true, hidden: before.hidden === true };
+    }
     const sourceAspect = canvas.width / canvas.height;
     const frameAspect = frame ? frame.width / frame.height : sourceAspect;
     if (fit === "stretch" && Math.abs(sourceAspect - frameAspect) > 0.01 * frameAspect) {

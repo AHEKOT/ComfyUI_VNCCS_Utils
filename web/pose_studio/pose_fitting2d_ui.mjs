@@ -14,7 +14,7 @@
  *   the editor view orbits.
  */
 import { detectAndParseJSON } from "./imports/openpose.js?v=1791754604000";
-import * as F from "./pose_fitting2d.mjs?v=20261102.4";
+import * as F from "./pose_fitting2d.mjs?v=20261102.5";
 
 const SIDE_COLORS = { l: "#4fd1ff", r: "#ff9f43", c: "#ffe066" };
 const SKELETON = [
@@ -34,7 +34,17 @@ const HIT_RADIUS = 11;
 const HAND_HIT_RADIUS = 6;
 /** L/R Hand markers are drawn as a wider ring so they stay grabbable around a fingertip. */
 const HAND_POINT_RADIUS = 8;
-const LIST_GROUPS = [["body", "Body"], ["l", "Left hand"], ["r", "Right hand"]];
+/** Locked markers are drawn in red. */
+const LOCKED_COLOR = "#ff4d4d";
+const svgIcon = body => `<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">${body}</svg>`;
+const LOCK_ICONS = {
+    on: svgIcon('<rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/><path d="M5.2 7V5.2a2.8 2.8 0 0 1 5.6 0V7" fill="none" stroke="currentColor" stroke-width="1.6"/>'),
+    off: svgIcon('<rect x="3" y="7" width="10" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.2 7V5.2a2.8 2.8 0 0 1 5.4-1" fill="none" stroke="currentColor" stroke-width="1.3"/>'),
+};
+const EYE_ICONS = {
+    on: svgIcon('<path d="M1 8s2.6-4.6 7-4.6S15 8 15 8s-2.6 4.6-7 4.6S1 8 1 8z" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/>'),
+    off: svgIcon('<path d="M1 8s2.6-4.6 7-4.6S15 8 15 8s-2.6 4.6-7 4.6S1 8 1 8z" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.6"/><path d="M2.5 13.5l11-11" stroke="currentColor" stroke-width="1.6"/>'),
+};
 export const POSE_FITTING_FRAME_BUDGET = Object.freeze({ iterations: 8, timeMs: 6 });
 export const POSE_FITTING_FINAL_BUDGET = Object.freeze({ iterations: 80, timeMs: 80 });
 const MARKER_DEFS = new Map(F.POSE_FITTING_MARKERS.map(def => [def.id, def]));
@@ -49,6 +59,8 @@ export class PoseFitting2DController {
         this.cancelFrame = env.cancelAnimationFrame || (id => globalThis.cancelAnimationFrame(id));
         this.active = false;
         this.selectedId = null;
+        /** Collapsed marker-tree nodes (panel view state, not saved). */
+        this.collapsed = new Set();
         this.drag = null;
         this.live = null;
         this.frameRequest = null;
@@ -375,6 +387,35 @@ export class PoseFitting2DController {
         this.host?.syncToNode?.(false);
     }
 
+    /**
+     * Panel Lock / Hide toggle on a tree node: applies to the node and every
+     * marker below it (one Undo step); children can be toggled on their own
+     * afterwards. A marker row flips its own flag; the Body row turns the flag
+     * on unless every shown marker already has it. Neither changes the solve.
+     */
+    toggleMarkerFlag(nodeId, key) {
+        const state = this.state;
+        if (!state?.markers || (key !== "locked" && key !== "hidden")) return;
+        const ids = F.fittingTreeDescendants(nodeId).filter(id => state.markers[id]);
+        if (!ids.length) return;
+        const visible = new Set(this.visibleIds());
+        const own = state.markers[nodeId];
+        const current = own ? own[key] === true : ids.filter(id => visible.has(id)).every(id => state.markers[id][key] === true);
+        this.endInteraction();
+        this.beginUndoStep();
+        for (const id of ids) state.markers[id][key] = !current;
+        const label = MARKER_DEFS.get(nodeId)?.label || "Body";
+        const what = key === "locked" ? (current ? "unlocked" : "locked") : (current ? "shown" : "hidden");
+        this.message = `${label}${ids.length > 1 ? ` and ${ids.length - 1} below` : ""}: ${what}.`;
+        this.commitPose();
+    }
+
+    toggleCollapsed(nodeId) {
+        if (this.collapsed.has(nodeId)) this.collapsed.delete(nodeId);
+        else this.collapsed.add(nodeId);
+        this.refreshPanel();
+    }
+
     /** Edit one marker as an undoable constraint change, then refit. */
     editMarker(id, patch, { refit = true } = {}) {
         const marker = this.state?.markers?.[id];
@@ -607,7 +648,8 @@ export class PoseFitting2DController {
         let tip = null, body = null;
         for (const id of this.visibleIds()) {
             const marker = this.state.markers[id];
-            if (!marker || marker.u === null) continue;
+            // Locked and hidden markers are skipped, so an overlapping one below can be grabbed.
+            if (!marker || marker.u === null || marker.locked || marker.hidden) continue;
             const position = this.frameToOverlay(marker.u, marker.v, framePlane);
             if (!position) continue;
             const distance = Math.hypot(position.x - x, position.y - y);
@@ -746,7 +788,7 @@ export class PoseFitting2DController {
         const targets = {};
         for (const id of visible) {
             const marker = state.markers[id];
-            if (marker?.u === null || marker?.u === undefined) continue;
+            if (marker?.u === null || marker?.u === undefined || marker.hidden) continue;
             targets[id] = this.frameToOverlay(marker.u, marker.v, framePlane);
         }
         ctx.lineWidth = 1;
@@ -768,7 +810,7 @@ export class PoseFitting2DController {
             const joint = projected[id];
             const actual = joint?.valid ? this.frameToOverlay(joint.x / frame.width, joint.y / frame.height, framePlane) : null;
             const error = joint?.valid ? Math.hypot(joint.x - marker.u * frame.width, joint.y - marker.v * frame.height) : Infinity;
-            const color = SIDE_COLORS[def.side] || "#ffffff";
+            const color = marker.locked ? LOCKED_COLOR : (SIDE_COLORS[def.side] || "#ffffff");
             if (actual && marker.enabled) {
                 ctx.strokeStyle = error > F.POSE_FITTING_DEFAULTS.unreachedPx ? "rgba(255,80,80,0.95)" : "rgba(255,255,255,0.6)";
                 ctx.lineWidth = 1.5;
@@ -789,7 +831,7 @@ export class PoseFitting2DController {
                     ? (selected ? HAND_POINT_RADIUS + 1.5 : HAND_POINT_RADIUS) + Math.min(3, weightGrow)
                     : (selected ? 7 : 5.5) + Math.min(3, weightGrow);
             ctx.lineWidth = hand ? (marker.pinned ? 2 : 1.5) : (marker.pinned ? 3 : 2);
-            ctx.strokeStyle = marker.enabled ? color : "rgba(160,160,160,0.7)";
+            ctx.strokeStyle = marker.enabled || marker.locked ? color : "rgba(160,160,160,0.7)";
             // The Hand ring stays almost hollow so a fingertip inside it remains visible.
             ctx.fillStyle = marker.enabled ? (handPoint ? `${color}22` : `${color}55`) : "rgba(0,0,0,0.25)";
             ctx.beginPath();
@@ -960,8 +1002,7 @@ export class PoseFitting2DController {
         depth.title = "Depth / bend hint: Near = this joint is closer to the camera than its parent joint, Far = farther";
         depth.addEventListener("change", () => this.editMarker(this.selectedId, { depth: depth.value }));
         const flip = button("Flip", "Mirror this segment's depth across the camera ray (keeps the 2D position), then refit. L/R Hand: the other wrist direction on the same ray", () => this.flipDepth(this.selectedId));
-        const markerError = make("span", "vnccs-ps-value", "");
-        editor.appendChild(row(editorTitle, markerError));
+        editor.appendChild(row(editorTitle));
         editor.appendChild(row(enabled.wrap, pinned.wrap));
         const weightReset = resetButton(weight, 1, "Reset to 1.0");
         editor.appendChild(row(make("span", "vnccs-ps-label", "Weight"), weight, weightLabel, weightReset));
@@ -981,7 +1022,7 @@ export class PoseFitting2DController {
         this.elements = {
             toggle, load, fit, reset, clear, scope, fingertips: fingertips.input, hideHandles: hideHandles.input, show: show.input, moveRoot: moveRoot.input, autoRefit: autoRefit.input,
             stiffness, stiffnessLabel, stiffnessReset, status, list, editor, editorTitle, enabled: enabled.input, pinned: pinned.input,
-            weight, weightLabel, weightReset, depth, flip, markerError, fileInput, listRows: new Map(), listGroups: new Map(),
+            weight, weightLabel, weightReset, depth, flip, fileInput, listRows: new Map(),
         };
         this.refreshPanel();
     }
@@ -1047,48 +1088,52 @@ export class PoseFitting2DController {
         }
         e.status.textContent = this.message ? `${summary}\n${this.message}` : summary;
 
-        // Marker list: enable, pin, residual; grouped as Body / Left hand / Right hand.
+        // Marker list: an outliner tree following the skeleton (Body > Neck > Head,
+        // shoulders > elbows > wrists > hands > fingertips; hips > knees > ankles),
+        // with collapse arrows and per-row Lock / Hide toggles that cascade down.
         e.list.style.display = state ? "" : "none";
         if (state) {
-            const showGroups = visible.length > F.POSE_FITTING_BODY_MARKER_IDS.length;
-            for (const def of F.POSE_FITTING_MARKERS) {
-                const groupKey = def.group === "hand" ? def.side : "body";
-                if (!e.listGroups.has(groupKey)) {
-                    const header = this.document.createElement("div");
-                    header.className = "vnccs-ps-fit-group";
-                    header.textContent = LIST_GROUPS.find(([key]) => key === groupKey)[1];
-                    e.list.appendChild(header);
-                    e.listGroups.set(groupKey, header);
+            const ordered = [];
+            const walk = (nodes, depth, hiddenByParent) => {
+                for (const node of nodes) {
+                    ordered.push({ node, depth, shown: !hiddenByParent });
+                    walk(node.children, depth + 1, hiddenByParent || this.collapsed.has(node.id));
                 }
-                let item = e.listRows.get(def.id);
-                if (!item) {
-                    const rowElement = this.document.createElement("div");
-                    rowElement.className = "vnccs-ps-fit-item";
-                    const name = this.document.createElement("span");
-                    name.textContent = def.label;
-                    const value = this.document.createElement("span");
-                    value.className = "vnccs-ps-fit-error";
-                    rowElement.appendChild(name);
-                    rowElement.appendChild(value);
-                    rowElement.addEventListener("click", () => this.select(def.id));
-                    e.list.appendChild(rowElement);
-                    item = { row: rowElement, name, value };
-                    e.listRows.set(def.id, item);
-                }
-                const shown = visible.includes(def.id);
+            };
+            walk(F.fittingMarkerTree(settings), 0, false);
+            const inTree = new Set(ordered.map(item => item.node.id));
+            for (const { node, depth, shown } of ordered) {
+                const item = e.listRows.get(node.id) || this.createListRow(node);
                 item.row.style.display = shown ? "" : "none";
-                if (!shown) continue;
-                const marker = state.markers[def.id];
-                const residual = residuals?.[def.id];
-                const flags = `${marker.pinned ? "📌 " : ""}${marker.enabled ? "" : "(off) "}`;
-                item.name.textContent = `${flags}${def.label}`;
-                item.value.textContent = marker.u === null ? "—" : Number.isFinite(residual) ? `${residual.toFixed(1)}px` : (residual === Infinity ? "behind" : "");
-                item.row.classList?.toggle?.("selected", def.id === this.selectedId);
-                item.row.classList?.toggle?.("unreached", marker.enabled && residual > F.POSE_FITTING_DEFAULTS.unreachedPx);
+                item.row.style.paddingLeft = `${depth * 10}px`;
+                const hasChildren = node.children.length > 0;
+                const collapsed = this.collapsed.has(node.id);
+                item.arrow.textContent = hasChildren ? (collapsed ? "\u25B8" : "\u25BE") : "";
+                item.arrow.disabled = !hasChildren;
+                item.arrow.title = hasChildren ? (collapsed ? "Expand" : "Collapse") : "";
+                let locked, hidden;
+                if (node.group) {
+                    const ids = F.fittingTreeDescendants(node.id).filter(id => inTree.has(id) && state.markers[id]);
+                    locked = ids.length > 0 && ids.every(id => state.markers[id].locked === true);
+                    hidden = ids.length > 0 && ids.every(id => state.markers[id].hidden === true);
+                    item.name.textContent = node.label;
+                } else {
+                    const marker = state.markers[node.id];
+                    locked = marker.locked === true;
+                    hidden = marker.hidden === true;
+                    item.name.textContent = `${marker.pinned ? "\uD83D\uDCCC " : ""}${marker.enabled ? "" : "(off) "}${node.label}`;
+                }
+                this.setIconToggle(item.lock, locked, LOCK_ICONS);
+                this.setIconToggle(item.eye, !hidden, EYE_ICONS);
+                item.row.classList?.toggle?.("selected", node.id === this.selectedId);
+                item.row.classList?.toggle?.("locked", locked);
+                item.row.classList?.toggle?.("hidden-marker", hidden);
+                item.row.dataset.locked = locked ? "1" : "0";
+                item.row.dataset.hidden = hidden ? "1" : "0";
             }
-            for (const [key, header] of e.listGroups) {
-                header.style.display = showGroups && visible.some(id => (MARKER_DEFS.get(id).group === "hand" ? MARKER_DEFS.get(id).side : "body") === key) ? "" : "none";
-            }
+            for (const [id, item] of e.listRows) if (!inTree.has(id)) item.row.style.display = "none";
+            e.list.replaceChildren(...ordered.map(({ node }) => e.listRows.get(node.id).row),
+                ...[...e.listRows].filter(([id]) => !inTree.has(id)).map(([, item]) => item.row));
         }
 
         const marker = visible.includes(this.selectedId) ? state?.markers?.[this.selectedId] : null;
@@ -1096,8 +1141,6 @@ export class PoseFitting2DController {
         if (marker) {
             const def = MARKER_DEFS.get(this.selectedId);
             e.editorTitle.textContent = def.label;
-            const residual = residuals?.[this.selectedId];
-            e.markerError.textContent = Number.isFinite(residual) ? `${residual.toFixed(1)}px` : "";
             e.enabled.checked = !!marker.enabled;
             e.pinned.checked = !!marker.pinned;
             if (!this.live) {
@@ -1108,6 +1151,46 @@ export class PoseFitting2DController {
             e.depth.disabled = !def.parent;
             e.flip.disabled = !def.flip || !available;
         }
+    }
+
+    /** One outliner row: collapse arrow, name, Lock and Hide (eye) toggles. */
+    createListRow(node) {
+        const doc = this.document;
+        const make = (tag, className) => {
+            const element = doc.createElement(tag);
+            element.className = className;
+            return element;
+        };
+        const row = make("div", node.group ? "vnccs-ps-fit-node group" : "vnccs-ps-fit-node");
+        row.dataset.id = node.id;
+        const arrow = make("button", "vnccs-ps-fit-twisty");
+        arrow.type = "button";
+        arrow.addEventListener("click", event => { event.stopPropagation?.(); this.toggleCollapsed(node.id); });
+        const name = make("span", "vnccs-ps-fit-name");
+        const lock = make("button", "vnccs-ps-fit-icon lock");
+        lock.type = "button";
+        lock.title = "Lock: the marker (and the ones below it) cannot be grabbed in the viewport, and Reset Targets / OpenPose import leave it in place. It still constrains the solve.";
+        lock.addEventListener("click", event => { event.stopPropagation?.(); this.toggleMarkerFlag(node.id, "locked"); });
+        const eye = make("button", "vnccs-ps-fit-icon eye");
+        eye.type = "button";
+        eye.title = "Hide: the marker (and the ones below it) is not drawn and cannot be grabbed. Display only: it still constrains the solve (use Enabled to turn a constraint off).";
+        eye.addEventListener("click", event => { event.stopPropagation?.(); this.toggleMarkerFlag(node.id, "hidden"); });
+        row.appendChild(arrow);
+        row.appendChild(name);
+        row.appendChild(lock);
+        row.appendChild(eye);
+        if (!node.group) row.addEventListener("click", () => this.select(node.id));
+        const item = { row, arrow, name, lock, eye };
+        this.elements.listRows.set(node.id, item);
+        return item;
+    }
+
+    setIconToggle(button, on, icons) {
+        const state = on ? "1" : "0";
+        if (button.dataset.on === state) return;
+        button.dataset.on = state;
+        button.innerHTML = on ? icons.on : icons.off;
+        button.setAttribute?.("aria-pressed", on ? "true" : "false");
     }
 
     dispose() {

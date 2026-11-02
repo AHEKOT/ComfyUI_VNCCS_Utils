@@ -415,7 +415,7 @@ function lookAtLeftHand(s, distance = 5) {
     viewer.orbit.target.copy(hand);
 }
 
-test("L/R Hand markers are part of the body markers; the Fingertips checkbox adds the tips and groups the list", () => {
+test("L/R Hand markers are part of the body markers; the Fingertips checkbox adds the tips under each Hand in the tree", () => {
     const s = fittingScene();
     const { controller, viewer } = s;
     controller.setActive(true);
@@ -432,7 +432,7 @@ test("L/R Hand markers are part of the body markers; the Fingertips checkbox add
         assert.equal(e.listRows.get(id).row.style.display, "", `${id} is listed with the body markers`);
     }
     assert.ok(F.POSE_FITTING_MARKER_IDS.filter(id => id.endsWith("_tip")).every(id => controller.state.markers[id].u === null));
-    assert.ok([...e.listGroups.values()].every(header => header.style.display === "none"), "no group headers for body-only lists");
+    assert.ok(F.POSE_FITTING_MARKER_IDS.filter(id => id.endsWith("_tip")).every(id => !e.listRows.has(id) || e.listRows.get(id).row.style.display === "none"), "no fingertip rows");
     const history = viewer.history.length;
     e.fingertips.checked = true;
     e.fingertips.emit("change");
@@ -444,8 +444,9 @@ test("L/R Hand markers are part of the body markers; the Fingertips checkbox add
         assert.ok(Math.hypot(marker.u * frame.width - joint.x, marker.v * frame.height - joint.y) < 1e-6, `${id} sits on the fingertip`);
     }
     assert.equal(viewer.history.length, history, "the checkbox is a setting, not a pose edit");
-    assert.equal(e.listGroups.get("l").style.display, "");
     assert.equal(e.listRows.get("r_pinky_tip").row.style.display, "");
+    const order = e.list.children.map(row => row.dataset.id);
+    assert.deepEqual(order.slice(order.indexOf("l_hand"), order.indexOf("l_hand") + 6), ["l_hand", ...F.POSE_FITTING_FINGERS.map(finger => `l_${finger}_tip`)], "tips are listed under L Hand");
     assert.equal(JSON.parse(s.node.widgets[0].value).characters[0].poses[0].fitting2d.settings.fingertips, true, "saved with the pose");
     // Off again: tips keep their data but leave the overlay, list and solver; the Hand markers stay.
     e.fingertips.checked = false;
@@ -798,4 +799,93 @@ test("Optimize defaults to Whole body: a hip marker turns the pelvis on every fr
     controller.setActive(true);
     assert.equal(controller.settings().scope, "limbs");
     assert.equal(controller.elements.scope.value, "limbs");
+});
+
+test("the marker list is a collapsible tree without px residuals; Lock and Hide cascade as one undo step each", () => {
+    const s = fittingScene();
+    const { controller, viewer } = s;
+    controller.setActive(true);
+    controller.setFingertips(true);
+    const e = controller.elements;
+    const rows = e.listRows;
+    const order = () => e.list.children.filter(row => row.style.display !== "none").map(row => row.dataset.id);
+    assert.deepEqual(order().slice(0, 4), [F.POSE_FITTING_TREE_ROOT, "neck", "head", "r_shoulder"]);
+    assert.equal(rows.get("l_elbow").row.style.paddingLeft, "30px", "indented by depth (Body > Neck > L Shoulder > L Elbow)");
+    for (const [, item] of rows) assert.doesNotMatch(item.name.textContent, /px/, "no residuals in the rows");
+    controller.select("l_hand");
+    assert.equal(e.editorTitle.textContent, "L Hand", "the editor header is just the name");
+    assert.equal(e.editorTitle.parentElement.children.length, 1, "no residual next to it");
+    // Collapse / expand.
+    rows.get("l_shoulder").arrow.emit("click");
+    for (const id of ["l_elbow", "l_wrist", "l_hand", "l_middle_tip"]) assert.equal(rows.get(id).row.style.display, "none", `${id} collapsed`);
+    assert.equal(rows.get("l_shoulder").row.style.display, "");
+    rows.get("l_shoulder").arrow.emit("click");
+    assert.equal(rows.get("l_middle_tip").row.style.display, "");
+
+    // Lock on L Wrist cascades to L Hand and the left fingertips; one undo step; drawn red at once.
+    let history = viewer.history.length;
+    rows.get("l_wrist").lock.emit("click");
+    assert.equal(viewer.history.length, history + 1);
+    for (const id of F.fittingTreeDescendants("l_wrist")) assert.equal(controller.state.markers[id].locked, true, id);
+    assert.equal(controller.state.markers.l_elbow.locked, false);
+    assert.equal(rows.get("l_hand").lock.dataset.on, "1");
+    assert.ok(controller.overlay.drawCommands.some(command => command.method === "stroke" && command.strokeStyle === "#ff4d4d"), "locked markers are red in the viewport");
+    // A child can be unlocked on its own afterwards.
+    rows.get("l_hand").lock.emit("click");
+    assert.equal(controller.state.markers.l_hand.locked, false);
+    assert.equal(controller.state.markers.l_middle_tip.locked, false, "the cascade goes down from L Hand");
+    assert.equal(controller.state.markers.l_wrist.locked, true);
+    viewer.undo();
+    assert.equal(controller.state.markers.l_hand.locked, true, "undo restores the flags");
+    viewer.undo();
+    assert.equal(controller.state.markers.l_wrist.locked, false);
+
+    // Hide on the Body row hides everything; again shows everything. Display only: still solved.
+    history = viewer.history.length;
+    rows.get(F.POSE_FITTING_TREE_ROOT).eye.emit("click");
+    assert.equal(viewer.history.length, history + 1);
+    assert.ok(F.POSE_FITTING_MARKER_IDS.every(id => controller.state.markers[id].hidden === true));
+    assert.equal(rows.get(F.POSE_FITTING_TREE_ROOT).eye.dataset.on, "0");
+    const wrist = controller.frameToOverlay(controller.state.markers.l_wrist.u, controller.state.markers.l_wrist.v);
+    assert.equal(controller.hitTest(wrist.x, wrist.y), null, "hidden markers cannot be grabbed");
+    assert.ok(!controller.overlay.drawCommands.some(command => command.method === "arc"), "nothing is drawn");
+    assert.ok(F.fittingStateToSolverMarkers(controller.state, controller.frameSize()).some(item => item.id === "l_wrist"), "hidden markers still constrain the solve");
+    rows.get(F.POSE_FITTING_TREE_ROOT).eye.emit("click");
+    assert.ok(F.POSE_FITTING_MARKER_IDS.every(id => controller.state.markers[id].hidden === false));
+    const saved = JSON.parse(s.node.widgets[0].value).characters[0].poses[0].fitting2d;
+    assert.equal(saved.version, F.POSE_FITTING_VERSION);
+    assert.equal(saved.markers.l_wrist.hidden, false);
+    assert.equal(saved.markers.l_wrist.locked, false);
+});
+
+test("hit testing skips locked and hidden markers, so the overlapping one underneath can be grabbed", () => {
+    const s = fittingScene();
+    const { controller, pointer, viewer } = s;
+    // Close enough that the other fingertips are more than 6 px from the middle tip.
+    lookAtLeftHand(s, 2.5);
+    controller.setActive(true);
+    controller.setFingertips(true);
+    const markers = controller.state.markers;
+    const at = id => controller.frameToOverlay(markers[id].u, markers[id].v);
+    const tip = at("l_middle_tip");
+    assert.equal(controller.hitTest(tip.x, tip.y).id, "l_middle_tip", "the tip wins at its centre");
+    controller.elements.listRows.get("l_middle_tip").lock.emit("click");
+    assert.equal(controller.hitTest(tip.x, tip.y).id, "l_hand", "locked tip: the L Hand under it is grabbed");
+    controller.elements.listRows.get("l_hand").eye.emit("click");
+    assert.equal(markers.l_middle_tip.hidden, true, "Hide on L Hand cascades to its fingertips");
+    const hit = controller.hitTest(tip.x, tip.y);
+    assert.ok(!hit || !["l_hand", "l_middle_tip"].includes(hit.id), "hidden and locked markers are skipped");
+    // A locked marker cannot be dragged and keeps its target through Reset Targets; it still constrains.
+    controller.elements.listRows.get("l_elbow").lock.emit("click");
+    const elbow = at("l_elbow");
+    const before = { u: markers.l_elbow.u, v: markers.l_elbow.v };
+    pointer("pointerdown", elbow.x, elbow.y);
+    assert.notEqual(controller.drag?.id, "l_elbow");
+    if (controller.drag) pointer("pointerup", elbow.x, elbow.y);
+    viewer.bones.lowerarm_l.rotation.x += 0.4;
+    viewer.skinnedMesh.updateMatrixWorld(true);
+    controller.resetTargets();
+    assert.deepEqual({ u: controller.state.markers.l_elbow.u, v: controller.state.markers.l_elbow.v }, before, "Reset Targets leaves a locked marker");
+    controller.fitPose();
+    assert.ok(controller.lastResult.markers.some(item => item.id === "l_elbow"), "locked markers are still solved");
 });

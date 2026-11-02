@@ -17,7 +17,7 @@ import {
 import { HAND_PRESETS } from "./pose_studio/hand_presets.js";
 import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js?v=1791754604000";
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js?v=1791754604000";
-import { PoseFitting2DController } from "./pose_studio/pose_fitting2d_ui.mjs?v=20261102.4";
+import { PoseFitting2DController } from "./pose_studio/pose_fitting2d_ui.mjs?v=20261102.5";
 import { installCustomSelects } from "./shared/custom_select.mjs";
 import {
     DEFAULT_CHARACTER_COLORS,
@@ -1328,16 +1328,6 @@ const STYLES = `
     text-align: right;
 }
 
-.vnccs-ps-fit-group {
-    grid-column: 1 / -1;
-    margin-top: 4px;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.8px;
-    text-transform: uppercase;
-    color: var(--ps-text-muted, #aaa);
-}
-
 .vnccs-ps-fit-toggle {
     width: 100%;
 }
@@ -1365,26 +1355,93 @@ const STYLES = `
 
 .vnccs-ps-fit-list {
     margin-top: 6px;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 2px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
     font-size: 11px;
 }
 
-.vnccs-ps-fit-item {
+.vnccs-ps-fit-node {
     display: flex;
-    justify-content: space-between;
-    gap: 4px;
-    padding: 1px 4px;
+    align-items: center;
+    gap: 2px;
+    min-height: 18px;
+    padding-right: 2px;
     border-radius: 3px;
     cursor: pointer;
+    color: var(--ps-text, #ddd);
 }
 
-.vnccs-ps-fit-item.selected {
+.vnccs-ps-fit-node:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.vnccs-ps-fit-node.selected {
     background: rgba(255, 255, 255, 0.12);
 }
 
-.vnccs-ps-fit-item.unreached .vnccs-ps-fit-error {
+.vnccs-ps-fit-node.group {
+    cursor: default;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--ps-text-muted, #aaa);
+}
+
+.vnccs-ps-fit-node.hidden-marker .vnccs-ps-fit-name {
+    opacity: 0.45;
+}
+
+.vnccs-ps-fit-node.locked .vnccs-ps-fit-name {
+    color: #ff7b7b;
+}
+
+.vnccs-ps-fit-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.vnccs-ps-fit-twisty,
+.vnccs-ps-fit-icon {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--ps-text-muted, #aaa);
+    font-size: 10px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.vnccs-ps-fit-twisty {
+    font-size: 12px;
+}
+
+.vnccs-ps-fit-twisty:disabled {
+    cursor: default;
+}
+
+.vnccs-ps-fit-icon:hover,
+.vnccs-ps-fit-twisty:not(:disabled):hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--ps-text, #ddd);
+}
+
+.vnccs-ps-fit-icon[data-on="0"] {
+    opacity: 0.55;
+}
+
+.vnccs-ps-fit-icon.lock[data-on="1"] {
     color: #ff6b6b;
 }
 

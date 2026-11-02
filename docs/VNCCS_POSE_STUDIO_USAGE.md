@@ -345,8 +345,8 @@ that.
    enabled marker is solved together. Clicks away from a marker still select
    bones and orbit the editor camera.
 4. Press **Fit Pose** for a full-accuracy solve of all enabled markers.
-5. Check the residual lines (marker to projected joint, red above 6 px) and
-   the per-marker errors in the panel list.
+5. Check the residual lines in the viewport (marker to projected joint, red
+   above 6 px) and the mean / max error in the panel's status line.
 
 ### Controls
 
@@ -368,12 +368,35 @@ that.
 | Pinned | Weight x10; Reset Targets keeps the marker in place. |
 | Weight | 0..10 per marker; edits refit live. ↺ resets it to 1.0 and refits. |
 | Depth | `Auto`, `Near` or `Far`: the joint is closer to (Near) or farther from (Far) the camera than its parent joint. |
+| Marker list | An outliner tree that follows the skeleton (see below). Click a row to select the marker; the arrow collapses or expands its branch. |
+| Lock (padlock) | The marker cannot be grabbed or dragged in the viewport, and Reset Targets and Load OpenPose JSON leave its target where it is. It still constrains the solve. Locked markers are drawn red. |
+| Hide (eye) | The marker is not drawn and cannot be grabbed. Display only: it still constrains the solve (use Enabled to turn a constraint off). |
 | Flip | Mirrors the joint's depth around its parent while keeping the 2D position (for example an elbow pointing toward or away from the camera). On `L/R Hand` it takes the other wrist direction that projects to the same point (the hand bent toward instead of away from the camera, or the reverse), with the roll that needs the least side bend and twist; only the hand bone turns, fingers stay, and the Depth hint keeps the new side. Refused when the mirrored pose breaks the joint (wrist) limits, or when the hand points straight across the view so both directions are the same. One Undo step. |
 
 Every marker drag, Fit Pose, Reset Targets, Clear Constraints, marker edit,
-Stiffness or Weight slider gesture and slider reset is one Undo step, and Undo
-restores the pose and the markers together. The marker list is grouped into
-Body, Left hand and Right hand when fingertip markers are shown.
+Lock or Hide toggle, Stiffness or Weight slider gesture and slider reset is one
+Undo step, and Undo restores the pose and the markers together.
+
+### Marker list
+
+The list is a tree, like an outliner. `Body` is a display-only root (not a
+marker) that holds the torso chain and both hips:
+
+| Branch | Markers |
+| --- | --- |
+| Neck | Head; R/L Shoulder > Elbow > Wrist > Hand > fingertips (Thumb, Index, Middle, Ring, Pinky, only with Fingertips on) |
+| R Hip, L Hip | Knee > Ankle |
+
+Each row shows the marker name (`(off)` when disabled, a pin when pinned) and,
+at the right, Lock and Hide toggles. Toggling a row applies to that marker and
+every marker below it, including fingertips that are currently not shown; a
+child can be toggled on its own afterwards, since each marker stores its own
+flags. The `Body` row toggles everything, and shows a toggle as on only when
+every listed marker has it. Lock and Hide change the viewport immediately and
+never change the solve. A typical use: where the wrist, the L/R Hand marker
+and the fingertips overlap, lock or hide the ones you are not adjusting so the
+one underneath can be grabbed. The rows and the selected-marker editor do not
+show pixel residuals; the status line has the mean and max error.
 
 ### How it solves
 
@@ -420,7 +443,7 @@ Body, Left hand and Right hand when fingertip markers are shown.
 
 Markers, pins, weights, depth hints and the panel settings (including
 Fingertips) are stored on the pose as `fitting2d` (normalized `u`/`v`
-output-frame coordinates, top-left origin, version 4). Every character and
+output-frame coordinates, top-left origin, version 5). Every character and
 every pose tab has its own markers, and they are saved with the workflow and
 with Pose Library entries. Poses without `fitting2d` load exactly as before;
 Clear Constraints removes the field.
@@ -431,8 +454,10 @@ markers, Reset Targets and OpenPose import create them enabled, like the
 other joints. A version 2 Hands setting of `All fingertips` becomes
 Fingertips on; `Off` and `Middle tips` become Fingertips off. A stored
 Optimize setting is always kept; data from before version 4 without one keeps
-`Limbs + head`, the old default. Hide bone handles is stored with the node,
-not with the pose.
+`Limbs + head`, the old default. Lock and Hide are stored per marker (version
+5); older data loads with every marker unlocked and visible. Collapsed tree
+branches are not saved. Hide bone handles is stored with the node, not with
+the pose.
 
 ### Limitations
 

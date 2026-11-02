@@ -6,7 +6,7 @@
 
 
 import { normalizeCaptureLens } from "./animation.mjs?v=1791754604000";
-import { cloneFittingState, normalizeFittingState } from "./pose_fitting2d.mjs?v=20261102.4";
+import { cloneFittingState, normalizeFittingState } from "./pose_fitting2d.mjs?v=20261102.5";
 
 // Determine the extension's base URL dynamically to support varied directory names
 const EXTENSION_URL = new URL(".", import.meta.url).toString();

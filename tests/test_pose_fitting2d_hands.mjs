@@ -257,7 +257,8 @@ test("version 1 and 2 fitting data load: old marker sets stay as saved, only \"a
         source: { type: "openpose", width: 512, height: 384, format: "COCO-18" },
     };
     const state = F.normalizeFittingState(JSON.parse(JSON.stringify(v1)));
-    for (const id of OLD_BODY_IDS) assert.deepEqual(state.markers[id], v1.markers[id], id);
+    // Version 5 adds Lock / Hide: older markers load unlocked and visible.
+    for (const id of OLD_BODY_IDS) assert.deepEqual(state.markers[id], { ...v1.markers[id], locked: false, hidden: false }, id);
     assert.deepEqual(state.settings, { ...v1.settings, fingertips: false });
     assert.deepEqual(state.frame, v1.frame);
     assert.deepEqual(state.source, v1.source);
@@ -275,10 +276,10 @@ test("version 1 and 2 fitting data load: old marker sets stay as saved, only \"a
         assert.equal(loaded.settings.handMarkers, undefined);
         assert.deepEqual([loaded.markers.l_middle_tip.u, loaded.markers.l_middle_tip.v], [0.52, 0.6], "fingertip data is kept");
     }
-    // Version 3 round-trips.
+    // The current version round-trips, Lock and Hide included.
     state.settings.fingertips = true;
-    state.markers.r_middle_tip = { u: 0.61, v: 0.42, enabled: true, pinned: true, weight: 2, confidence: 0.8, depth: "far" };
-    state.markers.l_hand = { u: 0.55, v: 0.47, enabled: true, pinned: false, weight: 1.5, confidence: 1, depth: "near" };
+    state.markers.r_middle_tip = { u: 0.61, v: 0.42, enabled: true, pinned: true, weight: 2, confidence: 0.8, depth: "far", locked: true, hidden: false };
+    state.markers.l_hand = { u: 0.55, v: 0.47, enabled: true, pinned: false, weight: 1.5, confidence: 1, depth: "near", locked: false, hidden: true };
     assert.deepEqual(F.normalizeFittingState(JSON.parse(JSON.stringify(state))), state);
     // Data with only fingertip points is still usable.
     assert.ok(F.normalizeFittingState({ markers: { l_thumb_tip: { u: 0.3, v: 0.3 } } }));

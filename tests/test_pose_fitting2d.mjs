@@ -354,7 +354,7 @@ test("stored fitting data is validated, clamped and backward compatible", () => 
         source: { type: "openpose", width: 512, height: 512, format: "COCO-18" },
         unknown: true,
     });
-    assert.deepEqual(state.markers.l_wrist, { u: 0.5, v: 0.25, enabled: true, pinned: true, weight: 10, confidence: 1, depth: "auto" });
+    assert.deepEqual(state.markers.l_wrist, { u: 0.5, v: 0.25, enabled: true, pinned: true, weight: 10, confidence: 1, depth: "auto", locked: false, hidden: false });
     assert.equal(state.markers.r_wrist.enabled, false, "a marker without coordinates cannot be enabled");
     assert.equal(state.markers.bogus, undefined);
     assert.deepEqual(state.settings, { scope: "body", moveRoot: false, stiffness: 0.05, showMarkers: false, autoRefit: false, fingertips: false });
@@ -418,4 +418,42 @@ test("an OpenPose figure rendered from the mannequin is fitted back on the corre
     assert.ok(result.maxError < 1, `max ${result.maxError}`);
     const changed = F.changedBones(start, result.state);
     assert.ok(changed.includes("upperarm_r") && changed.includes("calf_r") && !changed.includes("calf_l"), changed.join(","));
+});
+
+test("the marker tree follows the skeleton under one display-only Body root; Lock survives Reset Targets and OpenPose", () => {
+    const ids = nodes => nodes.map(node => node.id);
+    const find = (nodes, id) => { for (const node of nodes) { if (node.id === id) return node; const hit = find(node.children, id); if (hit) return hit; } return null; };
+    const flat = nodes => nodes.flatMap(node => [node, ...flat(node.children)]);
+    const tree = F.fittingMarkerTree({ fingertips: false });
+    assert.deepEqual(ids(tree), [F.POSE_FITTING_TREE_ROOT]);
+    assert.equal(tree[0].group, true);
+    assert.deepEqual(ids(tree[0].children), ["neck", "r_hip", "l_hip"]);
+    assert.deepEqual(ids(find(tree, "neck").children), ["head", "r_shoulder", "l_shoulder"]);
+    assert.deepEqual(ids(flat(find(tree, "l_shoulder").children)), ["l_elbow", "l_wrist", "l_hand"]);
+    assert.deepEqual(ids(flat(find(tree, "r_hip").children)), ["r_knee", "r_ankle"]);
+    assert.deepEqual(find(tree, "l_hand").children, []);
+    assert.deepEqual(ids(flat(tree)).filter(id => id !== F.POSE_FITTING_TREE_ROOT).sort(), [...F.POSE_FITTING_BODY_MARKER_IDS].sort(), "every body marker once, no new markers");
+    const withTips = F.fittingMarkerTree({ fingertips: true });
+    assert.deepEqual(ids(find(withTips, "l_hand").children), F.POSE_FITTING_FINGERS.map(finger => `l_${finger}_tip`));
+    assert.equal(flat(withTips).length - 1, F.POSE_FITTING_MARKER_IDS.length);
+    // Cascades cover hidden fingertips too.
+    assert.deepEqual(F.fittingTreeDescendants("l_shoulder"), ["l_shoulder", "l_elbow", "l_wrist", "l_hand", ...F.POSE_FITTING_FINGERS.map(finger => `l_${finger}_tip`)]);
+    assert.deepEqual([...F.fittingTreeDescendants(F.POSE_FITTING_TREE_ROOT)].sort(), [...F.POSE_FITTING_MARKER_IDS].sort());
+
+    // Reset Targets never moves a locked target (pinned or not); unlocked ones follow the joints.
+    const state = F.createFittingState();
+    state.markers.l_wrist = { ...F.defaultFittingMarker(), u: 0.1, v: 0.2, enabled: true, locked: true };
+    state.markers.r_wrist = { ...F.defaultFittingMarker(), u: 0.3, v: 0.4, enabled: true };
+    const projected = { l_wrist: { x: 500, y: 500, valid: true }, r_wrist: { x: 600, y: 600, valid: true } };
+    const reset = F.resetFittingTargets(state, projected, { width: 1000, height: 1000 }, { keepPinned: false });
+    assert.deepEqual([reset.markers.l_wrist.u, reset.markers.l_wrist.v], [0.1, 0.2]);
+    assert.deepEqual([reset.markers.r_wrist.u, reset.markers.r_wrist.v], [0.6, 0.6]);
+    // OpenPose import keeps locked targets and carries Hide over.
+    state.markers.head = { ...F.defaultFittingMarker(), u: 0.5, v: 0.1, enabled: true, hidden: true };
+    const parsed = { joints: { l_wrist: { x: 100, y: 100, c: 1 }, r_wrist: { x: 200, y: 200, c: 1 }, nose: { x: 256, y: 50, c: 1 } }, canvasWidth: 512, canvasHeight: 512 };
+    const imported = F.fittingStateFromOpenPose(parsed, { frame: { width: 512, height: 512 }, previous: state }).state;
+    assert.deepEqual([imported.markers.l_wrist.u, imported.markers.l_wrist.v, imported.markers.l_wrist.locked], [0.1, 0.2, true], "locked: not moved");
+    assert.ok(Math.abs(imported.markers.r_wrist.u - 200 / 512) < 1e-12, "unlocked: imported");
+    assert.equal(imported.markers.head.hidden, true, "Hide carries over");
+    assert.ok(Math.abs(imported.markers.head.v - 50 / 512) < 1e-12);
 });
