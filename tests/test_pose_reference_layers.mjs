@@ -479,9 +479,7 @@ function sceneWithLayers() {
     w.hydrateCharacterSceneModels = async () => {};
     viewer.setSkinMode = () => {};
     w.referenceLayers = new PoseReferenceLayerController(w, { document: fakeDocument, editorOnlyLayer: POSE_STUDIO_EDITOR_ONLY_LAYER, loadTexture });
-    // Mirrors the widget's captureHistoryContext wiring (checked against the source below).
-    const base = viewer.options.captureHistoryContext;
-    viewer.options.captureHistoryContext = () => ({ ...base(), referenceLayers: w.referenceLayers?.historySnapshot() });
+    w.referenceLayers.installHistoryContext(viewer);
     return scene;
 }
 
@@ -544,7 +542,7 @@ test("animation history snapshots carry and restore reference layers", () => {
 test("the widget wires layers into history, rendering, persistence and the UniCanvas guard", async () => {
     const source = await fs.readFile(new URL("../web/vnccs_pose_studio.js", import.meta.url), "utf8");
     for (const pattern of [
-        /referenceLayers: this\.referenceLayers\?\.historySnapshot\(\)/,
+        /this\.referenceLayers\?\.attachViewer\(this\.viewer, this\.canvasContainer\)/,
         /onBeforeViewportRender: \(\) => this\.referenceLayers\?\.syncFrame\(\)/,
         /this\.referenceLayers\?\.drawOverlay\(\)/,
         /reference_layers: this\.referenceLayers\?\.serialize\(\)/,

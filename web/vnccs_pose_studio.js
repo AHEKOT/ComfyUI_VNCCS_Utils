@@ -6329,7 +6329,6 @@ class PoseStudioWidget {
             captureHistoryContext: () => ({
                 mesh: { ...this.meshParams }, transform: { ...this.getActiveCharacter()?.transform },
                 cameraParams: this.currentCameraParams(), prompt: this.getPosePrompt(),
-                referenceLayers: this.referenceLayers?.historySnapshot(),
             }),
             onHistoryRestore: pose => this.restoreImageHistory(pose),
             onPoseChange: (pose) => {

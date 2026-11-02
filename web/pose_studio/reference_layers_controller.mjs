@@ -295,6 +295,7 @@ export class PoseReferenceLayerController {
         this.viewer = viewer;
         this.container = container;
         if (!this.enabled || !viewer?.canvas) return;
+        this.installHistoryContext(viewer);
         const canvas = viewer.canvas;
         const listen = (target, type, handler, options) => {
             target.addEventListener(type, handler, options);
@@ -332,6 +333,16 @@ export class PoseReferenceLayerController {
             });
         }
         this.requestRender();
+    }
+
+    /**
+     * Pose undo snapshots (viewer.recordState) also carry the layer stack, so
+     * Undo/Redo restore layer edits through the widget's restoreImageHistory.
+     */
+    installHistoryContext(viewer) {
+        if (!viewer?.options) return;
+        const capture = viewer.options.captureHistoryContext;
+        viewer.options.captureHistoryContext = () => ({ ...capture?.(), referenceLayers: this.historySnapshot() });
     }
 
     requestRender() {
