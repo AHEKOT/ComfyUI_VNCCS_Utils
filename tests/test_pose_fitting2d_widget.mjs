@@ -185,6 +185,9 @@ test("Fit Pose, Reset Targets, pins and Clear Constraints are undoable constrain
     const markers = controller.state.markers;
     markers.l_wrist.u += 0.03;
     markers.l_wrist.v -= 0.04;
+    // The L Hand marker is a joint like the others: move it with the wrist.
+    markers.l_hand.u += 0.03;
+    markers.l_hand.v -= 0.04;
     markers.l_shoulder.pinned = true;
     const before = handWorld();
     const history = viewer.history.length;
@@ -412,42 +415,45 @@ function lookAtLeftHand(s, distance = 5) {
     viewer.orbit.target.copy(hand);
 }
 
-test("hand markers are off by default; Middle tips / All fingertips add tips at the fingers and group the list", () => {
+test("L/R Hand markers are part of the body markers; the Fingertips checkbox adds the tips and groups the list", () => {
     const s = fittingScene();
     const { controller, viewer } = s;
     controller.setActive(true);
     const e = controller.elements;
-    assert.equal(e.hands.value, "off");
-    assert.equal(controller.visibleIds().length, 14, "the existing 14-marker workflow is unchanged");
-    assert.ok(F.POSE_FITTING_MARKER_IDS.slice(14).every(id => controller.state.markers[id].u === null));
-    assert.ok([...e.listGroups.values()].every(header => header.style.display === "none"), "no group headers for body-only lists");
-    assert.ok(F.POSE_FITTING_MARKER_IDS.slice(14).every(id => e.listRows.get(id).row.style.display === "none"));
-    const history = viewer.history.length;
-    e.hands.value = "middle";
-    e.hands.emit("change");
-    assert.deepEqual(controller.visibleIds().slice(14), ["l_middle_tip", "r_middle_tip"]);
+    assert.equal(e.fingertips.checked, false, "Fingertips is off by default");
+    assert.deepEqual(controller.visibleIds(), F.POSE_FITTING_BODY_MARKER_IDS);
+    assert.equal(controller.visibleIds().length, 16);
     const frame = controller.frameSize();
-    for (const id of ["l_middle_tip", "r_middle_tip"]) {
+    for (const id of ["l_hand", "r_hand"]) {
+        const marker = controller.state.markers[id];
+        const joint = s.projected(id);
+        assert.equal(marker.enabled, true, `${id}: a new marker set includes it enabled, like the other joints`);
+        assert.ok(Math.hypot(marker.u * frame.width - joint.x, marker.v * frame.height - joint.y) < 1e-6, `${id} sits on the hand point`);
+        assert.equal(e.listRows.get(id).row.style.display, "", `${id} is listed with the body markers`);
+    }
+    assert.ok(F.POSE_FITTING_MARKER_IDS.filter(id => id.endsWith("_tip")).every(id => controller.state.markers[id].u === null));
+    assert.ok([...e.listGroups.values()].every(header => header.style.display === "none"), "no group headers for body-only lists");
+    const history = viewer.history.length;
+    e.fingertips.checked = true;
+    e.fingertips.emit("change");
+    assert.equal(controller.visibleIds().length, 26);
+    for (const id of ["l_middle_tip", "r_index_tip"]) {
         const marker = controller.state.markers[id];
         const joint = s.projected(id);
         assert.equal(marker.enabled, false, `${id} starts disabled: it constrains nothing until dragged`);
         assert.ok(Math.hypot(marker.u * frame.width - joint.x, marker.v * frame.height - joint.y) < 1e-6, `${id} sits on the fingertip`);
     }
-    assert.equal(controller.state.markers.l_index_tip.u, null, "hidden tips stay unplaced");
-    assert.equal(viewer.history.length, history, "changing the mode is a setting, not a pose edit");
-    e.hands.value = "all";
-    e.hands.emit("change");
-    assert.equal(controller.visibleIds().length, 24);
+    assert.equal(viewer.history.length, history, "the checkbox is a setting, not a pose edit");
     assert.equal(e.listGroups.get("l").style.display, "");
-    assert.equal(e.listGroups.get("r").style.display, "");
     assert.equal(e.listRows.get("r_pinky_tip").row.style.display, "");
-    assert.equal(JSON.parse(s.node.widgets[0].value).characters[0].poses[0].fitting2d.settings.handMarkers, "all", "the mode is saved with the pose");
-    // Back to Off: the tips keep their data but disappear from the overlay, list and solver.
-    e.hands.value = "off";
-    e.hands.emit("change");
+    assert.equal(JSON.parse(s.node.widgets[0].value).characters[0].poses[0].fitting2d.settings.fingertips, true, "saved with the pose");
+    // Off again: tips keep their data but leave the overlay, list and solver; the Hand markers stay.
+    e.fingertips.checked = false;
+    e.fingertips.emit("change");
     assert.ok(controller.state.markers.l_index_tip.u !== null);
     assert.equal(e.listRows.get("l_index_tip").row.style.display, "none");
-    assert.ok(F.fittingStateToSolverMarkers(controller.state, frame).every(item => !item.id.endsWith("_tip")));
+    const solved = F.fittingStateToSolverMarkers(controller.state, frame).map(item => item.id);
+    assert.ok(solved.includes("l_hand") && solved.every(id => !id.endsWith("_tip")));
 });
 
 test("dragging a fingertip marker bends the finger on every frame with one undo step at any canvas zoom", () => {
@@ -458,7 +464,7 @@ test("dragging a fingertip marker bends the finger on every frame with one undo 
         viewer.canvas.getBoundingClientRect = () => ({ left, top, width: VIEW * zoom, height: VIEW * zoom });
         lookAtLeftHand(s);
         controller.setActive(true);
-        controller.setHandMarkers("all");
+        controller.setFingertips(true);
         const toScreen = id => {
             const marker = controller.state.markers[id];
             const layout = controller.frameToOverlay(marker.u, marker.v);
@@ -500,31 +506,101 @@ test("dragging a fingertip marker bends the finger on every frame with one undo 
     }
 });
 
-test("dragging the middle fingertip turns the hand toward it", () => {
+test("dragging the L Hand marker turns only the hand on every frame, with Fingertips off", () => {
     const s = fittingScene();
     const { controller, viewer, pointer, runFrames, THREE } = s;
-    lookAtLeftHand(s);
+    lookAtLeftHand(s, 7);
     controller.setActive(true);
-    controller.setHandMarkers("middle");
-    const marker = controller.state.markers.l_middle_tip;
+    assert.equal(controller.settings().fingertips, false);
+    const marker = controller.state.markers.l_hand;
     const start = controller.frameToOverlay(marker.u, marker.v);
     const wrist = controller.frameToOverlay(controller.state.markers.l_wrist.u, controller.state.markers.l_wrist.v);
-    const handBefore = viewer.bones.hand_l.quaternion.clone();
+    const before = Object.fromEntries(Object.entries(viewer.bones).map(([name, bone]) => [name, bone.quaternion.clone()]));
     const wristWorld = viewer.bones.hand_l.getWorldPosition(new THREE.Vector3());
-    pointer("pointerdown", start.x, start.y);
-    // Swing the tip sideways around the wrist in the image.
+    const history = viewer.history.length;
+    assert.equal(pointer("pointerdown", start.x, start.y).stopped, true);
+    assert.equal(controller.drag.id, "l_hand");
+    // Swing the hand point sideways around the wrist in the image.
     const dx = start.x - wrist.x, dy = start.y - wrist.y;
     const at = angle => [wrist.x + dx * Math.cos(angle) - dy * Math.sin(angle), wrist.y + dx * Math.sin(angle) + dy * Math.cos(angle)];
+    let previous = viewer.bones.hand_l.quaternion.clone();
     for (let step = 1; step <= 4; step++) {
         pointer("pointermove", ...at(0.06 * step));
         runFrames();
-        assert.ok(viewer.bones.hand_l.quaternion.angleTo(handBefore) > 1e-3 * step, `step ${step}: the hand turns while dragging`);
+        assert.ok(viewer.bones.hand_l.quaternion.angleTo(previous) > 1e-4, `step ${step}: the hand turns while dragging`);
+        previous = viewer.bones.hand_l.quaternion.clone();
+        assert.equal(viewer.history.length, history + 1);
     }
     pointer("pointerup", ...at(0.24));
+    assert.equal(viewer.history.length, history + 1, "one undo step per gesture");
     assert.ok(viewer.bones.hand_l.getWorldPosition(new THREE.Vector3()).distanceTo(wristWorld) < 1e-9, "the wrist stays where the wrist marker holds it");
-    const result = controller.lastResult;
-    assert.ok(result.markers.find(item => item.id === "l_middle_tip").error < 2, JSON.stringify(result.markers));
+    const changed = Object.keys(before).filter(name => viewer.bones[name].quaternion.angleTo(before[name]) > 1e-9);
+    assert.deepEqual(changed, ["hand_l"], "no finger bends and the arm stays");
+    assert.ok(controller.lastResult.markers.find(item => item.id === "l_hand").error < 2, JSON.stringify(controller.lastResult.markers));
     assert.ok(F.measureJointLimits(controller.buildModel()).joints.hand_l.violation < 1);
+    viewer.undo();
+    assert.ok(viewer.bones.hand_l.quaternion.angleTo(before.hand_l) < 1e-9, "undo restores the hand");
+});
+
+test("where the middle fingertip overlaps L Hand, the tip wins inside its small radius and the Hand ring outside it", () => {
+    const s = fittingScene();
+    const { controller, pointer } = s;
+    lookAtLeftHand(s, 7);
+    controller.setActive(true);
+    controller.setFingertips(true);
+    const markers = controller.state.markers;
+    const hand = controller.frameToOverlay(markers.l_hand.u, markers.l_hand.v);
+    const tip = controller.frameToOverlay(markers.l_middle_tip.u, markers.l_middle_tip.v);
+    assert.ok(Math.hypot(hand.x - tip.x, hand.y - tip.y) < 0.5, "at rest both sit on the middle fingertip");
+    assert.equal(controller.hitTest(tip.x, tip.y).id, "l_middle_tip", "the centre grabs the finger");
+    // Outside the fingertip radius (6 px) but on the Hand ring (8 px, hit 11 px): the hand.
+    const away = (angle, distance) => [hand.x + Math.cos(angle) * distance, hand.y + Math.sin(angle) * distance];
+    const neighbours = ["l_thumb_tip", "l_index_tip", "l_ring_tip", "l_pinky_tip"].map(id => controller.frameToOverlay(markers[id].u, markers[id].v));
+    const angle = [0, 1, 2, 3, 4, 5, 6, 7].map(k => k * Math.PI / 4)
+        .find(a => neighbours.every(p => Math.hypot(p.x - away(a, 8)[0], p.y - away(a, 8)[1]) > 6));
+    assert.ok(angle !== undefined);
+    assert.equal(controller.hitTest(...away(angle, 8)).id, "l_hand", "the ring grabs the hand");
+    pointer("pointerdown", ...away(angle, 8));
+    assert.equal(controller.drag.id, "l_hand");
+    pointer("pointerup", ...away(angle, 8));
+    // Against a regular body marker the nearer one wins.
+    const wrist = controller.frameToOverlay(markers.l_wrist.u, markers.l_wrist.v);
+    assert.equal(controller.hitTest(wrist.x, wrist.y).id, "l_wrist");
+});
+
+test("poses saved before L/R Hand existed get them disabled at the hand point and solve as before", () => {
+    const s = fittingScene();
+    const { controller, viewer, w } = s;
+    // Reference: today's solve with the Hand markers disabled.
+    controller.setActive(true);
+    const legacy = F.cloneFittingState(controller.state);
+    legacy.markers.l_wrist.u += 0.03;
+    legacy.markers.l_wrist.v -= 0.02;
+    delete legacy.markers.l_hand;
+    delete legacy.markers.r_hand;
+    delete legacy.settings.fingertips;
+    legacy.version = 1;
+    controller.setActive(false);
+    viewer.setPose({ bones: {}, fitting2d: legacy }, true);
+    assert.equal(viewer.fitting2d.markers.l_hand.u, null, "loaded data has no Hand markers yet");
+    controller.setActive(true);
+    const frame = controller.frameSize();
+    for (const id of ["l_hand", "r_hand"]) {
+        const marker = viewer.fitting2d.markers[id];
+        const joint = s.projected(id);
+        assert.equal(marker.enabled, false, `${id} is added disabled`);
+        assert.ok(Math.hypot(marker.u * frame.width - joint.x, marker.v * frame.height - joint.y) < 1e-6, `${id} at the current hand point`);
+    }
+    const result = controller.fitPose();
+    const handBefore = viewer.bones.hand_l.quaternion.clone();
+    assert.ok(result.maxError < 1, `${result.maxError}`);
+    assert.ok(!result.markers.some(item => item.id === "l_hand"), "disabled Hand markers are not solved");
+    assert.equal(result.stages, undefined, "the plain body solve");
+    assert.ok(viewer.bones.hand_l.quaternion.angleTo(handBefore) < 1e-12);
+    // Reset Targets creates them enabled, like the other joints.
+    controller.resetTargets();
+    assert.equal(viewer.fitting2d.markers.l_hand.enabled, true);
+    assert.ok(w);
 });
 
 test("reset buttons restore Stiffness and Weight as one undo step; the Weight reset refits", () => {

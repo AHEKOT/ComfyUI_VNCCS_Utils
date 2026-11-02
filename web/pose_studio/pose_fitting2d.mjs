@@ -23,16 +23,20 @@
  * user enables it, the pelvis translation). Bone lengths and body proportions
  * are never changed, the camera is never moved.
  *
- * Fingertip markers are solved after the body, strictly in this order so the
- * stages never fight: (1) body markers move the torso, arms and legs; (2) the
- * middle fingertip turns the hand (wrist rotation within wrist limits, fingers
- * frozen) so the wrist -> middle tip direction points at it; (3) every fingertip drives
- * its own finger chain (MCP ball + PIP/DIP hinges) with the hand held fixed.
- * Fingertips never move the arm: the wrist marker owns the wrist position.
+ * Hands are solved after the body, strictly in this order so the stages never
+ * fight: (1) body markers move the torso, arms and legs; (2) the L/R Hand
+ * markers turn the hands (wrist rotation within wrist limits, fingers never
+ * bend); (3) with Fingertips on, every fingertip drives its own finger chain
+ * (MCP ball + PIP/DIP hinges) with the hand held fixed. Neither moves the arm:
+ * the wrist marker owns the wrist position.
  */
 
-/** Version 2 adds fingertip markers and `settings.handMarkers`; version 1 data loads unchanged. */
-export const POSE_FITTING_VERSION = 2;
+/**
+ * Version 3 adds the L/R Hand markers and replaces `settings.handMarkers`
+ * ("off" / "middle" / "all", version 2) with `settings.fingertips`. Older data
+ * loads unchanged; "all" becomes Fingertips on.
+ */
+export const POSE_FITTING_VERSION = 3;
 
 const DEG = Math.PI / 180;
 const RAD = 180 / Math.PI;
@@ -49,9 +53,11 @@ const BODY_MARKERS = [
     { id: "r_shoulder", label: "R Shoulder", bone: "upperarm_r", openpose: "r_shoulder", parent: "neck", side: "r" },
     { id: "r_elbow", label: "R Elbow", bone: "lowerarm_r", openpose: "r_elbow", parent: "r_shoulder", side: "r", flip: "upperarm_r" },
     { id: "r_wrist", label: "R Wrist", bone: "hand_r", openpose: "r_wrist", parent: "r_elbow", side: "r", flip: "lowerarm_r" },
+    { id: "r_hand", label: "R Hand", bone: "hand_r", openpose: null, parent: "r_wrist", side: "r", handPoint: true },
     { id: "l_shoulder", label: "L Shoulder", bone: "upperarm_l", openpose: "l_shoulder", parent: "neck", side: "l" },
     { id: "l_elbow", label: "L Elbow", bone: "lowerarm_l", openpose: "l_elbow", parent: "l_shoulder", side: "l", flip: "upperarm_l" },
     { id: "l_wrist", label: "L Wrist", bone: "hand_l", openpose: "l_wrist", parent: "l_elbow", side: "l", flip: "lowerarm_l" },
+    { id: "l_hand", label: "L Hand", bone: "hand_l", openpose: null, parent: "l_wrist", side: "l", handPoint: true },
     { id: "r_hip", label: "R Hip", bone: "thigh_r", openpose: "r_hip", parent: null, side: "r" },
     { id: "r_knee", label: "R Knee", bone: "calf_r", openpose: "r_knee", parent: "r_hip", side: "r", flip: "thigh_r" },
     { id: "r_ankle", label: "R Ankle", bone: "foot_r", openpose: "r_ankle", parent: "r_knee", side: "r", flip: "calf_r" },
@@ -61,6 +67,15 @@ const BODY_MARKERS = [
 ].map(marker => ({ ...marker, group: "body" }));
 
 export const POSE_FITTING_FINGERS = Object.freeze(["thumb", "index", "middle", "ring", "pinky"]);
+/**
+ * L/R Hand markers: a point rigidly attached to the hand bone, the rest-pose
+ * middle fingertip in hand-bone space. It sits on the middle fingertip while
+ * the fingers are straight and keeps pointing where an extended middle finger
+ * would when they curl. It only turns the hand, never bends a finger.
+ */
+export const POSE_FITTING_HAND_POINT_IDS = Object.freeze(["r_hand", "l_hand"]);
+/** Rest hand point distance in units of the wrist -> middle knuckle distance (fallback only). */
+const HAND_POINT_KNUCKLE_RATIO = 1.8;
 /** Fingertip indices of the 21-point OpenPose hand model. */
 const OPENPOSE_HAND_TIP = Object.freeze({ thumb: 4, index: 8, middle: 12, ring: 16, pinky: 20 });
 
@@ -86,16 +101,11 @@ export const POSE_FITTING_BODY_MARKER_IDS = Object.freeze(BODY_MARKERS.map(marke
 const MARKER_INDEX = new Map(POSE_FITTING_MARKERS.map((marker, index) => [marker.id, index]));
 const MARKER_DEFS = new Map(POSE_FITTING_MARKERS.map(marker => [marker.id, marker]));
 
-/** Which fingertip markers are shown and solved: none, the two middle tips, or all ten. */
-export const POSE_FITTING_HAND_MODES = Object.freeze(["off", "middle", "all"]);
-
-/** True when a marker takes part in the current hand-marker mode (body markers always do). */
+/** True when a marker is shown and solved (body markers always; fingertips with Fingertips on). */
 export function isFittingMarkerVisible(id, settings = null) {
     const def = MARKER_DEFS.get(id);
     if (!def) return false;
-    if (def.group !== "hand") return true;
-    const mode = settings?.handMarkers;
-    return mode === "all" || (mode === "middle" && def.finger === "middle");
+    return def.group !== "hand" || settings?.fingertips === true;
 }
 
 export function visibleFittingMarkerIds(settings = null) {
@@ -111,15 +121,13 @@ export const POSE_FITTING_RIG_BONES = Object.freeze([
     "thigh_r", "calf_r", "foot_r",
 ]);
 
-/** Finger bones (MCP `_01`, PIP `_02`, DIP `_03`), added to the rig only while hand markers are on. */
+/** Finger bones (MCP `_01`, PIP `_02`, DIP `_03`), added to the rig only while Fingertips is on. */
 export const POSE_FITTING_FINGER_BONES = Object.freeze(["l", "r"].flatMap(side =>
     POSE_FITTING_FINGERS.flatMap(finger => ["01", "02", "03"].map(segment => `${finger}_${segment}_${side}`))));
 
-/** Rig bones for a hand-marker mode. "off" keeps the original body-only rig. */
-export function fittingRigBones(handMarkers = "off") {
-    return handMarkers === "middle" || handMarkers === "all"
-        ? [...POSE_FITTING_RIG_BONES, ...POSE_FITTING_FINGER_BONES]
-        : POSE_FITTING_RIG_BONES;
+/** Rig bones: Fingertips off keeps the original body-only rig. */
+export function fittingRigBones(fingertips = false) {
+    return fingertips === true ? [...POSE_FITTING_RIG_BONES, ...POSE_FITTING_FINGER_BONES] : POSE_FITTING_RIG_BONES;
 }
 
 /**
@@ -458,6 +466,14 @@ export function buildFittingModel(snapshot) {
     }
     bones.forEach((bone, i) => { if (bone.parent >= 0) bones[bone.parent].children.push(i); });
     const pointOffsets = snapshot.pointOffsets || {};
+    // Knuckle offsets in hand-bone space: from finger bones when they are in
+    // the rig, otherwise from the snapshot (Fingertips off keeps a body rig).
+    const knuckle = (side, finger) => {
+        const name = `${finger}_01_${side}`;
+        if (index.has(name)) return bones[index.get(name)].position.slice();
+        const value = snapshot.knuckles?.[side]?.[finger];
+        return Array.isArray(value) && value.length >= 3 && value.slice(0, 3).every(item => finite(Number(item))) ? value.slice(0, 3).map(Number) : null;
+    };
     const markers = POSE_FITTING_MARKERS.map(def => {
         const boneIndex = index.has(def.bone) ? index.get(def.bone) : -1;
         const offset = Array.isArray(pointOffsets[def.id]) ? pointOffsets[def.id].slice(0, 3).map(Number) : null;
@@ -469,6 +485,13 @@ export function buildFittingModel(snapshot) {
             // Without a measured tip, extend the distal bone by its parent segment.
             const bone = bones[boneIndex];
             fallback = qrotate(qconj(bone.rest), bone.position);
+        } else if (def.handPoint && boneIndex >= 0) {
+            // Without the measured rest fingertip: along the middle knuckle, or the forearm.
+            const middle = knuckle(def.side, "middle");
+            const bone = bones[boneIndex];
+            fallback = middle
+                ? middle.map(value => value * HAND_POINT_KNUCKLE_RATIO)
+                : qrotate(qconj(bone.rest), bone.position).map(value => value * 0.72);
         }
         return {
             id: def.id,
@@ -477,7 +500,7 @@ export function buildFittingModel(snapshot) {
             parent: def.parent ? MARKER_INDEX.get(def.parent) : -1,
         };
     });
-    const handFrames = buildHandFrames(bones, index);
+    const handFrames = buildHandFrames(bones, index, knuckle);
     // Joint geometry derived from the rig's own rest offsets.
     for (const bone of bones) {
         const spec = jointSpecFor(bone.name);
@@ -485,7 +508,8 @@ export function buildFittingModel(snapshot) {
         if (!spec) continue;
         const child = spec.child && index.has(spec.child) ? bones[index.get(spec.child)] : null;
         const tipMarker = spec.tip ? markers[MARKER_INDEX.get(spec.tip)] : null;
-        const childLocal = child ? child.position : (tipMarker?.bone >= 0 ? tipMarker.offset : null);
+        const handKnuckle = /^hand_[lr]$/.test(bone.name) ? knuckle(bone.name.slice(-1), "middle") : null;
+        const childLocal = child ? child.position : (tipMarker?.bone >= 0 ? tipMarker.offset : handKnuckle);
         const childDir = childLocal ? normalize(qrotate(bone.rest, childLocal)) : null;
         const handFrame = spec.scope === "hand" ? handFrames[bone.name.slice(-1)] : null;
         if (spec.type === "ball") {
@@ -527,11 +551,11 @@ export function buildFittingModel(snapshot) {
             bone.hingeAxis = axis;
         }
     }
-    // Internal aim points (never user markers): the middle knuckle of each hand.
+    // Internal points (never user markers): the middle knuckle of each hand.
     for (const side of ["l", "r"]) {
         const frame = handFrames[side];
-        if (!frame || frame.middle < 0) continue;
-        markers.push({ id: `${side}_hand_aim`, bone: frame.hand, offset: bones[frame.middle].position.slice(), parent: -1, internal: true });
+        if (!frame) continue;
+        markers.push({ id: `${side}_knuckle`, bone: frame.hand, offset: frame.knuckle.slice(), parent: -1, internal: true });
     }
     const markerIndex = new Map(markers.map((marker, i) => [marker.id, i]));
     return { base, bones, index, markers, markerIndex };
@@ -542,20 +566,19 @@ export function buildFittingModel(snapshot) {
  * the knuckles: `palm` points out of the palm, `across` from the pinky toward
  * the index knuckle (the thumb side), `thumbFlex` is the thumb's bend side.
  */
-function buildHandFrames(bones, index) {
+function buildHandFrames(bones, index, knuckle) {
     const frames = {};
     for (const side of ["l", "r"]) {
-        const at = name => (index.has(name) ? index.get(name) : -1);
-        const hand = at(`hand_${side}`), middle = at(`middle_01_${side}`);
-        const indexBase = at(`index_01_${side}`), pinky = at(`pinky_01_${side}`);
-        if (hand < 0 || middle < 0 || indexBase < 0 || pinky < 0) continue;
-        const d = normalize(bones[middle].position);
-        let across = sub(bones[indexBase].position, bones[pinky].position);
+        const hand = index.has(`hand_${side}`) ? index.get(`hand_${side}`) : -1;
+        const middle = knuckle(side, "middle"), indexBase = knuckle(side, "index"), pinky = knuckle(side, "pinky");
+        if (hand < 0 || !middle || !indexBase || !pinky) continue;
+        const d = normalize(middle);
+        let across = sub(indexBase, pinky);
         across = normalize(sub(across, d.map(value => value * dot(across, d))));
         // Mirrored hands have opposite handedness.
         const palm = normalize(side === "l" ? cross(d, across) : cross(across, d));
         if (!len(d) || !len(across) || !len(palm)) continue;
-        frames[side] = { hand, middle, palm, across, thumbFlex: normalize(sub(palm, across)) };
+        frames[side] = { hand, knuckle: middle, palm, across, thumbFlex: normalize(sub(palm, across)) };
     }
     return frames;
 }
@@ -1056,37 +1079,41 @@ function stateIsValid(state) {
 export function solvePoseFitting(model, projector, markers, options = {}) {
     const started = now();
     const list = markers || [];
-    const handMarkers = list.filter(marker => MARKER_DEFS.get(marker?.id)?.group === "hand");
-    if (!handMarkers.length) return solveStage(model, projector, list, options, started);
-    const body = solveStage(model, projector, list.filter(marker => MARKER_DEFS.get(marker?.id)?.group !== "hand"), options, started);
+    const defOf = marker => MARKER_DEFS.get(marker?.id);
+    const handPoints = activeMarkerList(list.filter(marker => defOf(marker)?.handPoint === true));
+    const tips = activeMarkerList(list.filter(marker => defOf(marker)?.group === "hand"));
+    const bodyList = list.filter(marker => defOf(marker)?.handPoint !== true && defOf(marker)?.group !== "hand");
+    // Without active hand markers this is exactly the body-only solve.
+    if (!handPoints.length && !tips.length) return solveStage(model, projector, bodyList, options, started);
+    const body = solveStage(model, projector, bodyList, options, started);
     if (!body.valid) return body;
     const stages = [body];
     let state = body.state;
     // The prior is scaled for the whole figure (radians against pixels). A hand
-    // is much shorter than an arm, so the same rotation moves its tip far fewer
-    // pixels: scale the prior by the squared length ratio so fingertips are as
-    // compliant as body markers and do not spring back when a drag ends.
+    // is much shorter than an arm, so the same rotation moves its markers far
+    // fewer pixels: scale the prior by the squared length ratio so hand markers
+    // are as compliant as body markers and do not spring back when a drag ends.
     const settingsStiffness = finite(options.poseStiffness) ? options.poseStiffness : POSE_FITTING_DEFAULTS.poseStiffness;
     const handStiffness = settingsStiffness * handPriorRatio(model, state);
     const handOptions = bones => ({ ...options, bones, initialState: state, minIterations: 1, stage: "hand", poseStiffness: handStiffness });
-    // (2) Hand orientation: the middle fingertip sets the direction the hand points.
-    const aim = handAimTargets(model, projector, handMarkers, state, { ...POSE_FITTING_DEFAULTS, ...options });
-    if (aim.markers.length) {
-        const result = solveStage(model, projector, aim.markers, handOptions(aim.bones), started);
+    // (2) Hand orientation: the L/R Hand markers rotate only the hand bones.
+    const handBones = [...new Set(handPoints.map(marker => defOf(marker).bone))].filter(name => model.index.has(name));
+    if (handBones.length) {
+        const result = solveStage(model, projector, handPoints, handOptions(handBones), started);
         if (result.valid) state = result.state;
-        stages.push({ ...result, markers: [], unreached: [], internal: true });
+        stages.push(result);
     }
     // (3) Finger chains with the hand fixed.
-    const fingerBones = fingerChainBones(model, handMarkers);
+    const fingerBones = fingerChainBones(model, tips);
     if (fingerBones.length) {
-        const result = solveStage(model, projector, handMarkers, handOptions(fingerBones), started);
+        const result = solveStage(model, projector, tips, handOptions(fingerBones), started);
         if (result.valid) state = result.state;
         stages.push(result);
     }
     return mergeStageResults(stages, state, started);
 }
 
-/** (wrist -> middle fingertip length / shoulder -> wrist length)^2, averaged over both sides. */
+/** (wrist -> hand point length / shoulder -> wrist length)^2, averaged over both sides. */
 function handPriorRatio(model, state) {
     const world = forwardKinematics(model, state);
     const position = name => {
@@ -1096,10 +1123,10 @@ function handPriorRatio(model, state) {
     const ratios = [];
     for (const side of ["l", "r"]) {
         const shoulder = position(`upperarm_${side}`), wrist = position(`hand_${side}`);
-        const tipIndex = model.markerIndex?.get(`${side}_middle_tip`);
-        const tipMarker = tipIndex === undefined ? null : model.markers[tipIndex];
-        if (!shoulder || !wrist || !tipMarker || tipMarker.bone < 0) continue;
-        const tip = transformPoint(world[tipMarker.bone], tipMarker.offset);
+        const pointIndex = model.markerIndex?.get(`${side}_hand`);
+        const pointMarker = pointIndex === undefined ? null : model.markers[pointIndex];
+        if (!shoulder || !wrist || !pointMarker || pointMarker.bone < 0) continue;
+        const tip = transformPoint(world[pointMarker.bone], pointMarker.offset);
         const arm = Math.hypot(wrist[0] - shoulder[0], wrist[1] - shoulder[1], wrist[2] - shoulder[2]);
         const hand = Math.hypot(tip[0] - wrist[0], tip[1] - wrist[1], tip[2] - wrist[2]);
         if (arm > 1e-6 && finite(hand)) ratios.push((hand / arm) ** 2);
@@ -1118,52 +1145,10 @@ function activeMarkerList(markers) {
     });
 }
 
-/**
- * Hand-aim targets: turn the hand (fingers frozen in their current shape) so
- * the image direction wrist -> middle fingertip points at the marker, keeping
- * the tip's current distance from the wrist; the finger stage then fixes the
- * length by curling or straightening. The aim fades out when the marker or the
- * current tip is closer to the wrist than the middle knuckle (a curled finger
- * says little about the hand direction).
- */
-function handAimTargets(model, projector, handMarkers, state, settings) {
-    const out = { markers: [], bones: [] };
-    const world = forwardKinematics(model, state);
-    const smooth = value => { const t = clamp((value - 0.9) / 0.5, 0, 1); return t * t * (3 - 2 * t); };
-    for (const marker of activeMarkerList(handMarkers)) {
-        const def = MARKER_DEFS.get(marker.id);
-        if (def.finger !== "middle") continue;
-        const aimIndex = model.markerIndex?.get(`${def.side}_hand_aim`);
-        const tipIndex = model.markerIndex?.get(marker.id);
-        if (aimIndex === undefined || tipIndex === undefined || model.markers[tipIndex].bone < 0) continue;
-        const aimMarker = model.markers[aimIndex];
-        const tipMarker = model.markers[tipIndex];
-        const handWorld = world[aimMarker.bone];
-        const wrist = projector.project([handWorld[12], handWorld[13], handWorld[14]]);
-        const knuckle = projector.project(transformPoint(handWorld, aimMarker.offset));
-        const tip = projector.project(transformPoint(world[tipMarker.bone], tipMarker.offset));
-        if (!wrist.valid || !knuckle.valid || !tip.valid) continue;
-        const radius = Math.hypot(knuckle.x - wrist.x, knuckle.y - wrist.y);
-        const reach = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
-        const tx = Number(marker.x) - wrist.x, ty = Number(marker.y) - wrist.y;
-        const distance = Math.hypot(tx, ty);
-        if (radius < 1e-6 || distance < 1e-6 || reach < 1e-6) continue;
-        const reliability = smooth(distance / radius) * smooth(reach / radius);
-        const base = (finite(Number(marker.weight)) ? Math.max(0, Number(marker.weight)) : 1)
-            * (finite(Number(marker.confidence)) ? clamp(Number(marker.confidence), 0, 1) : 1)
-            * (marker.pinned ? settings.pinFactor : 1);
-        const weight = base * reliability;
-        if (weight < 1e-3) continue;
-        out.markers.push({ id: marker.id, x: wrist.x + tx / distance * reach, y: wrist.y + ty / distance * reach, weight });
-        out.bones.push(model.bones[aimMarker.bone].name);
-    }
-    return out;
-}
-
 /** Finger chain bones (MCP, PIP, DIP) of every active fingertip marker. */
-function fingerChainBones(model, handMarkers) {
+function fingerChainBones(model, tips) {
     const bones = [];
-    for (const marker of activeMarkerList(handMarkers)) {
+    for (const marker of tips) {
         const def = MARKER_DEFS.get(marker.id);
         for (const segment of ["01", "02", "03"]) {
             const name = `${def.finger}_${segment}_${def.side}`;
@@ -1468,7 +1453,7 @@ export function markerDepthRelation(model, projector, markerId, state = null) {
 // =====================================================================
 
 export function defaultFittingSettings() {
-    return { scope: "limbs", moveRoot: false, stiffness: 1, showMarkers: true, autoRefit: false, handMarkers: "off" };
+    return { scope: "limbs", moveRoot: false, stiffness: 1, showMarkers: true, autoRefit: false, fingertips: false };
 }
 
 export function defaultFittingMarker() {
@@ -1519,8 +1504,8 @@ export function normalizeFittingState(raw) {
         stiffness: normalizeNumber(settings.stiffness, 1, 0.05, 20),
         showMarkers: settings.showMarkers !== false,
         autoRefit: settings.autoRefit === true,
-        // Version 1 data has no hand markers: keep the 14-marker workflow.
-        handMarkers: POSE_FITTING_HAND_MODES.includes(settings.handMarkers) ? settings.handMarkers : "off",
+        // Version 2 stored "off" / "middle" / "all"; only "all" showed every fingertip.
+        fingertips: settings.fingertips === true || (settings.fingertips === undefined && settings.handMarkers === "all"),
     };
     const frame = raw.frame;
     if (frame && Number(frame.width) > 0 && Number(frame.height) > 0) {
@@ -1586,12 +1571,15 @@ export function resetFittingTargets(state, projected, frame, { keepPinned = true
 /**
  * Create marker targets from parsed OpenPose keypoints (`detectAndParseJSON`
  * output: { joints: { name: { x, y, c } }, handLeft, handRight, canvasWidth, canvasHeight }).
- * Hand keypoints, when present, become enabled fingertip markers and switch
- * the hand-marker mode from Off to All; body-only files behave as before.
+ * Hand keypoints, when present, become enabled fingertip markers (and switch
+ * Fingertips on); the L/R Hand markers are placed along the wrist (0) -> middle
+ * knuckle (9) line, both rigid on the hand, using `handRelations[side]`
+ * ({ angle, scale } from `handPointImageRelation`) so a curled middle finger
+ * (keypoint 12) never tilts the hand. Body-only files behave as before.
  * Missing (c <= minConfidence or a 0,0 placeholder) keypoints stay disabled
  * without coordinates; the caller may fill them from the current projection.
  */
-export function fittingStateFromOpenPose(parsed, { frame, fit = "stretch", minConfidence = 0.05, previous = null } = {}) {
+export function fittingStateFromOpenPose(parsed, { frame, fit = "stretch", minConfidence = 0.05, previous = null, handRelations = null } = {}) {
     if (!parsed?.joints || typeof parsed.joints !== "object") return null;
     const canvas = { width: Number(parsed.canvasWidth) || 512, height: Number(parsed.canvasHeight) || 512 };
     const joints = parsed.joints;
@@ -1603,7 +1591,7 @@ export function fittingStateFromOpenPose(parsed, { frame, fit = "stretch", minCo
     const warnings = [];
     let found = 0;
     for (const def of POSE_FITTING_MARKERS) {
-        if (def.group === "hand") continue;
+        if (def.group === "hand" || !def.openpose) continue;
         let point = joints[def.openpose];
         if ((!point || !(point.c > minConfidence)) && def.id === "neck"
             && joints.l_shoulder?.c > minConfidence && joints.r_shoulder?.c > minConfidence) {
@@ -1624,20 +1612,40 @@ export function fittingStateFromOpenPose(parsed, { frame, fit = "stretch", minCo
         found++;
     }
     // 21-point hand keypoints (hand_left/right_keypoints_2d): fingertips 4, 8, 12, 16, 20.
+    const handPoint = (side, keypoint) => {
+        const point = (side === "l" ? parsed.handLeft : parsed.handRight)?.[keypoint];
+        const confidence = point && finite(point.c) ? point.c : (point ? 1 : 0);
+        if (!point || !finite(point.x) || !finite(point.y) || confidence <= minConfidence || (point.x === 0 && point.y === 0)) return null;
+        const x = normalized ? point.x * canvas.width : point.x;
+        const y = normalized ? point.y * canvas.height : point.y;
+        return { ...sourcePixelToFrame(x, y, canvas, frame, fit), confidence: clamp(confidence, 0, 1) };
+    };
     let handFound = 0;
     for (const def of POSE_FITTING_MARKERS) {
         if (def.group !== "hand") continue;
-        const point = (def.side === "l" ? parsed.handLeft : parsed.handRight)?.[def.openposeHand];
-        const confidence = point && finite(point.c) ? point.c : (point ? 1 : 0);
-        if (!point || !finite(point.x) || !finite(point.y) || confidence <= minConfidence || (point.x === 0 && point.y === 0)) continue;
-        const x = normalized ? point.x * canvas.width : point.x;
-        const y = normalized ? point.y * canvas.height : point.y;
-        const { u, v } = sourcePixelToFrame(x, y, canvas, frame, fit);
-        next.markers[def.id] = { ...defaultFittingMarker(), u, v, enabled: true, confidence: clamp(confidence, 0, 1) };
+        const point = handPoint(def.side, def.openposeHand);
+        if (!point) continue;
+        next.markers[def.id] = { ...defaultFittingMarker(), u: point.u, v: point.v, enabled: true, confidence: point.confidence };
         handFound++;
     }
-    if (!found && !handFound) return null;
-    if (handFound && next.settings.handMarkers === "off") next.settings.handMarkers = "all";
+    let handPointFound = 0;
+    const size = frame || canvas;
+    for (const id of POSE_FITTING_HAND_POINT_IDS) {
+        const side = MARKER_DEFS.get(id).side;
+        const wrist = handPoint(side, 0), base = handPoint(side, 9);
+        if (!wrist || !base) continue;
+        const relation = handRelations?.[side];
+        const angle = finite(relation?.angle) ? relation.angle : 0;
+        const scale = finite(relation?.scale) && relation.scale > 0 ? relation.scale : HAND_POINT_KNUCKLE_RATIO;
+        const dx = (base.u - wrist.u) * size.width, dy = (base.v - wrist.v) * size.height;
+        const cos = Math.cos(angle), sin = Math.sin(angle);
+        const u = wrist.u + scale * (cos * dx - sin * dy) / size.width;
+        const v = wrist.v + scale * (sin * dx + cos * dy) / size.height;
+        next.markers[id] = { ...defaultFittingMarker(), u, v, enabled: true, confidence: Math.min(wrist.confidence, base.confidence) };
+        handPointFound++;
+    }
+    if (!found && !handFound && !handPointFound) return null;
+    if (handFound) next.settings.fingertips = true;
     const sourceAspect = canvas.width / canvas.height;
     const frameAspect = frame ? frame.width / frame.height : sourceAspect;
     if (fit === "stretch" && Math.abs(sourceAspect - frameAspect) > 0.01 * frameAspect) {
@@ -1650,22 +1658,31 @@ export function fittingStateFromOpenPose(parsed, { frame, fit = "stretch", minCo
         height: canvas.height,
         format: parsed.format || null,
     };
-    return { state: next, found, handFound, warnings, normalized };
+    return { state: next, found, handFound, handPointFound, warnings, normalized };
 }
 
 // =====================================================================
 // Viewer bridge (duck-typed Three.js objects, no import)
 // =====================================================================
 
-/** Snapshot the active viewer rig for the solver (finger bones only while hand markers are on). */
-export function snapshotViewerRig(viewer, pointOffsets = {}, { handMarkers = "off" } = {}) {
+/** Snapshot the active viewer rig for the solver (finger bones only while Fingertips is on). */
+export function snapshotViewerRig(viewer, pointOffsets = {}, { fingertips = false } = {}) {
     const bones = viewer?.bones;
     if (!bones?.pelvis) return null;
-    const rigBones = fittingRigBones(handMarkers);
+    const rigBones = fittingRigBones(fingertips);
     viewer.skinnedMesh?.updateMatrixWorld?.(true);
     const base = bones.pelvis.parent?.matrixWorld?.elements || viewer.skinnedMesh?.matrixWorld?.elements;
     if (!base) return null;
-    const snapshot = { base: Array.from(base), bones: [], pointOffsets };
+    // Knuckle offsets (hand-bone space) give the wrist its anatomical frame and limits without finger bones.
+    const knuckles = {};
+    for (const side of ["l", "r"]) {
+        for (const finger of ["index", "middle", "pinky"]) {
+            const bone = bones[`${finger}_01_${side}`];
+            if (bone?.parent?.name !== `hand_${side}`) continue;
+            (knuckles[side] ||= {})[finger] = [bone.position.x, bone.position.y, bone.position.z];
+        }
+    }
+    const snapshot = { base: Array.from(base), bones: [], pointOffsets, knuckles };
     for (const name of rigBones) {
         const bone = bones[name];
         if (!bone) continue;
@@ -1713,6 +1730,52 @@ export function viewerFingerTipOffsets(viewer) {
         if (!inverse || !tail || !(tail.length >= 3)) continue;
         const offset = transformPoint(Array.from(inverse), [Number(tail[0]), Number(tail[1]), Number(tail[2])]);
         if (offset.every(finite) && len(offset) > 1e-9) out[def.id] = offset;
+    }
+    return out;
+}
+
+/**
+ * L/R Hand marker points in hand-bone space: the rest (bind) pose middle
+ * fingertip, `middle_03` tail mapped through the hand bone's bind inverse. It
+ * is rigid on the hand, so curling the middle finger does not move it.
+ */
+export function viewerHandPointOffsets(viewer) {
+    const out = {};
+    const skeleton = viewer?.skeleton;
+    for (const id of POSE_FITTING_HAND_POINT_IDS) {
+        const side = MARKER_DEFS.get(id).side;
+        const hand = viewer?.bones?.[`hand_${side}`];
+        const tail = viewer?.bones?.[`middle_03_${side}`]?.userData?.tailPos;
+        const boneIndex = hand && skeleton?.bones ? skeleton.bones.indexOf(hand) : -1;
+        const inverse = boneIndex >= 0 ? skeleton.boneInverses?.[boneIndex]?.elements : null;
+        if (!inverse || !tail || !(tail.length >= 3)) continue;
+        const offset = transformPoint(Array.from(inverse), [Number(tail[0]), Number(tail[1]), Number(tail[2])]);
+        if (offset.every(finite) && len(offset) > 1e-9) out[id] = offset;
+    }
+    return out;
+}
+
+/**
+ * Image relation of each hand point to the wrist -> middle knuckle line in the
+ * current pose: the hand point = wrist + scale * rotate(angle) * (knuckle - wrist),
+ * in frame pixels. Used to place L/R Hand from OpenPose hand keypoints 0 and 9.
+ */
+export function handPointImageRelation(model, projector, state = null) {
+    const world = forwardKinematics(model, state);
+    const out = {};
+    for (const side of ["l", "r"]) {
+        const point = model.markers[model.markerIndex.get(`${side}_hand`)];
+        const knuckleIndex = model.markerIndex.get(`${side}_knuckle`);
+        if (!point || point.bone < 0 || knuckleIndex === undefined) continue;
+        const m = world[point.bone];
+        const wrist = projector.project([m[12], m[13], m[14]]);
+        const knuckle = projector.project(transformPoint(m, model.markers[knuckleIndex].offset));
+        const tip = projector.project(transformPoint(m, point.offset));
+        if (!wrist.valid || !knuckle.valid || !tip.valid) continue;
+        const ax = knuckle.x - wrist.x, ay = knuckle.y - wrist.y, bx = tip.x - wrist.x, by = tip.y - wrist.y;
+        const a = Math.hypot(ax, ay), b = Math.hypot(bx, by);
+        if (a < 1e-6 || b < 1e-6) continue;
+        out[side] = { angle: Math.atan2(ax * by - ay * bx, ax * bx + ay * by), scale: b / a };
     }
     return out;
 }
