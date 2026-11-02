@@ -48,6 +48,7 @@ const EYE_ICONS = {
 export const POSE_FITTING_FRAME_BUDGET = Object.freeze({ iterations: 8, timeMs: 6 });
 export const POSE_FITTING_FINAL_BUDGET = Object.freeze({ iterations: 80, timeMs: 80 });
 const MARKER_DEFS = new Map(F.POSE_FITTING_MARKERS.map(def => [def.id, def]));
+const FLIP_TITLE = "Mirror this segment's depth across the camera ray (keeps the 2D position), then refit. L/R Hand: the other wrist direction on the same ray";
 
 const now = () => (typeof performance !== "undefined" && performance?.now ? performance.now() : Date.now());
 
@@ -430,20 +431,30 @@ export class PoseFitting2DController {
         this.commitPose();
     }
 
-    flipDepth(id) {
-        const marker = this.state?.markers?.[id];
-        if (!marker || !this.isAvailable()) return;
-        this.endInteraction();
+    /** Dry-run Flip for the current pose: the mirrored state, or why it is refused. */
+    flipCheck(id) {
+        const def = MARKER_DEFS.get(id);
+        if (!def?.flip) return { flipped: null, reason: "This marker has no single segment to flip." };
         const model = this.buildModel();
         const projector = this.projector();
         const report = {};
         const flipped = model && projector ? F.flipMarkerDepth(model, projector, id, null, { report }) : null;
+        if (flipped) return { flipped, model, projector, reason: null };
+        return {
+            flipped: null,
+            reason: report.reason === "same" ? `${def.label}: nothing to flip, the hand points across the view (both depths give the same hand).`
+                : def.handPoint ? "Flip refused: the mirrored hand would break the wrist limits."
+                    : "Flip refused: the mirrored segment would break joint limits (e.g. a twisted shoulder or hyperextended elbow/knee).",
+        };
+    }
+
+    flipDepth(id) {
+        const marker = this.state?.markers?.[id];
+        if (!marker || !this.isAvailable()) return;
+        this.endInteraction();
+        const { flipped, model, projector, reason } = this.flipCheck(id);
         if (!flipped) {
-            const def = MARKER_DEFS.get(id);
-            this.message = !def?.flip ? "This marker has no single segment to flip."
-                : report.reason === "same" ? `${def.label}: nothing to flip, the hand points across the view (both depths give the same hand).`
-                    : def.handPoint ? "Flip refused: the mirrored hand would break the wrist limits."
-                        : "Flip refused: the mirrored segment would break joint limits (e.g. a twisted shoulder or hyperextended elbow/knee).";
+            this.message = reason;
             this.refreshPanel();
             return;
         }
@@ -1001,7 +1012,7 @@ export class PoseFitting2DController {
         }
         depth.title = "Depth / bend hint: Near = this joint is closer to the camera than its parent joint, Far = farther";
         depth.addEventListener("change", () => this.editMarker(this.selectedId, { depth: depth.value }));
-        const flip = button("Flip", "Mirror this segment's depth across the camera ray (keeps the 2D position), then refit. L/R Hand: the other wrist direction on the same ray", () => this.flipDepth(this.selectedId));
+        const flip = button("Flip", FLIP_TITLE, () => this.flipDepth(this.selectedId));
         editor.appendChild(row(editorTitle));
         editor.appendChild(row(enabled.wrap, pinned.wrap));
         const weightReset = resetButton(weight, 1, "Reset to 1.0");
@@ -1149,7 +1160,12 @@ export class PoseFitting2DController {
             }
             e.depth.value = marker.depth;
             e.depth.disabled = !def.parent;
-            e.flip.disabled = !def.flip || !available;
+            // Grey out Flip when it would be refused; keep the last answer while a drag or slider is live.
+            if (!this.live && !this.drag) {
+                const reason = !def.flip || !available ? null : this.flipCheck(this.selectedId).reason;
+                e.flip.disabled = !def.flip || !available || !!reason;
+                e.flip.title = reason || FLIP_TITLE;
+            }
         }
     }
 

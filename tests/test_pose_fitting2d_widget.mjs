@@ -733,6 +733,7 @@ test("Flip on a selected L Hand marker mirrors the wrist direction as one undo s
     viewer.skinnedMesh.updateMatrixWorld(true);
     controller.resetTargets();
     controller.select("l_hand");
+    const flexed = viewer.bones.hand_l.quaternion.clone();
     const e = controller.elements;
     assert.equal(e.flip.disabled, false, "Flip is available for L Hand");
     const fingers = Object.fromEntries(F.POSE_FITTING_FINGER_BONES.filter(name => name.endsWith("_l")).map(name => [name, viewer.bones[name].quaternion.clone()]));
@@ -755,10 +756,18 @@ test("Flip on a selected L Hand marker mirrors the wrist direction as one undo s
     viewer.setPose({ bones: {} }, true);
     controller.resetTargets();
     controller.select("l_hand");
+    assert.equal(controller.elements.flip.disabled, true, "Flip is greyed out when it would be refused");
+    assert.match(controller.elements.flip.title, /mirrored hand would break the wrist limits/, "the tooltip says why");
     const restHistory = viewer.history.length;
-    controller.elements.flip.emit("click");
+    controller.flipDepth("l_hand");
     assert.match(controller.message, /mirrored hand would break the wrist limits/);
     assert.equal(viewer.history.length, restHistory, "a refused Flip records nothing");
+    // Bending the wrist back makes Flip available again on the next panel refresh.
+    viewer.bones.hand_l.quaternion.copy(flexed);
+    viewer.skinnedMesh.updateMatrixWorld(true);
+    controller.onPoseChanged();
+    assert.equal(controller.elements.flip.disabled, false);
+    assert.doesNotMatch(controller.elements.flip.title, /refused/);
 });
 
 test("Optimize defaults to Whole body: a hip marker turns the pelvis on every frame; saved Limbs + head is kept", () => {
