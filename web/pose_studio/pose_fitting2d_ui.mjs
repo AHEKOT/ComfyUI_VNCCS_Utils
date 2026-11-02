@@ -746,13 +746,6 @@ export class PoseFitting2DController {
             else ctx.arc(target.x, target.y, radius, 0, Math.PI * 2);
             ctx.fill();
             ctx.stroke();
-            // Fingertip labels only for the selected marker: five tips would overlap.
-            if (selected || (!hand && marker.enabled && error > F.POSE_FITTING_DEFAULTS.unreachedPx)) {
-                ctx.font = "11px sans-serif";
-                ctx.fillStyle = "#ffffff";
-                const label = Number.isFinite(error) ? `${def.label} ${error.toFixed(1)}px` : `${def.label} (behind camera)`;
-                ctx.fillText(label, target.x + radius + 4, target.y - radius - 2);
-            }
         }
     }
 

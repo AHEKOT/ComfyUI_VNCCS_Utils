@@ -309,8 +309,7 @@ OpenPose (`L Wrist` is the character's left hand, drawn on the image right
 when the character faces the camera).
 
 Optional fingertip markers (**Hands** setting): `L/R Thumb`, `Index`,
-`Middle`, `Ring` and `Pinky` tips. They are smaller than the body markers and
-show their label only when selected.
+`Middle`, `Ring` and `Pinky` tips. They are smaller than the body markers.
 
 ### Workflow
 
