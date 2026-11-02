@@ -183,6 +183,51 @@ same usable timeline boundary.
 Removing a character also removes that character's poses and animation after
 confirmation. At least one character always remains in the scene.
 
+### Moving and Rotating a Whole Character
+
+The bar at the top-left of the viewport switches what a left drag edits:
+
+- **Pose** (default) - the existing joint FK/IK editing. Nothing changes for
+  workflows that never leave this mode.
+- **Move** - a gizmo on the selected character's pelvis moves the whole
+  character: drag an arrow for one axis (X/Y/Z), a square for a plane
+  (XY/YZ/XZ), or the center to move in the camera plane.
+- **Rotate** - drag a ring to rotate the whole character about its pelvis
+  around X, Y, or Z; the outer ring rotates about the view axis. The pelvis stays
+  where it is, and every joint keeps its local pose.
+
+**World / Local** (shown in Move and Rotate) aligns the gizmo with the scene axes
+or with the character's own facing. The character follows the pointer while the
+mouse is held, camera orbit is paused for the drag, and each drag is one Undo
+step. Right/middle drags and the mouse wheel still orbit, pan, and zoom the
+view. In Move and Rotate, joint markers do not react, and a click on another
+character selects it. The gizmo is editor-only: it never appears in output
+images.
+
+The Characters panel shows the same values under **Transform**:
+
+- **Position (units)** - X/Y are the values the positioning radar edits; Z is
+  depth toward (+) or away from (-) the default front camera. World units; the
+  adult figure is about 14 units tall. X/Y are limited to ±50 and Z to ±40.
+- **Rotation (°, XYZ)** - the existing Model Rotation, in degrees, applied in
+  Three.js Euler order XYZ. Typed rotations also turn about the pelvis. The Model
+  Rotation sliders still turn about the model origin, as before.
+- **Reset Position** returns X/Y/Z to 0. **Reset Rotation** returns the
+  rotation to 0° and keeps the pelvis in place.
+
+The fields update while you drag, and typing in a field updates the viewport
+and gizmo immediately. Pressing Enter or leaving the field records one Undo
+step. Nothing new is saved: position X/Y and rotation are stored per pose tab,
+like the radar and Model Rotation. Depth Z belongs to the character and is
+shared by its pose tabs. Workflows, the Pose Library, LIST/GRID captures, and
+older workflows use the same data as before.
+
+Move and Rotate are available in image mode only. In animation mode the bar
+returns to **Pose**, and the Transform fields are read-only. This leaves
+animation keys unchanged; use the Model Rotation and position keys on the
+timeline there. The gizmo is not shown when Pose Studio is embedded in
+UniCanvas, which places the mannequin itself.
+
 ## Pose Tabs
 
 Pose Studio can manage more than one pose in a single node.
