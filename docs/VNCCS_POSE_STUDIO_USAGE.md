@@ -304,7 +304,7 @@ output behind the character.
   are downscaled once to at most 1024 px on the long side and stored as WebP, so the
   workflow stays small.
 - The list shows the stack top first, with a thumbnail, Show/Hide, Lock, Move up/down
-  and Delete.
+  and Delete. Double-click a layer name to rename it (Enter saves, Escape cancels).
 - The selected layer has Opacity, Position (output pixels from the frame centre, Y
   down), Scale (layer height relative to the frame height), Rotation and Flip
   Horizontal. Each field has a reset button; sliders and numbers stay in sync.

@@ -607,6 +607,35 @@ test("panel list, sliders, numeric fields and resets edit the selected layer wit
     assert.equal(panel.layers[0].locked, true);
     button(panel.ui.list.children[1], "Unlock").click();
     assert.equal(panel.layers[0].locked, false, "a locked layer can be unlocked again");
+
+    // Selecting keeps the row elements, so a double click reaches the same name.
+    const nameBefore = panel.ui.list.children[0].children[1];
+    panel.ui.list.children[0].click();
+    assert.equal(panel.ui.list.children[0].children[1], nameBefore);
+    assert.ok(panel.ui.list.children[0].className.includes("selected"));
+
+    // Double-click rename: Enter saves as one undo step, Escape and empty names keep the old name.
+    const rename = (text, key) => {
+        panel.ui.list.children[0].children[1].dispatch("dblclick");
+        const input = panel.ui.list.children[0].children[1];
+        assert.equal(input.tagName, "INPUT");
+        input.value = text;
+        input.dispatch("keydown", { key });
+        input.dispatch("blur");
+    };
+    const beforeRename = viewer.history.length;
+    rename("  Line art  ", "Enter");
+    assert.equal(panel.layers[1].name, "Line art");
+    assert.equal(panel.ui.list.children[0].children[1].textContent, "Line art");
+    assert.equal(viewer.history.length, beforeRename + 1);
+    assert.equal(JSON.parse(node.widgets[0].value).reference_layers[1].name, "Line art");
+    rename("Discarded", "Escape");
+    rename("   ", "Enter");
+    assert.equal(panel.layers[1].name, "Line art");
+    assert.equal(viewer.history.length, beforeRename + 1);
+    viewer.undo();
+    assert.equal(panel.layers[1].name, "Bottom");
+
     button(panel.ui.list.children[0], "Delete").click();
     assert.deepEqual(panel.layers.map(item => item.id), ["top"]);
     viewer.undo();

@@ -39,12 +39,13 @@ const STYLE = `
 .vnccs-ps-reflayer-tools .vnccs-ps-btn.active { border-color: ${ACCENT}; color: ${ACCENT}; }
 .vnccs-ps-reflayer-hint { font-size: 9px; color: var(--ps-text-muted); margin-bottom: 6px; line-height: 1.35; }
 .vnccs-ps-reflayer-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
-.vnccs-ps-reflayer-row { display: flex; align-items: center; gap: 4px; padding: 3px; border: 1px solid var(--ps-border); border-radius: 5px; cursor: pointer; }
+.vnccs-ps-reflayer-row { display: flex; align-items: center; gap: 2px; padding: 3px; border: 1px solid var(--ps-border); border-radius: 5px; cursor: pointer; }
 .vnccs-ps-reflayer-row.selected { border-color: ${ACCENT}; background: rgba(79, 195, 247, 0.08); }
 .vnccs-ps-reflayer-row.hidden-layer { opacity: 0.5; }
-.vnccs-ps-reflayer-thumb { width: 26px; height: 26px; object-fit: contain; flex-shrink: 0; background: #0006; border-radius: 3px; }
+.vnccs-ps-reflayer-thumb { width: 22px; height: 22px; object-fit: contain; flex-shrink: 0; background: #0006; border-radius: 3px; margin-right: 2px; }
 .vnccs-ps-reflayer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
-.vnccs-ps-reflayer-icon { width: 18px; height: 18px; padding: 0; font-size: 10px; line-height: 1; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--ps-text-muted); cursor: pointer; flex-shrink: 0; }
+input.vnccs-ps-reflayer-name { padding: 1px 3px; border: 1px solid ${ACCENT}; border-radius: 3px; background: #0008; color: var(--ps-text); font-family: inherit; }
+.vnccs-ps-reflayer-icon { width: 14px; height: 18px; padding: 0; font-size: 10px; line-height: 1; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--ps-text-muted); cursor: pointer; flex-shrink: 0; }
 .vnccs-ps-reflayer-icon:hover { border-color: var(--ps-border); color: var(--ps-text); }
 .vnccs-ps-reflayer-icon.on { color: ${ACCENT}; }
 .vnccs-ps-reflayer-props .vnccs-ps-field { margin-bottom: 5px; }
@@ -265,9 +266,28 @@ export class PoseReferenceLayerController {
 
     select(id) {
         this.selectedId = this.layers.some(layer => layer.id === id) ? id : null;
-        this.renderList();
+        // Update the rows in place so a double click lands on the same name element.
+        for (const row of this.ui.list?.children || []) {
+            const layer = this.layers.find(item => item.id === row.dataset.layerId);
+            if (layer) row.className = this.rowClass(layer);
+        }
         this.syncFields();
         this.requestRender();
+    }
+
+    startRename(id) {
+        if (!this.layers.some(layer => layer.id === id)) return;
+        this.renamingId = id;
+        this.renderList();
+    }
+
+    finishRename(id, value) {
+        if (this.renamingId !== id) return;
+        this.renamingId = null;
+        const layer = this.layers.find(item => item.id === id);
+        const name = String(value ?? "").trim();
+        if (layer && name && name !== layer.name) this.edit(id, { name });
+        else this.renderList();
     }
 
     setEditMode(enabled) {
@@ -847,18 +867,23 @@ export class PoseReferenceLayerController {
         if (!list) return;
         const rows = [...this.layers].reverse().map((layer, displayIndex) => {
             const row = this.doc.createElement("div");
-            row.className = "vnccs-ps-reflayer-row"
-                + (layer.id === this.selectedId ? " selected" : "") + (layer.visible ? "" : " hidden-layer");
+            row.className = this.rowClass(layer);
             row.dataset.layerId = layer.id;
             row.addEventListener("click", () => this.select(layer.id));
             const thumb = this.doc.createElement("img");
             thumb.className = "vnccs-ps-reflayer-thumb";
             thumb.src = layer.src;
             thumb.alt = "";
-            const name = this.doc.createElement("span");
+            const name = layer.id === this.renamingId ? this.renameInput(layer) : this.doc.createElement("span");
             name.className = "vnccs-ps-reflayer-name";
-            name.textContent = layer.name;
-            name.title = layer.name;
+            if (layer.id !== this.renamingId) {
+                name.textContent = layer.name;
+                name.title = `${layer.name} (double-click to rename)`;
+                name.addEventListener("dblclick", event => {
+                    event.stopPropagation();
+                    this.startRename(layer.id);
+                });
+            }
             const button = (text, title, action, on = false) => {
                 const element = this.doc.createElement("button");
                 element.type = "button";
@@ -892,6 +917,34 @@ export class PoseReferenceLayerController {
         });
         list.replaceChildren(...rows);
         list.style.display = rows.length ? "" : "none";
+        const input = this.ui.renameInput;
+        this.ui.renameInput = null;
+        input?.focus?.();
+        input?.select?.();
+    }
+
+    rowClass(layer) {
+        return "vnccs-ps-reflayer-row"
+            + (layer.id === this.selectedId ? " selected" : "") + (layer.visible ? "" : " hidden-layer");
+    }
+
+    /** Inline name editor: Enter or leaving the field saves, Escape cancels. */
+    renameInput(layer) {
+        const input = this.doc.createElement("input");
+        input.type = "text";
+        input.value = layer.name;
+        input.addEventListener("click", event => event.stopPropagation());
+        input.addEventListener("dblclick", event => event.stopPropagation());
+        input.addEventListener("pointerdown", event => event.stopPropagation());
+        input.addEventListener("keydown", event => {
+            // Keep typing away from Pose Studio and ComfyUI shortcuts.
+            event.stopPropagation();
+            if (event.key === "Enter") this.finishRename(layer.id, input.value);
+            else if (event.key === "Escape") this.finishRename(layer.id, layer.name);
+        });
+        input.addEventListener("blur", () => this.finishRename(layer.id, input.value));
+        this.ui.renameInput = input;
+        return input;
     }
 
     refresh() {
