@@ -126,6 +126,7 @@ The left side contains precision controls:
 - Shared camera dimensions and angle controls, plus the existing Zoom/radar
   positioning widget for the selected character.
 - Export mode controls.
+- Reference Layers (editor-only tracing images, see below).
 - Debug/render options.
 
 Exact UI grouping may change as the web panel evolves, but all values are saved
@@ -290,6 +291,35 @@ Lighting behavior is controlled separately:
   preserved and random light generation is skipped.
 - `Keeping Original Lighting` takes precedence and is preserved as part of the
   manual lighting state.
+
+## Reference Layers
+
+**Reference Layers** (left panel, collapsed by default) show sample images over the
+viewport while you pose, for tracing or matching a reference picture. They are
+editor-only: they are never part of `images`, captures, Pose Manager previews or any
+other output. The **Background** button is different: its image is rendered into the
+output behind the character.
+
+- **+ Add Image** (or drop image files on the viewport) adds up to 8 layers. Images
+  are downscaled once to at most 1024 px on the long side and stored as WebP, so the
+  workflow stays small.
+- The list shows the stack top first, with a thumbnail, Show/Hide, Lock, Move up/down
+  and Delete.
+- The selected layer has Opacity, Position (output pixels from the frame centre, Y
+  down), Scale (layer height relative to the frame height), Rotation and Flip
+  Horizontal. Each field has a reset button; sliders and numbers stay in sync.
+- **Edit in View** enables direct manipulation of the selected layer: drag inside it
+  to move, drag a corner (or Alt+drag) to scale around its centre, drag the round
+  handle (or Ctrl+drag) to rotate; Shift snaps rotation to 15°. Only pointers on the
+  selected layer are taken; bone picking, right-drag orbit and wheel zoom work as
+  before everywhere else, and always when Edit in View is off.
+
+Layers live in capture-frame space (units of the frame height, origin at the frame
+centre), so they stay aligned with the orange frame when the editor view orbits or
+zooms, and keep their place relative to the character when the output width or
+height changes. They are saved per node in `pose_data.reference_layers` (like the
+Background image); workflows without the key load with no layers. Every layer edit
+is one Undo step.
 
 ## Pose Library
 
