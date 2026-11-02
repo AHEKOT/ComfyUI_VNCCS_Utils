@@ -34,9 +34,11 @@
 /**
  * Version 3 adds the L/R Hand markers and replaces `settings.handMarkers`
  * ("off" / "middle" / "all", version 2) with `settings.fingertips`. Older data
- * loads unchanged; "all" becomes Fingertips on.
+ * loads unchanged; "all" becomes Fingertips on. Version 4 makes Whole body the
+ * default Optimize scope; a stored scope is always kept, and pre-4 data without
+ * one keeps the old "limbs" default.
  */
-export const POSE_FITTING_VERSION = 3;
+export const POSE_FITTING_VERSION = 4;
 
 const DEG = Math.PI / 180;
 const RAD = 180 / Math.PI;
@@ -53,11 +55,11 @@ const BODY_MARKERS = [
     { id: "r_shoulder", label: "R Shoulder", bone: "upperarm_r", openpose: "r_shoulder", parent: "neck", side: "r" },
     { id: "r_elbow", label: "R Elbow", bone: "lowerarm_r", openpose: "r_elbow", parent: "r_shoulder", side: "r", flip: "upperarm_r" },
     { id: "r_wrist", label: "R Wrist", bone: "hand_r", openpose: "r_wrist", parent: "r_elbow", side: "r", flip: "lowerarm_r" },
-    { id: "r_hand", label: "R Hand", bone: "hand_r", openpose: null, parent: "r_wrist", side: "r", handPoint: true },
+    { id: "r_hand", label: "R Hand", bone: "hand_r", openpose: null, parent: "r_wrist", side: "r", handPoint: true, flip: "hand_r" },
     { id: "l_shoulder", label: "L Shoulder", bone: "upperarm_l", openpose: "l_shoulder", parent: "neck", side: "l" },
     { id: "l_elbow", label: "L Elbow", bone: "lowerarm_l", openpose: "l_elbow", parent: "l_shoulder", side: "l", flip: "upperarm_l" },
     { id: "l_wrist", label: "L Wrist", bone: "hand_l", openpose: "l_wrist", parent: "l_elbow", side: "l", flip: "lowerarm_l" },
-    { id: "l_hand", label: "L Hand", bone: "hand_l", openpose: null, parent: "l_wrist", side: "l", handPoint: true },
+    { id: "l_hand", label: "L Hand", bone: "hand_l", openpose: null, parent: "l_wrist", side: "l", handPoint: true, flip: "hand_l" },
     { id: "r_hip", label: "R Hip", bone: "thigh_r", openpose: "r_hip", parent: null, side: "r" },
     { id: "r_knee", label: "R Knee", bone: "calf_r", openpose: "r_knee", parent: "r_hip", side: "r", flip: "thigh_r" },
     { id: "r_ankle", label: "R Ankle", bone: "foot_r", openpose: "r_ankle", parent: "r_knee", side: "r", flip: "calf_r" },
@@ -210,6 +212,8 @@ export const POSE_FITTING_DEFAULTS = Object.freeze({
     maxRotationStep: 0.35,
     maxTranslationStep: 1.0,
     unreachedPx: 6,
+    /** Hand stage: wrist roll prior relative to the body prior (not length-scaled). */
+    handRollFactor: 1,
 });
 
 export const POSE_FITTING_DEPTH_HINTS = Object.freeze(["auto", "near", "far"]);
@@ -508,8 +512,15 @@ export function buildFittingModel(snapshot) {
         if (!spec) continue;
         const child = spec.child && index.has(spec.child) ? bones[index.get(spec.child)] : null;
         const tipMarker = spec.tip ? markers[MARKER_INDEX.get(spec.tip)] : null;
-        const handKnuckle = /^hand_[lr]$/.test(bone.name) ? knuckle(bone.name.slice(-1), "middle") : null;
-        const childLocal = child ? child.position : (tipMarker?.bone >= 0 ? tipMarker.offset : handKnuckle);
+        const isHand = /^hand_[lr]$/.test(bone.name);
+        const handKnuckle = isHand ? knuckle(bone.name.slice(-1), "middle") : null;
+        // The wrist rolls about the L/R Hand point direction (not the middle
+        // knuckle, ~13 degrees off it): rolling then never moves the Hand point,
+        // so an out-of-reach target cannot drive the roll into its stop.
+        const handPoint = isHand ? markers[MARKER_INDEX.get(`${bone.name.slice(-1)}_hand`)] : null;
+        const handAxis = handPoint && handPoint.bone === index.get(bone.name) && len(handPoint.offset) > 1e-9 && snapshot.wristAxis !== "knuckle"
+            ? handPoint.offset : null;
+        const childLocal = handAxis || (child ? child.position : (tipMarker?.bone >= 0 ? tipMarker.offset : handKnuckle));
         const childDir = childLocal ? normalize(qrotate(bone.rest, childLocal)) : null;
         const handFrame = spec.scope === "hand" ? handFrames[bone.name.slice(-1)] : null;
         if (spec.type === "ball") {
@@ -936,8 +947,13 @@ function evaluate(model, projector, problem, state, anchor, wantJacobian) {
         const deviation = qlog(qmul(state.quaternions[dof.bone], qconj(anchor.quaternions[dof.bone])));
         if (bone.priorBasis) {
             // Hand joints: flexion is cheap, sideways swing and roll are stiff.
+            // The wrist roll barely moves the Hand point (it sits ~13 degrees off
+            // the roll axis) and is unobservable from one view, so in the hand
+            // stage it keeps an unscaled prior instead of the compliant one.
+            const roll = finite(settings.handRollStiffness) && /^hand_[lr]$/.test(bone.name)
+                ? Math.sqrt(settings.handRollStiffness * (bone.spec.prior || 1)) : s;
             bone.priorBasis.forEach((axis, j) => {
-                const w = s * bone.spec.priorAxes[j];
+                const w = (j === 2 ? roll : s) * bone.spec.priorAxes[j];
                 const row = wantJacobian ? new Float64Array(n) : null;
                 if (row) for (let c = 0; c < 3; c++) row[k + c] = w * axis[c];
                 push(w * dot(axis, deviation), row);
@@ -1095,11 +1111,25 @@ export function solvePoseFitting(model, projector, markers, options = {}) {
     // are as compliant as body markers and do not spring back when a drag ends.
     const settingsStiffness = finite(options.poseStiffness) ? options.poseStiffness : POSE_FITTING_DEFAULTS.poseStiffness;
     const handStiffness = settingsStiffness * handPriorRatio(model, state);
-    const handOptions = bones => ({ ...options, bones, initialState: state, minIterations: 1, stage: "hand", poseStiffness: handStiffness });
+    const rollFactor = finite(options.handRollFactor) ? options.handRollFactor : POSE_FITTING_DEFAULTS.handRollFactor;
+    const handOptions = bones => ({ ...options, bones, initialState: state, minIterations: 1, stage: "hand", poseStiffness: handStiffness, handRollStiffness: settingsStiffness * rollFactor });
     // (2) Hand orientation: the L/R Hand markers rotate only the hand bones.
     const handBones = [...new Set(handPoints.map(marker => defOf(marker).bone))].filter(name => model.index.has(name));
     if (handBones.length) {
-        const result = solveStage(model, projector, handPoints, handOptions(handBones), started);
+        let result = solveStage(model, projector, handPoints, handOptions(handBones), started);
+        // One view leaves two hand directions per 2D target (toward or away from
+        // the camera). Started on the wrong one, the wrist runs into its side-bend
+        // and roll limits and stops short. Then restart from both solutions on the
+        // target's camera ray (least-cost roll) and keep the lowest energy.
+        const stuck = result.valid && options.handRestarts !== false
+            ? result.markers.filter(item => !item.valid || item.error > POSE_FITTING_DEFAULTS.unreachedPx) : [];
+        for (const item of stuck) {
+            const marker = handPoints.find(entry => entry.id === item.id);
+            for (const candidate of handPointCandidates(model, projector, result.state, item.id, Number(marker.x), Number(marker.y))) {
+                const retry = solveStage(model, projector, handPoints, { ...handOptions(handBones), initialState: candidate.state }, started);
+                if (retry.valid && retry.energy < result.energy - 1e-9) result = retry;
+            }
+        }
         if (result.valid) state = result.state;
         stages.push(result);
     }
@@ -1373,6 +1403,66 @@ function arcBetween(from, to) {
 }
 
 /**
+ * Wrist cost of a hand orientation: limit violations dominate; inside the
+ * limits roll and side bend cost more than flexion (each relative to its range).
+ */
+function handPoseCost(bone, q) {
+    const violation = jointViolations(bone, q).reduce((sum, value) => sum + value * value, 0);
+    if (!bone.limitAxes || !bone.spec?.limits) return violation;
+    const values = ballLimitValues(bone, q);
+    const limits = bone.spec.limits;
+    const relative = (value, range) => value >= 0 ? value / range[1] : value / -range[0];
+    return 100 * violation + relative(values.twist, limits.twist) ** 2 + relative(values.side, limits.side) ** 2
+        + 0.25 * relative(values.flex, limits.flex) ** 2;
+}
+
+/**
+ * Hand orientations that put a Hand point (L/R Hand) on the camera ray through
+ * (x, y): one per intersection of that ray with the sphere the point sweeps
+ * around the wrist (the closest direction when the ray misses it). Each turns
+ * the hand bone along the shortest arc, then picks the roll about the new
+ * direction with the lowest wrist cost. Returns [{ state, cost, target }].
+ */
+export function handPointCandidates(model, projector, state, markerId, x, y) {
+    const markerIndex = model.markerIndex ? model.markerIndex.get(markerId) : MARKER_INDEX.get(markerId);
+    const marker = markerIndex === undefined ? null : model.markers[markerIndex];
+    if (!marker || marker.bone < 0 || !finite(x) || !finite(y)) return [];
+    const base = state ? state : stateFromModel(model);
+    const world = forwardKinematics(model, base);
+    const boneIndex = marker.bone;
+    const pivot = [world[boneIndex][12], world[boneIndex][13], world[boneIndex][14]];
+    const point = transformPoint(world[boneIndex], marker.offset);
+    const ray = projector.ray(x, y);
+    const radius = len(sub(point, pivot));
+    if (!ray || radius < 1e-9) return [];
+    const oc = sub(ray.origin, pivot);
+    const b = dot(oc, ray.direction);
+    const discriminant = b * b - (dot(oc, oc) - radius * radius);
+    const at = t => ray.origin.map((value, k) => value + ray.direction[k] * t);
+    const targets = [];
+    if (discriminant >= 0) {
+        const root = Math.sqrt(discriminant);
+        targets.push(at(-b - root), at(-b + root));
+    } else {
+        const direction = normalize(sub(at(-b), pivot));
+        targets.push(pivot.map((value, k) => value + direction[k] * radius));
+    }
+    const bone = model.bones[boneIndex];
+    return targets.map(target => {
+        const axis = normalize(sub(target, pivot));
+        const arc = arcBetween(sub(point, pivot), sub(target, pivot));
+        let best = null;
+        for (let degrees = -90; degrees <= 90; degrees += 5) {
+            const next = cloneState(base);
+            if (!rotateBoneWorld(model, next, world, boneIndex, qmul(qexp(axis.map(value => value * degrees * DEG)), arc))) continue;
+            const cost = handPoseCost(bone, next.quaternions[boneIndex]);
+            if (!best || cost < best.cost - 1e-12) best = { state: next, cost, target };
+        }
+        return best;
+    }).filter(Boolean);
+}
+
+/**
  * Flip the depth of a marker's segment while keeping its 2D projection: the
  * joint moves to the other intersection of its camera ray with the sphere
  * around the parent joint. Ball segments rotate directly; hinge segments
@@ -1382,10 +1472,11 @@ function arcBetween(from, to) {
  * limits (for example a forearm that could only point backwards through a
  * ~180 degree humeral twist) unless `allowViolation` is set.
  */
-export function flipMarkerDepth(model, projector, markerId, state = null, { allowViolation = false, toleranceDeg = 5 } = {}) {
+export function flipMarkerDepth(model, projector, markerId, state = null, { allowViolation = false, toleranceDeg = 5, report = null } = {}) {
     const markerIndex = MARKER_INDEX.get(markerId);
     const def = POSE_FITTING_MARKERS[markerIndex];
     if (!def?.flip || !model.index.has(def.flip)) return null;
+    if (def.handPoint) return flipHandPoint(model, projector, markerId, state, { allowViolation, toleranceDeg, report });
     const next = state ? cloneState(state) : stateFromModel(model);
     const segmentBone = model.index.get(def.flip);
     const world = forwardKinematics(model, next);
@@ -1439,6 +1530,45 @@ export function flipMarkerDepth(model, projector, markerId, state = null, { allo
     return next;
 }
 
+/** Below this angle between the two hand directions there is nothing to flip. */
+const HAND_FLIP_MIN_DEG = 8;
+
+/**
+ * L/R Hand flip: the other hand direction on the same camera ray (mirrored
+ * toward / away from the camera around the wrist), with the least-cost roll.
+ * Only the hand bone turns. Null when the two solutions coincide (the hand
+ * points across the view) or the mirrored hand would break the wrist limits.
+ */
+function flipHandPoint(model, projector, markerId, state, { allowViolation = false, toleranceDeg = 5, report = null } = {}) {
+    const base = state ? cloneState(state) : stateFromModel(model);
+    const markerIndex = model.markerIndex ? model.markerIndex.get(markerId) : MARKER_INDEX.get(markerId);
+    const marker = markerIndex === undefined ? null : model.markers[markerIndex];
+    if (!marker || marker.bone < 0) return null;
+    const world = forwardKinematics(model, base);
+    const pivot = [world[marker.bone][12], world[marker.bone][13], world[marker.bone][14]];
+    const point = transformPoint(world[marker.bone], marker.offset);
+    const projected = projector.project(point);
+    if (!projected.valid) return null;
+    const current = normalize(sub(point, pivot));
+    const angleTo = candidate => Math.acos(clamp(dot(current, normalize(sub(candidate.target, pivot))), -1, 1)) * RAD;
+    const mirrored = handPointCandidates(model, projector, base, markerId, projected.x, projected.y)
+        .filter(candidate => angleTo(candidate) > HAND_FLIP_MIN_DEG)
+        .sort((a, b) => angleTo(b) - angleTo(a))[0];
+    if (!mirrored || !stateIsValid(mirrored.state)) {
+        if (report) report.reason = "same";
+        return null;
+    }
+    if (!allowViolation) {
+        const bone = model.bones[marker.bone];
+        const worst = q => jointViolations(bone, q).reduce((max, value) => Math.max(max, value), 0);
+        if (worst(mirrored.state.quaternions[marker.bone]) > worst(base.quaternions[marker.bone]) + toleranceDeg) {
+            if (report) report.reason = "limits";
+            return null;
+        }
+    }
+    return mirrored.state;
+}
+
 /** Depth relation of a marker's joint to its parent joint in the given state. */
 export function markerDepthRelation(model, projector, markerId, state = null) {
     const index = MARKER_INDEX.get(markerId);
@@ -1453,7 +1583,7 @@ export function markerDepthRelation(model, projector, markerId, state = null) {
 // =====================================================================
 
 export function defaultFittingSettings() {
-    return { scope: "limbs", moveRoot: false, stiffness: 1, showMarkers: true, autoRefit: false, fingertips: false };
+    return { scope: "body", moveRoot: false, stiffness: 1, showMarkers: true, autoRefit: false, fingertips: false };
 }
 
 export function defaultFittingMarker() {
@@ -1499,7 +1629,11 @@ export function normalizeFittingState(raw) {
     }
     const settings = raw.settings && typeof raw.settings === "object" ? raw.settings : {};
     state.settings = {
-        scope: POSE_FITTING_SCOPES.includes(settings.scope) ? settings.scope : "limbs",
+        // Whole body is the default since version 4. Older data always stored its
+        // scope; if it is missing there, keep the previous default so the pose
+        // solves as before.
+        scope: POSE_FITTING_SCOPES.includes(settings.scope) ? settings.scope
+            : Number(raw.version) >= 4 ? "body" : "limbs",
         moveRoot: settings.moveRoot === true,
         stiffness: normalizeNumber(settings.stiffness, 1, 0.05, 20),
         showMarkers: settings.showMarkers !== false,

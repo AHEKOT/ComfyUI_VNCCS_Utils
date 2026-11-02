@@ -17,7 +17,7 @@ import {
 import { HAND_PRESETS } from "./pose_studio/hand_presets.js";
 import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js?v=1791754604000";
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js?v=1791754604000";
-import { PoseFitting2DController } from "./pose_studio/pose_fitting2d_ui.mjs?v=20261102.3";
+import { PoseFitting2DController } from "./pose_studio/pose_fitting2d_ui.mjs?v=20261102.4";
 import { installCustomSelects } from "./shared/custom_select.mjs";
 import {
     DEFAULT_CHARACTER_COLORS,

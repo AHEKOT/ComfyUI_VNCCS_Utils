@@ -339,3 +339,104 @@ test("OpenPose hands: fingertips from 4/8/12/16/20, L/R Hand along the wrist -> 
     assert.equal(bodyOnly.state.settings.fingertips, false);
     assert.ok([...F.POSE_FITTING_HAND_POINT_IDS, ...LEFT_TIPS].every(id => bodyOnly.state.markers[id].u === null));
 });
+
+/** Rest-relative wrist pose (degrees about the hand's own flex and side axes), front camera by default. */
+function poseHand({ flex = 0, side = 0, yaw = 0, pitch = 0 } = {}) {
+    resetRig({ yaw, pitch });
+    const hand = boneOf(model(false), "hand_l");
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(...hand.limitAxes.flex), flex * Math.PI / 180)
+        .premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(...hand.limitAxes.side), side * Math.PI / 180));
+    viewer.bones.hand_l.quaternion.premultiply(q);
+    viewer.skinnedMesh.updateMatrixWorld(true);
+}
+
+test("Flip on L Hand takes the other wrist direction on the same ray: same 2D point, only the hand turns", () => {
+    for (const setup of [{ flex: 30, yaw: 35 }, { flex: 60, side: 10, yaw: 35 }, { flex: 10, side: -20, yaw: 70, pitch: 10 }, { yaw: -30, pitch: -10 }]) {
+        poseHand(setup);
+        const m = model();
+        const p = projector();
+        const before = F.projectFittingJoints(m, p).l_hand;
+        const depth = F.markerDepthRelation(m, p, "l_hand");
+        const flipped = F.flipMarkerDepth(m, p, "l_hand");
+        assert.ok(flipped, JSON.stringify(setup));
+        const after = F.projectFittingJoints(m, p, flipped).l_hand;
+        assert.ok(Math.hypot(after.x - before.x, after.y - before.y) < 0.01, `${JSON.stringify(setup)}: the Hand point keeps its 2D position`);
+        assert.notEqual(F.markerDepthRelation(m, p, "l_hand", flipped), depth, "toward and away from the camera swap");
+        assert.deepEqual(F.changedBones(m, flipped), ["hand_l"], "only the wrist turns; fingers and arm are untouched");
+        assert.ok(F.measureJointLimits(m, flipped).joints.hand_l.violation < 5, "within the wrist limits");
+        // Flipping again returns to the original direction.
+        const back = F.flipMarkerDepth(m, p, "l_hand", flipped);
+        const handIndex = m.index.get("hand_l");
+        const pivot = state => new THREE.Vector3(...F.projectFittingJoints(m, p, state).l_wrist.world);
+        const direction = state => new THREE.Vector3(...F.projectFittingJoints(m, p, state).l_hand.world).sub(pivot(state)).normalize();
+        assert.ok(direction(back).angleTo(direction(null)) < 0.01, "a second Flip comes back");
+        assert.ok(angleBetween(back.quaternions[handIndex], m.bones[handIndex].quaternion) < 15, "with nearly the same roll");
+    }
+    // Refusals: a mirror outside the wrist limits, and a hand pointing across the view (nothing to flip).
+    poseHand();
+    const refused = {};
+    assert.equal(F.flipMarkerDepth(model(), projector(), "l_hand", null, { report: refused }), null);
+    assert.equal(refused.reason, "limits");
+    poseHand({ flex: -40, yaw: -30, pitch: -10 });
+    const same = {};
+    assert.equal(F.flipMarkerDepth(model(), projector(), "l_hand", null, { report: same }), null);
+    assert.equal(same.reason, "same");
+    resetRig();
+});
+
+test("the wrist rolls about the Hand point, so out-of-reach Hand targets do not drive the roll into its stop", () => {
+    poseHand({ yaw: 35 });
+    const m = model(false);
+    const hand = boneOf(m, "hand_l");
+    const offset = F.viewerHandPointOffsets(viewer).l_hand;
+    const axis = new THREE.Vector3(...offset).applyQuaternion(new THREE.Quaternion(...hand.rest)).normalize();
+    assert.ok(new THREE.Vector3(...hand.restDir).angleTo(axis) < 1e-9, "roll axis = rest Hand point direction");
+    // A roll about that axis leaves the Hand point where it is.
+    const p = projector();
+    const start = F.captureFittingState(m);
+    const handIndex = m.index.get("hand_l");
+    const rolled = F.captureFittingState(m);
+    const restQ = new THREE.Quaternion(...hand.rest);
+    rolled.quaternions[handIndex] = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(...hand.restDir), 0.3).multiply(restQ).toArray();
+    const a = F.projectFittingJoints(m, p, start).l_hand, b = F.projectFittingJoints(m, p, rolled).l_hand;
+    assert.ok(Math.hypot(a.x - b.x, a.y - b.y) < 1e-6);
+    // Drag the Hand point around the wrist, far past the side-bend limit: the
+    // wrist stops at the side limit without also rolling to its +-20 degree stop.
+    const joints = F.projectFittingJoints(m, p);
+    const w = joints.l_wrist, h = joints.l_hand;
+    const fixed = markersFrom(joints, ["l_shoulder", "l_elbow", "l_wrist"]);
+    for (const degrees of [60, 100, -90]) {
+        const angle = degrees * Math.PI / 180;
+        const target = { id: "l_hand", x: w.x + (h.x - w.x) * Math.cos(angle) - (h.y - w.y) * Math.sin(angle), y: w.y + (h.x - w.x) * Math.sin(angle) + (h.y - w.y) * Math.cos(angle) };
+        const result = F.solvePoseFitting(m, p, [...fixed, target], { maxIterations: 60 });
+        const wrist = F.measureJointLimits(m, result.state).joints.hand_l;
+        assert.ok(Math.abs(wrist.twist) < 12, `${degrees} deg: roll ${wrist.twist.toFixed(1)}`);
+        assert.ok(wrist.violation < 1.5, `${degrees} deg: ${JSON.stringify(wrist)}`);
+        assert.deepEqual(F.changedBones(m, result.state), ["hand_l"]);
+    }
+    resetRig();
+});
+
+test("Hand restarts: both ray solutions sit on the target, and a restart never makes the solve worse", () => {
+    poseHand({ flex: 50, yaw: 35 });
+    const m = model(false);
+    const p = projector();
+    const joints = F.projectFittingJoints(m, p);
+    const target = { x: joints.l_hand.x + 25, y: joints.l_hand.y - 10 };
+    const candidates = F.handPointCandidates(m, p, null, "l_hand", target.x, target.y);
+    assert.equal(candidates.length, 2);
+    for (const candidate of candidates) {
+        const point = F.projectFittingJoints(m, p, candidate.state).l_hand;
+        assert.ok(Math.hypot(point.x - target.x, point.y - target.y) < 1e-6, "on the target's camera ray");
+        assert.deepEqual(F.changedBones(m, candidate.state), ["hand_l"]);
+    }
+    assert.ok(new THREE.Vector3(...candidates[0].target).distanceTo(new THREE.Vector3(...candidates[1].target)) > 0.1, "two different depths");
+    const fixed = markersFrom(joints, ["l_shoulder", "l_elbow", "l_wrist"]);
+    for (const [dx, dy] of [[25, -10], [-60, 30], [80, 80], [0, -70]]) {
+        const markers = [...fixed, { id: "l_hand", x: joints.l_hand.x + dx, y: joints.l_hand.y + dy }];
+        const on = F.solvePoseFitting(m, p, markers, { maxIterations: 40 });
+        const off = F.solvePoseFitting(m, p, markers, { maxIterations: 40, handRestarts: false });
+        assert.ok(on.energy <= off.energy + 1e-6, `${dx},${dy}: ${on.energy} vs ${off.energy}`);
+    }
+    resetRig();
+});

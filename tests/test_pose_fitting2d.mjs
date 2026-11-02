@@ -357,8 +357,17 @@ test("stored fitting data is validated, clamped and backward compatible", () => 
     assert.deepEqual(state.markers.l_wrist, { u: 0.5, v: 0.25, enabled: true, pinned: true, weight: 10, confidence: 1, depth: "auto" });
     assert.equal(state.markers.r_wrist.enabled, false, "a marker without coordinates cannot be enabled");
     assert.equal(state.markers.bogus, undefined);
-    assert.deepEqual(state.settings, { scope: "limbs", moveRoot: false, stiffness: 0.05, showMarkers: false, autoRefit: false, fingertips: false });
+    assert.deepEqual(state.settings, { scope: "body", moveRoot: false, stiffness: 0.05, showMarkers: false, autoRefit: false, fingertips: false });
     assert.deepEqual(state.frame, { width: 1024, height: 768 });
+    // Optimize: Whole body is the default for new and version 4 data; a stored
+    // scope is kept, and older data without one keeps the old Limbs + head.
+    assert.equal(F.createFittingState().settings.scope, "body");
+    const point = { l_wrist: { u: 0.5, v: 0.5 } };
+    assert.equal(F.normalizeFittingState({ version: 3, markers: point, settings: {} }).settings.scope, "limbs");
+    assert.equal(F.normalizeFittingState({ version: 1, markers: point }).settings.scope, "limbs");
+    assert.equal(F.normalizeFittingState({ version: 3, markers: point, settings: { scope: "body" } }).settings.scope, "body");
+    assert.equal(F.normalizeFittingState({ version: 4, markers: point, settings: { scope: "limbs" } }).settings.scope, "limbs");
+    assert.equal(F.normalizeFittingState({ version: 4, markers: point, settings: {} }).settings.scope, "body");
     assert.equal(state.unknown, undefined);
     assert.deepEqual(Object.keys(state.markers), F.POSE_FITTING_MARKER_IDS);
 });

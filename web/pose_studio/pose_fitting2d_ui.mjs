@@ -14,7 +14,7 @@
  *   the editor view orbits.
  */
 import { detectAndParseJSON } from "./imports/openpose.js?v=1791754604000";
-import * as F from "./pose_fitting2d.mjs?v=20261102.3";
+import * as F from "./pose_fitting2d.mjs?v=20261102.4";
 
 const SIDE_COLORS = { l: "#4fd1ff", r: "#ff9f43", c: "#ffe066" };
 const SKELETON = [
@@ -171,7 +171,8 @@ export class PoseFitting2DController {
 
     runSolve(context, budget) {
         const started = now();
-        const result = F.solvePoseFitting(context.model, context.projector, this.solverMarkers(), this.solverOptions({
+        const markers = context.exclude ? this.solverMarkers().filter(marker => !context.exclude.has(marker.id)) : this.solverMarkers();
+        const result = F.solvePoseFitting(context.model, context.projector, markers, this.solverOptions({
             anchor: context.anchor,
             initialState: context.state,
             maxIterations: budget.iterations,
@@ -394,11 +395,14 @@ export class PoseFitting2DController {
         this.endInteraction();
         const model = this.buildModel();
         const projector = this.projector();
-        const flipped = model && projector ? F.flipMarkerDepth(model, projector, id) : null;
+        const report = {};
+        const flipped = model && projector ? F.flipMarkerDepth(model, projector, id, null, { report }) : null;
         if (!flipped) {
-            this.message = MARKER_DEFS.get(id)?.flip
-                ? "Flip refused: the mirrored segment would break joint limits (e.g. a twisted shoulder or hyperextended elbow/knee)."
-                : "This marker has no single segment to flip.";
+            const def = MARKER_DEFS.get(id);
+            this.message = !def?.flip ? "This marker has no single segment to flip."
+                : report.reason === "same" ? `${def.label}: nothing to flip, the hand points across the view (both depths give the same hand).`
+                    : def.handPoint ? "Flip refused: the mirrored hand would break the wrist limits."
+                        : "Flip refused: the mirrored segment would break joint limits (e.g. a twisted shoulder or hyperextended elbow/knee).";
             this.refreshPanel();
             return;
         }
@@ -406,6 +410,8 @@ export class PoseFitting2DController {
         F.applyFittingStateToViewer(this.viewer, model, flipped);
         marker.depth = F.markerDepthRelation(model, projector, id, flipped);
         const context = this.createContext();
+        // A hand Flip turns only the wrist: the refit leaves the finger chains alone.
+        if (context && MARKER_DEFS.get(id)?.handPoint) context.exclude = new Set(F.POSE_FITTING_MARKERS.filter(def => def.group === "hand").map(def => def.id));
         if (context) this.runSolve(context, POSE_FITTING_FINAL_BUDGET);
         this.message = `${MARKER_DEFS.get(id)?.label || id}: depth flipped (${marker.depth === "near" ? "toward" : "away from"} camera).`;
         this.commitPose();
@@ -699,6 +705,14 @@ export class PoseFitting2DController {
         // The final pass converges from the last visible pose; no jump on release.
         this.runSolve(drag.context, POSE_FITTING_FINAL_BUDGET);
         if (cancelled) this.message = "Drag ended by the browser; the last pose was kept.";
+        else if (/_hip$/.test(drag.id)) {
+            // One hip can only turn the rigid pelvis; sliding it needs the root.
+            const settings = this.settings();
+            const error = this.lastResult?.markers?.find(item => item.id === drag.id)?.error;
+            if (!(settings.scope === "body" && settings.moveRoot) && error > F.POSE_FITTING_DEFAULTS.unreachedPx) {
+                this.message = `${MARKER_DEFS.get(drag.id)?.label || drag.id}: the pelvis is rigid, so a hip only turns it. Turn on Move root (Whole body) to slide the pelvis.`;
+            }
+        }
         this.commitPose();
     }
 
@@ -945,7 +959,7 @@ export class PoseFitting2DController {
         }
         depth.title = "Depth / bend hint: Near = this joint is closer to the camera than its parent joint, Far = farther";
         depth.addEventListener("change", () => this.editMarker(this.selectedId, { depth: depth.value }));
-        const flip = button("Flip", "Mirror this segment's depth across the camera ray (keeps the 2D position), then refit", () => this.flipDepth(this.selectedId));
+        const flip = button("Flip", "Mirror this segment's depth across the camera ray (keeps the 2D position), then refit. L/R Hand: the other wrist direction on the same ray", () => this.flipDepth(this.selectedId));
         const markerError = make("span", "vnccs-ps-value", "");
         editor.appendChild(row(editorTitle, markerError));
         editor.appendChild(row(enabled.wrap, pinned.wrap));

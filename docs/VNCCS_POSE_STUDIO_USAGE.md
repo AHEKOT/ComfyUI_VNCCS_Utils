@@ -357,9 +357,9 @@ that.
 | Fit Pose | Solves all enabled markers to full accuracy. |
 | Reset Targets | Moves unpinned markers back onto the current joints. |
 | Clear Constraints | Removes all markers from this pose. |
-| Optimize | `Limbs + head` keeps the pelvis and spine fixed; `Whole body` also rotates them. |
+| Optimize | `Whole body` (default) also rotates the pelvis and spine, so a hip marker turns the pelvis. `Limbs + head` keeps the pelvis and spine fixed (hip markers then hold still). Poses saved with `Limbs + head` keep it. |
 | Fingertips | Off (default): the 16 body markers. On: adds the ten fingertip markers. Saved with the pose. New tips start disabled on the current fingertips and become enabled when dragged. |
-| Move root | Whole body only: the pelvis may also translate (for scale/offset mismatches). |
+| Move root | Whole body only, off by default: the pelvis may also translate (for scale/offset mismatches). The pelvis is rigid, so without it one hip marker can only turn the pelvis (it cannot, for example, pull the hips wider than they are); the status line points to Move root after such a drag. |
 | Stiffness | How strongly the next solve stays near the pose it starts from (0.06..16). Lower follows markers more freely, higher keeps the current 3D depth. ↺ resets it to 1.00. |
 | Refit after FK/IK edits | Runs Fit Pose after a gizmo or IK drag ends. |
 | Show markers | Hides the overlay without deleting markers. |
@@ -368,7 +368,7 @@ that.
 | Pinned | Weight x10; Reset Targets keeps the marker in place. |
 | Weight | 0..10 per marker; edits refit live. ↺ resets it to 1.0 and refits. |
 | Depth | `Auto`, `Near` or `Far`: the joint is closer to (Near) or farther from (Far) the camera than its parent joint. |
-| Flip | Mirrors the joint's depth around its parent while keeping the 2D position (for example an elbow pointing toward or away from the camera). Refused when the mirrored pose breaks the joint limits. |
+| Flip | Mirrors the joint's depth around its parent while keeping the 2D position (for example an elbow pointing toward or away from the camera). On `L/R Hand` it takes the other wrist direction that projects to the same point (the hand bent toward instead of away from the camera, or the reverse), with the roll that needs the least side bend and twist; only the hand bone turns, fingers stay, and the Depth hint keeps the new side. Refused when the mirrored pose breaks the joint (wrist) limits, or when the hand points straight across the view so both directions are the same. One Undo step. |
 
 Every marker drag, Fit Pose, Reset Targets, Clear Constraints, marker edit,
 Stiffness or Weight slider gesture and slider reset is one Undo step, and Undo
@@ -394,7 +394,12 @@ Body, Left hand and Right hand when fingertip markers are shown.
   wrist or arm (the wrist marker owns those):
   1. Hand: `L/R Hand` turns the hand (`hand_l` / `hand_r`) within wrist
      limits (flexion -70..80 degrees, side bend -35..25, twist -20..20).
-     Fingers never bend in this stage. It works with Fingertips off.
+     Fingers never bend in this stage. It works with Fingertips off. The
+     wrist twist is measured about the wrist-to-Hand-point direction, so
+     twisting never moves the Hand point: a target beyond the wrist's reach
+     stops at the bend limit instead of also twisting the wrist to its stop.
+     When the Hand marker stays more than 6 px off, the stage also tries both
+     wrist directions on the target's camera ray and keeps the better fit.
   2. Fingers (Fingertips on): each active fingertip bends its whole chain,
      `_01` (knuckle, limited ball joint: bend, sideways spread and a little
      twist) then `_02` and `_03` (hinges that bend toward the palm and barely
@@ -415,7 +420,7 @@ Body, Left hand and Right hand when fingertip markers are shown.
 
 Markers, pins, weights, depth hints and the panel settings (including
 Fingertips) are stored on the pose as `fitting2d` (normalized `u`/`v`
-output-frame coordinates, top-left origin, version 3). Every character and
+output-frame coordinates, top-left origin, version 4). Every character and
 every pose tab has its own markers, and they are saved with the workflow and
 with Pose Library entries. Poses without `fitting2d` load exactly as before;
 Clear Constraints removes the field.
@@ -424,8 +429,10 @@ Older data: `fitting2d` saved without `L/R Hand` gets them disabled at the
 current hand point, so it keeps solving as before. Fitting Mode with no
 markers, Reset Targets and OpenPose import create them enabled, like the
 other joints. A version 2 Hands setting of `All fingertips` becomes
-Fingertips on; `Off` and `Middle tips` become Fingertips off. Hide bone
-handles is stored with the node, not with the pose.
+Fingertips on; `Off` and `Middle tips` become Fingertips off. A stored
+Optimize setting is always kept; data from before version 4 without one keeps
+`Limbs + head`, the old default. Hide bone handles is stored with the node,
+not with the pose.
 
 ### Limitations
 
@@ -441,7 +448,10 @@ handles is stored with the node, not with the pose.
   or offset, adjust Camera Zoom or the positioning radar first, or use Whole
   body with Move root.
 - A single 2D view cannot tell toward-camera from away-from-camera bends;
-  use the Depth hint or Flip.
+  use the Depth hint or Flip (also on `L/R Hand`). A hand Flip is often
+  refused near the rest pose: there the mirrored direction would need more
+  side bend than the wrist allows, and the forearm cannot roll in the fitting
+  rig.
 - Not available in Animation mode, and hidden when Pose Studio is embedded in
   UniCanvas.
 

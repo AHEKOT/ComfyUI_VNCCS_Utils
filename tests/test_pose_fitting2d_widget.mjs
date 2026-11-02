@@ -719,3 +719,83 @@ test("Hide bone handles hides and disables bone picking while Fitting Mode is on
     assert.equal(viewer.selectedBone?.name, "head");
     withIK(() => { viewer.updateIKEffectorVisibility(); assert.ok(effector.visible); });
 });
+
+test("Flip on a selected L Hand marker mirrors the wrist direction as one undo step; fingers stay; refusals explain why", () => {
+    const s = fittingScene();
+    const { controller, viewer, THREE } = s;
+    controller.setActive(true);
+    controller.setFingertips(true);
+    // A wrist flexed toward the camera, so the mirrored direction is inside the limits.
+    const hand = controller.buildModel().bones[controller.buildModel().index.get("hand_l")];
+    viewer.bones.hand_l.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(...hand.limitAxes.flex), 60 * Math.PI / 180))
+        .premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(...hand.limitAxes.side), 10 * Math.PI / 180));
+    viewer.skinnedMesh.updateMatrixWorld(true);
+    controller.resetTargets();
+    controller.select("l_hand");
+    const e = controller.elements;
+    assert.equal(e.flip.disabled, false, "Flip is available for L Hand");
+    const fingers = Object.fromEntries(F.POSE_FITTING_FINGER_BONES.filter(name => name.endsWith("_l")).map(name => [name, viewer.bones[name].quaternion.clone()]));
+    const handBefore = viewer.bones.hand_l.quaternion.clone();
+    const before = s.projected("l_hand");
+    const history = viewer.history.length;
+    e.flip.emit("click");
+    assert.equal(viewer.history.length, history + 1, "one undo step");
+    assert.ok(viewer.bones.hand_l.quaternion.angleTo(handBefore) > 0.2, "the wrist turned");
+    const after = s.projected("l_hand");
+    // The mirror lands ~2 degrees past the wrist limit here; the refit settles it inside within a pixel or two.
+    assert.ok(Math.hypot(after.x - before.x, after.y - before.y) < 2, "the Hand point keeps its 2D position");
+    for (const [name, q] of Object.entries(fingers)) assert.ok(viewer.bones[name].quaternion.angleTo(q) < 1e-9, `${name} untouched`);
+    assert.ok(["near", "far"].includes(controller.state.markers.l_hand.depth), "the Depth hint holds the new side");
+    assert.equal(e.depth.value, controller.state.markers.l_hand.depth);
+    assert.match(controller.message, /L Hand: depth flipped/);
+    viewer.undo();
+    assert.ok(viewer.bones.hand_l.quaternion.angleTo(handBefore) < 1e-9, "undo restores the wrist");
+    // At rest the mirrored hand would need more side bend than the wrist has.
+    viewer.setPose({ bones: {} }, true);
+    controller.resetTargets();
+    controller.select("l_hand");
+    const restHistory = viewer.history.length;
+    controller.elements.flip.emit("click");
+    assert.match(controller.message, /mirrored hand would break the wrist limits/);
+    assert.equal(viewer.history.length, restHistory, "a refused Flip records nothing");
+});
+
+test("Optimize defaults to Whole body: a hip marker turns the pelvis on every frame; saved Limbs + head is kept", () => {
+    const s = fittingScene();
+    const { controller, viewer, pointer, runFrames } = s;
+    controller.setActive(true);
+    assert.equal(controller.settings().scope, "body");
+    assert.equal(controller.elements.scope.value, "body");
+    assert.equal(controller.settings().moveRoot, false, "Move root stays off by default");
+    const marker = controller.state.markers.l_hip;
+    const start = controller.frameToOverlay(marker.u, marker.v);
+    const other = controller.frameToOverlay(controller.state.markers.r_hip.u, controller.state.markers.r_hip.v);
+    const inward = Math.sign(other.x - start.x);
+    let previous = s.projected("l_hip");
+    pointer("pointerdown", start.x, start.y);
+    assert.equal(controller.drag.id, "l_hip");
+    for (let step = 1; step <= 3; step++) {
+        pointer("pointermove", start.x + inward * 3 * step, start.y);
+        runFrames();
+        const now = s.projected("l_hip");
+        assert.ok(Math.hypot(now.x - previous.x, now.y - previous.y) > 0.5, `step ${step}: the hip moves while dragging`);
+        previous = now;
+    }
+    pointer("pointerup", start.x + inward * 9, start.y);
+    assert.ok(viewer.bones.pelvis.quaternion.angleTo(new s.THREE.Quaternion()) > 1e-4 || viewer.bones.spine_01.quaternion.angleTo(new s.THREE.Quaternion()) > 1e-4, "the pelvis turned");
+    // Outward past the hip width a rigid pelvis cannot follow: the panel says to use Move root.
+    const now = controller.frameToOverlay(controller.state.markers.l_hip.u, controller.state.markers.l_hip.v);
+    pointer("pointerdown", now.x, now.y);
+    pointer("pointermove", now.x - inward * 40, now.y);
+    runFrames();
+    pointer("pointerup", now.x - inward * 40, now.y);
+    assert.match(controller.message, /Move root/);
+    // Saved data that stored Limbs + head keeps it.
+    const saved = F.cloneFittingState(controller.state);
+    saved.settings.scope = "limbs";
+    controller.setActive(false);
+    viewer.setPose({ bones: {}, fitting2d: saved }, true);
+    controller.setActive(true);
+    assert.equal(controller.settings().scope, "limbs");
+    assert.equal(controller.elements.scope.value, "limbs");
+});
