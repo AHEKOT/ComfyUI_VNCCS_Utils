@@ -50,6 +50,8 @@ Outputs:
 | `crop_json` | `STRING` list | The crop guide of each image, aligned with `images`. See [Crop Guide](#crop-guide). |
 | `crop_image` | `IMAGE` list | Crop of each full image with its guide (the full image when the guide is disabled). |
 | `crop_preview` | `IMAGE` list | Each full image with the outside dimmed and the guide border drawn. |
+| `character_json` | `STRING` list | Per-character information of each image, aligned with `images`. See [Per-character export](#per-character-export). |
+| `character_passes` | `IMAGE` list | One batch per exported character: solo normal, solo depth and full-body silhouette at the full image size. |
 
 Important backend behavior:
 
@@ -398,6 +400,161 @@ Applying the rectangle to an image of a different resolution:
    cropping (stretched).
 3. **The generator moved or reframed the subject**: no guarantee; the rectangle marks the
    image region, not the subject.
+
+## Per-character export
+
+`character_json` and `character_passes` export every character of a multi-character
+pose as its own set of control images in one run, for this workflow:
+
+1. Generate each character with its own crop and its solo control passes.
+2. Cut each result out with that character's visible mask and composite.
+3. Finish contact areas (hands, overlaps) with inpainting.
+
+Pose Studio renders the passes; **VNCCS Character Export** crops them, in the same way
+as Crop Guide and VNCCS Apply Crop Guide.
+
+- **Solo renders.** For every captured image, the widget renders the full Character ID
+  pass and, per character, the normal, depth and coverage of that character alone (all
+  other characters hidden), through the same capture camera and at the output resolution.
+  Parts hidden behind other characters are therefore present in the solo passes.
+- **Cost.** Nothing is rendered while both outputs are unlinked; `images` and every
+  other output are identical either way. While linked, each image costs one extra
+  three-pass render of the full scene plus one per character, and PNG encoding of the
+  results. Linking either output records `export.character_outputs` in `pose_data`, so
+  the node runs again.
+- **Exported characters** are the characters shown in the capture, in ascending slot
+  order. A character hidden in the scene or entirely outside the frame is not exported;
+  a character fully covered by others is exported (its visible mask is empty).
+- **Run modes.** Studio, Image mode, LIST output (including Debug Mode and `pose_image`
+  runs). GRID, Animation and Pose Manager runs stop with an error while either output is
+  linked; unlinked outputs return placeholders (`character_json` with `"unavailable"`
+  and black images).
+
+### Slots, IDs and lists
+
+- `slot` is the Characters panel slot (0-based, 4 at most). Deleting a character can
+  leave a gap (for example slots 0 and 2); slots never shift.
+- The Character ID value is `slot + 1` (0 is background) and the colour is fixed per
+  slot: `#ff0000`, `#00ff00`, `#0000ff`, `#ffff00`. It is unrelated to the Model colour
+  of the Characters panel.
+- Lists are ordered by captured image (pose tab) first, then by ascending slot.
+  `list_index` is the position of a character in `character_passes` and in every
+  per-kind output of VNCCS Character Export.
+
+### character_passes
+
+One IMAGE batch per exported character, `[3, height, width, 3]` at the full image size,
+frames in this fixed order:
+
+| Frame | Content |
+| --- | --- |
+| 0 `normal_solo` | View-space normal of the character alone, same encoding as `normal`; background (0, 0, 0). |
+| 1 `depth_solo` | Camera depth of the character alone on the scene scale (below), unquantized float gray; background 0. |
+| 2 `silhouette` | Full-body coverage of the solo render: 1.0 on the character, 0.0 elsewhere. |
+
+Scene depth scale: over all exported characters of the image, the nearest surface is
+level 255 and the farthest is level 32 (`POSE_DEPTH_FAR_LEVEL`), the same convention as
+the `depth` output. Occluded surfaces count too, so the scale equals the `depth` output's
+whenever the farthest surface is visible; otherwise it extends to the hidden surface.
+Values are kept as floats so Character Export can renormalize without banding.
+
+### character_json
+
+```json
+{
+  "schema_version": 1,
+  "type": "vnccs_character_set",
+  "pose_index": 0,
+  "pose_name": "Pose 1",
+  "source": {"width": 1024, "height": 1024},
+  "passes": ["normal_solo", "depth_solo", "silhouette"],
+  "background": {"normal": [0, 0, 0], "depth": 0},
+  "depth": {"normalization": "scene", "near_level": 255, "far_level": 32, "near": 39.226356, "far": 46.093616},
+  "characters": [
+    {"slot": 0, "id_value": 1, "id_color": "#ff0000", "list_index": 0, "z_order": 1,
+     "bbox_full": {"x": 324, "y": 213, "width": 376, "height": 595},
+     "bbox_visible": {"x": 324, "y": 213, "width": 273, "height": 595},
+     "pixels_full": 58276, "pixels_visible": 47336,
+     "depth": {"near": 43.230089, "far": 46.093616, "visible_median": 45.11975}}
+  ]
+}
+```
+
+`pose_name` is the pose tab label (a Debug Mode run uses the library pose name and
+`pose_index` `null`). Depths are camera distances in scene units. Bounds are full-image
+pixels, origin top-left; `bbox_visible` is `null` for a fully occluded character.
+
+`z_order` ranks the characters of an image by the median camera depth of their visible
+pixels, 0 = nearest; fully occluded characters come last, ordered by their full-body
+median. Interleaved poses (arms around each other) have no single front-to-back order,
+so compositing must use `mask_visible`; `z_order` is only a hint, for example for edge
+blending.
+
+### VNCCS Character Export
+
+`VNCCS Character Export` (`VNCCS_CharacterExport`, category `VNCCS/pose`) turns the Pose
+Studio outputs into per-character crops.
+
+| Input | Type | Notes |
+| --- | --- | --- |
+| `images` | `IMAGE` | Pose Studio `images` (LIST). |
+| `character_id` | `IMAGE` | Pose Studio `character_id` of the same run. |
+| `character_json` | `STRING` | Pose Studio `character_json`. |
+| `character_passes` | `IMAGE` | Pose Studio `character_passes`. |
+| `margin` | `INT` | Pixels around the full-body bounds at the output resolution (default 64). |
+| `align` | `8` / `64` | Crop width and height are multiples of this value (default 8). |
+| `depth_normalization` | `scene` / `character` | Depth scale of `depth_solo` (default `scene`). |
+
+Every per-kind output is an `IMAGE` list with one crop per exported character
+(`list_index` order); `meta` is a `STRING` list with one JSON per image.
+
+| Output | Content |
+| --- | --- |
+| `normal_solo` | Solo normal, cropped. Includes the parts hidden by other characters in the full render. |
+| `depth_solo` | Solo depth, cropped, 8-bit levels. `scene`: the scene scale above. `character`: 255..32 over this character's own full body. |
+| `character_id` | Crop of the full `character_id` pass, with every character's colour. |
+| `mask_visible` | White where this character is visible in the full render (from the full ID pass), black elsewhere. Use it for compositing. |
+| `mask_full` | White on the full-body silhouette of the solo render, occluded parts included. Use it for inpainting ranges. |
+| `rgb` | Crop of `images`, for checking (a Background image appears in it when set). |
+| `meta` | Crop rectangles and statistics, below. |
+
+Masks are white/black `IMAGE`s, so Save Image stores them directly. Backgrounds are
+normal (0, 0, 0) and depth 0, as recorded in `meta`. Crops of the other characters or
+masked variants are not output; crop any full pass with `crop_rect` instead.
+
+Coordinates: full-image pixels, (0, 0) top-left; a crop pixel is `full - (x, y)` of
+`crop_rect`. `crop_rect` is computed per character:
+
+1. Take the bounds of `mask_full` and add `margin` on every side.
+2. Grow width and height to multiples of `align`, centred.
+3. Shift the rectangle inward to fit the frame; only an axis that is still larger than
+   the frame after alignment is clamped to the whole frame.
+
+So `crop_rect` always contains the full-body bounds plus `margin` (within the frame), and
+its width and height are multiples of `align` except on a clamped axis. `crop_rect`
+width and height equal the size of every output image of that character.
+
+```json
+{
+  "schema_version": 1, "type": "vnccs_character_export_set", "pose_index": 0, "pose_name": "Pose 1",
+  "source": {"width": 1024, "height": 1024}, "background": {"normal": [0, 0, 0], "depth": 0},
+  "depth_normalization": "scene",
+  "characters": [{"slot": 0, "id_value": 1, "id_color": "#ff0000", "list_index": 0, "z_order": 1,
+    "crop_rect": {"x": 260, "y": 147, "width": 504, "height": 728},
+    "bbox_full": {"x": 324, "y": 213, "width": 376, "height": 595},
+    "bbox_visible": {"x": 324, "y": 213, "width": 273, "height": 595}, "visible_ratio": 0.8123}]
+}
+```
+
+`visible_ratio` is visible pixels / full-body pixels. `meta` has no file names; Save
+Image assigns them, in `list_index` order. Pairing: N `images` and `character_id` items
+(or one batch of N) for N `character_json` values, and one `character_passes` item per
+character; images must be the uncropped Pose Studio size. Placeholder or mismatched
+inputs stop with a clear error.
+
+Typical workflow: Pose Studio `images`, `character_id`, `character_json` and
+`character_passes` -> `VNCCS Character Export` -> Save Image per kind (and a text
+preview or save node for `meta`).
 
 ## Camera and Framing
 
@@ -793,6 +950,7 @@ Frontend/backend payload limits:
 | Pose capture cache total text size | 64 MiB |
 | Decoded captured image | 32 MiB per image |
 | Captured image pixels | 4096 x 4096 per image |
+| Character passes | 64 MiB of base64 text per run, within the 64 MiB sync capture body |
 | Captured sequence pixels | 64 Mi pixels in total; reduce resolution or frame count above this |
 | SAM3D upload image | 32 MiB |
 | SAM3D upload pixels | 4096 x 4096 |
