@@ -55,7 +55,7 @@ import {
     waitForVideoMetadata,
     zoomVideoTimelineViewport,
 } from "./pose_studio/imports/video.mjs";
-import { PoseReferenceLayerController } from "./pose_studio/reference_layers_controller.mjs?v=20261102.2";
+import { PoseReferenceLayerController } from "./pose_studio/reference_layers_controller.mjs?v=20261102.3";
 import {
     boneNameForPositionTrack,
     bonePositionTrackName,

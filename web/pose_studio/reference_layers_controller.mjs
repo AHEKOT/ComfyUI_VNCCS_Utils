@@ -29,6 +29,21 @@ import {
 } from "./reference_layers.mjs";
 
 const STYLE_ID = "vnccs-ps-reflayer-style";
+// Circular arrow with a dark outline, readable on light and dark images.
+const ROTATE_CURSOR_SVG = "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'>"
+    + "<g fill='none' stroke-linecap='round' stroke-linejoin='round' transform='translate(1.5 2) scale(0.85)'>"
+    + "<path d='M20.5 15a9 9 0 1 1-2.1-9.4L23 10M23 4v6h-6' stroke='#000' stroke-width='4.5'/>"
+    + "<path d='M20.5 15a9 9 0 1 1-2.1-9.4L23 10M23 4v6h-6' stroke='#fff' stroke-width='2'/></g></svg>";
+const ROTATE_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(ROTATE_CURSOR_SVG)}") 12 12, grab`;
+
+/** Resize cursor along the on-screen direction from the layer centre to a corner. */
+export function referenceLayerResizeCursor(center, corner) {
+    const angle = ((Math.atan2(corner.y - center.y, corner.x - center.x) * 180 / Math.PI) % 180 + 180) % 180;
+    if (angle < 22.5 || angle >= 157.5) return "ew-resize";
+    if (angle < 67.5) return "nwse-resize";
+    if (angle < 112.5) return "ns-resize";
+    return "nesw-resize";
+}
 const HANDLE_RADIUS = 9;
 const ROTATE_HANDLE_OFFSET = 24;
 const ACCENT = "#4fc3f7";
@@ -118,6 +133,7 @@ export class PoseReferenceLayerController {
         this.entries = new Map();
         this.drag = null;
         this.hoverMode = null;
+        this.hoverCursor = null;
         this.loadToken = 0;
         this.ui = {};
         this._listeners = [];
@@ -513,7 +529,7 @@ export class PoseReferenceLayerController {
         let dx = top.x - center.x, dy = top.y - center.y;
         const length = Math.hypot(dx, dy) || 1;
         dx /= length; dy /= length;
-        return { corners, top, rotate: { x: top.x + dx * ROTATE_HANDLE_OFFSET, y: top.y + dy * ROTATE_HANDLE_OFFSET } };
+        return { corners, center, top, rotate: { x: top.x + dx * ROTATE_HANDLE_OFFSET, y: top.y + dy * ROTATE_HANDLE_OFFSET } };
     }
 
     pointerFrame(event) {
@@ -536,14 +552,17 @@ export class PoseReferenceLayerController {
         const pointer = this.pointerFrame(event);
         const handles = this.handleGeometry(layer);
         const near = point => point && Math.hypot(point.x - pointer.css.x, point.y - pointer.css.y) <= HANDLE_RADIUS;
-        let mode = null;
+        let mode = null, cursor = null;
+        const corner = handles?.corners.find(near);
         if (handles && near(handles.rotate)) mode = "rotate";
-        else if (handles && handles.corners.some(near)) mode = "scale";
-        else if (pointer.point && hitTestReferenceLayer(layer, pointer.point)) {
+        else if (corner) {
+            mode = "scale";
+            cursor = referenceLayerResizeCursor(handles.center, corner);
+        } else if (pointer.point && hitTestReferenceLayer(layer, pointer.point)) {
             // Modifiers reach scale and rotation when the handles are off screen.
             mode = event.ctrlKey || event.metaKey ? "rotate" : event.altKey ? "scale" : "move";
         }
-        return mode ? { mode, layer, pointer } : null;
+        return mode ? { mode, cursor, layer, pointer } : null;
     }
 
     onPointerDown(event) {
@@ -560,13 +579,16 @@ export class PoseReferenceLayerController {
             recorded: false,
         };
         try { this.viewer.canvas.setPointerCapture?.(event.pointerId); } catch { /* synthetic pointer */ }
-        this.setHoverMode(hit.mode);
+        this.setHoverMode(hit.mode, hit.cursor);
     }
 
     onPointerMove(event) {
         const drag = this.drag;
         if (!drag) {
-            if (this.editMode && event.buttons === 0) this.setHoverMode(this.hitTest(event)?.mode || null);
+            if (this.editMode && event.buttons === 0) {
+                const hit = this.hitTest(event);
+                this.setHoverMode(hit?.mode || null, hit?.cursor);
+            }
             return;
         }
         if (event.pointerId !== drag.pointerId) return;
@@ -606,13 +628,15 @@ export class PoseReferenceLayerController {
         if (drag.recorded) this.commit();
     }
 
-    setHoverMode(mode) {
-        if (this.hoverMode === mode || !this.viewer?.canvas) return;
+    setHoverMode(mode, cursor = null) {
+        const next = mode === null ? null
+            : cursor || (mode === "move" ? "move" : mode === "scale" ? "nwse-resize" : ROTATE_CURSOR);
+        if ((this.hoverMode === mode && this.hoverCursor === next) || !this.viewer?.canvas) return;
         const canvas = this.viewer.canvas;
         if (this.hoverMode === null) this._cursorBeforeHover = canvas.style.cursor || "";
         this.hoverMode = mode;
-        canvas.style.cursor = mode === "move" ? "move" : mode === "scale" ? "nwse-resize" : mode === "rotate" ? "grab"
-            : this._cursorBeforeHover || "";
+        this.hoverCursor = next;
+        canvas.style.cursor = next ?? (this._cursorBeforeHover || "");
     }
 
     /** Called after each viewport render: selection outline and handles. */

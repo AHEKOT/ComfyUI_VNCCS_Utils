@@ -23,7 +23,7 @@ import {
     restoreReferenceLayerHistory,
     serializeReferenceLayers,
 } from "../web/pose_studio/reference_layers.mjs";
-import { PoseReferenceLayerController } from "../web/pose_studio/reference_layers_controller.mjs";
+import { PoseReferenceLayerController, referenceLayerResizeCursor } from "../web/pose_studio/reference_layers_controller.mjs";
 import { createScene } from "./helpers/pose_studio_scene.mjs";
 
 const PNG = "data:image/png;base64,iVBORw0KGgo=";
@@ -375,6 +375,45 @@ test("pointers pass through outside edit mode, outside the layer, and for locked
     assert.equal(rig.canvas.dispatch("pointerdown", inside).stopped, false, "hidden");
     assert.equal(rig.calls.record, 0);
     assert.equal(rig.passed.filter(type => type === "pointerdown").length, 5);
+});
+
+test("hover cursors follow each corner's diagonal and the rotate handle", () => {
+    const center = { x: 0, y: 0 };
+    assert.equal(referenceLayerResizeCursor(center, { x: 10, y: 10 }), "nwse-resize");
+    assert.equal(referenceLayerResizeCursor(center, { x: -10, y: -10 }), "nwse-resize");
+    assert.equal(referenceLayerResizeCursor(center, { x: 10, y: -10 }), "nesw-resize");
+    assert.equal(referenceLayerResizeCursor(center, { x: -10, y: 10 }), "nesw-resize");
+    assert.equal(referenceLayerResizeCursor(center, { x: 0, y: 10 }), "ns-resize");
+    assert.equal(referenceLayerResizeCursor(center, { x: -10, y: 1 }), "ew-resize");
+
+    const rig = createRig();
+    rig.controller.load([layer({ id: "a", scale: 0.4 })]);
+    rig.controller.setEditMode(true);
+    const hover = point => {
+        rig.canvas.dispatch("pointermove", { ...clientAt(rig, point), buttons: 0 });
+        return rig.canvas.style.cursor;
+    };
+    const cursors = referenceLayerCorners(rig.controller.selectedLayer()).map(hover);
+    assert.equal(cursors.filter(cursor => cursor === "nwse-resize").length, 2);
+    assert.equal(cursors.filter(cursor => cursor === "nesw-resize").length, 2);
+    // Opposite corners share a cursor.
+    assert.equal(cursors[0], cursors[2]);
+    assert.equal(cursors[1], cursors[3]);
+    // A 90 degree turn swaps the diagonals.
+    rig.controller.updateLayer("a", { rotation: 90 });
+    const turned = referenceLayerCorners(rig.controller.selectedLayer()).map(hover);
+    assert.deepEqual(turned, [cursors[1], cursors[0], cursors[3], cursors[2]]);
+
+    const handles = rig.controller.handleGeometry(rig.controller.selectedLayer());
+    const { rect, clientWidth, clientHeight } = rig.canvas;
+    rig.canvas.dispatch("pointermove", {
+        clientX: rect.left + handles.rotate.x / clientWidth * rect.width,
+        clientY: rect.top + handles.rotate.y / clientHeight * rect.height,
+        buttons: 0,
+    });
+    assert.match(rig.canvas.style.cursor, /^url\("data:image\/svg\+xml,.*"\) 12 12, grab$/);
+    assert.equal(hover({ x: 0, y: 0 }), "move");
+    assert.equal(hover({ x: 0.9, y: 0.9 }), "");
 });
 
 test("a click without movement records no undo step", () => {
