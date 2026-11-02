@@ -37,6 +37,13 @@ from .posestudio.crop_guide import (
     requested_crop_outputs,
     unsupported_crop_json,
 )
+from .posestudio.character_passes import (
+    POSE_CHARACTER_OUTPUTS,
+    build_character_sets,
+    decode_character_captures,
+    requested_character_outputs,
+    unavailable_character_set,
+)
 _CAPTURED_IMAGE_MAX_COUNT = 600
 _CAPTURED_IMAGE_MAX_TOTAL_CHARS = 64 * 1024 * 1024
 _CAPTURED_IMAGE_MAX_BYTES = 32 * 1024 * 1024
@@ -263,12 +270,17 @@ class VNCCS_PoseStudio:
     # existing links keep their indices; they align with ``images``.
     # The crop guide outputs follow them: crop_json (one per image), crop_image
     # (the crop of each full image) and crop_preview (the full image with the guide).
+    # Last come the per-character outputs for VNCCS Character Export: character_json
+    # (one per image) and character_passes (one batch per exported character).
     RETURN_TYPES = (
         "IMAGE,VIDEO", "STRING", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "MASK", "IMAGE",
-        "STRING", "IMAGE", "IMAGE",
+        "STRING", "IMAGE", "IMAGE", "STRING", "IMAGE",
     )
-    RETURN_NAMES = ("images", "lighting_prompt") + POSE_CONDITIONING_OUTPUTS + POSE_CROP_GUIDE_OUTPUTS
-    OUTPUT_IS_LIST = (True,) * 11
+    RETURN_NAMES = (
+        ("images", "lighting_prompt") + POSE_CONDITIONING_OUTPUTS + POSE_CROP_GUIDE_OUTPUTS
+        + POSE_CHARACTER_OUTPUTS
+    )
+    OUTPUT_IS_LIST = (True,) * 13
     FUNCTION = "generate"
     CATEGORY = "VNCCS/pose"
     
@@ -600,6 +612,7 @@ class VNCCS_PoseStudio:
                     frame_batch = torch.stack(tensors, dim=0)
                     placeholders = self._conditioning_placeholders(rendered_images[:1])
                     placeholders += self._crop_outputs(data, export, rendered_images[:1], None, crop_reason)
+                    placeholders += self._character_outputs(data, export, rendered_images[:1], crop_reason)
                     if animation_outputs_image_batch:
                         return (frame_batch, lighting_prompts, *placeholders)
                     video = _create_comfy_video(
@@ -619,6 +632,7 @@ class VNCCS_PoseStudio:
                         conditioning_outputs, passes, rendered_images, lambda images: images
                     )
                     auxiliary += self._crop_outputs(data, export, rendered_images, tensor_list, crop_reason)
+                    auxiliary += self._character_outputs(data, export, rendered_images, crop_reason)
                     return (tensor_list, lighting_prompts, *auxiliary)
                 else:
                     grid_img = self._make_grid(rendered_images, grid_columns, tuple(bg_color))
@@ -634,6 +648,7 @@ class VNCCS_PoseStudio:
                         lambda images: [self._make_grid(images, grid_columns, (0, 0, 0))],
                     )
                     auxiliary += self._crop_outputs(data, export, [grid_img], None, crop_reason)
+                    auxiliary += self._character_outputs(data, export, [grid_img], crop_reason)
                     return ([grid_tensor], [combined_prompt], *auxiliary)
 
         raise RuntimeError(
@@ -732,6 +747,37 @@ class VNCCS_PoseStudio:
             else:
                 previews.append(draw_crop_preview(image, record["pixel_rect"]) if record["enabled"] else image)
         return [jsons, crops, previews]
+
+    def _character_outputs(self, data, export, layout_images, unsupported_reason):
+        """character_json (one per image) and character_passes (one batch per character).
+
+        Solo passes exist only when a character output is linked and the run is
+        Studio, Image mode and LIST (the modes whose images are the capture frame);
+        a linked output in another mode stops the run. Unlinked outputs return
+        ``unavailable`` records and black placeholders.
+        """
+        requested = requested_character_outputs(export)
+        if requested and unsupported_reason:
+            raise RuntimeError(
+                "Pose Studio character outputs (" + ", ".join(requested) + ") are available for "
+                "Studio Image mode with LIST output; " + unsupported_reason + " is not supported. "
+                "Disconnect them or switch to Studio, Image mode and LIST."
+            )
+        if not requested:
+            reason = unsupported_reason or "character outputs are not linked"
+            jsons = [json.dumps(unavailable_character_set(*img.size, reason)) for img in layout_images]
+            blanks = [torch.zeros((1, 1, 1, 3)).expand(1, img.size[1], img.size[0], 3) for img in layout_images]
+            return [jsons, blanks]
+        items = data.get("captured_characters")
+        if not isinstance(items, list) or len(items) != len(layout_images):
+            raise RuntimeError(
+                "Pose Studio did not receive the character passes for " + ", ".join(requested)
+                + ". Keep the workflow open in the browser and hard-reload ComfyUI before retrying."
+            )
+        sizes = [img.size for img in layout_images]
+        records, frames = build_character_sets(decode_character_captures(items, sizes), sizes)
+        passes = [torch.from_numpy(np.stack(frame, axis=0)) for frame in frames]
+        return [[json.dumps(record) for record in records], passes]
 
     def _make_grid(self, images, columns, bg_color=(40, 40, 40)):
         """Combine images into a grid."""

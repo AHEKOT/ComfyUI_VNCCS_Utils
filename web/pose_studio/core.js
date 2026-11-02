@@ -6,7 +6,8 @@
 
 
 import { normalizeCaptureLens } from "./animation.mjs?v=1791754604000";
-import { capturePoseConditioning } from "./conditioning.mjs?v=20261101.1";
+import { capturePoseConditioning } from "./conditioning.mjs?v=20261102.1";
+import { capturePoseCharacterPasses } from "./character_passes.mjs?v=20261102.1";
 
 // Determine the extension's base URL dynamically to support varied directory names
 const EXTENSION_URL = new URL(".", import.meta.url).toString();
@@ -5900,6 +5901,13 @@ export class PoseViewerCore {
     captureConditioning(width, height, options = {}) {
         if (!this.initialized) return null;
         return capturePoseConditioning(this, { width, height, ...options });
+    }
+
+    // Full Character ID pass plus solo passes of each character (others hidden),
+    // through the same camera as captureConditioning().
+    captureCharacterPasses(width, height, options = {}) {
+        if (!this.initialized) return null;
+        return capturePoseCharacterPasses(this, { width, height, ...options });
     }
 
     _clearImportedFigureGroup(groupName) {

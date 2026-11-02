@@ -229,8 +229,8 @@ class PoseOutputLimitTests(unittest.TestCase):
         self.assertEqual(len(stack_calls[0][0]), 2)
         self.assertIs(result[0], batch)
         self.assertEqual(result[1], ["first", "second"])
-        # Auxiliary and crop outputs appended after lighting_prompt stay list outputs.
-        self.assertEqual(node.OUTPUT_IS_LIST, (False,) + (True,) * 10)
+        # Auxiliary, crop and character outputs appended after lighting_prompt stay list outputs.
+        self.assertEqual(node.OUTPUT_IS_LIST, (False,) + (True,) * 12)
 
     def test_pose_image_dimensions_use_comfyui_height_width_order(self):
         image = types.SimpleNamespace(shape=(1, 768, 1344, 3))

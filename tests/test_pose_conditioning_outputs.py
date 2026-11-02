@@ -83,17 +83,17 @@ class PoseConditioningOutputTests(unittest.TestCase):
         node = POSE_STUDIO.VNCCS_PoseStudio
         self.assertEqual(node.RETURN_NAMES, (
             "images", "lighting_prompt", "depth", "normal", "outline", "silhouette", "mask", "character_id",
-            "crop_json", "crop_image", "crop_preview",
+            "crop_json", "crop_image", "crop_preview", "character_json", "character_passes",
         ))
         self.assertEqual(node.RETURN_TYPES, (
             "IMAGE,VIDEO", "STRING", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "MASK", "IMAGE",
-            "STRING", "IMAGE", "IMAGE",
+            "STRING", "IMAGE", "IMAGE", "STRING", "IMAGE",
         ))
-        self.assertEqual(node.OUTPUT_IS_LIST, (True,) * 11)
+        self.assertEqual(node.OUTPUT_IS_LIST, (True,) * 13)
 
     def test_list_outputs_align_with_images_and_derive_silhouette_and_mask(self):
         _node, result, ids = _run()
-        self.assertEqual(len(result), 11)
+        self.assertEqual(len(result), 13)
         images, prompts, depth, normal, outline, silhouette, mask, character_id = result[:8]
         self.assertEqual(len(images), 2)
         self.assertEqual(len(prompts), 2)
@@ -175,8 +175,8 @@ class PoseConditioningOutputTests(unittest.TestCase):
         node, result, _ids = _run(count=2, outputs=[], conditioning=False, editor_mode="animation",
                                   mutate=lambda data: data["export"].update(animation_image_batch=True))
         self.assertEqual(tuple(result[0].shape), (2, HEIGHT, WIDTH, 3))
-        self.assertEqual(node.OUTPUT_IS_LIST, (False,) + (True,) * 10)
-        self.assertEqual(len(result), 11)
+        self.assertEqual(node.OUTPUT_IS_LIST, (False,) + (True,) * 12)
+        self.assertEqual(len(result), 13)
 
     def test_character_id_palette_matches_the_widget(self):
         source = (ROOT / "web" / "pose_studio" / "conditioning.mjs").read_text(encoding="utf-8")

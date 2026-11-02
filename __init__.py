@@ -2,6 +2,7 @@ from .nodes.vnccs_nodes import VNCCS_PositionControl, VNCCS_VisualPositionContro
 from .nodes.vnccs_bbox_extractor import VNCCS_BBox_Extractor
 from .nodes.pose_studio import VNCCS_PoseStudio
 from .nodes.apply_crop_guide import VNCCS_ApplyCropGuide
+from .nodes.character_export import VNCCS_CharacterExport
 from .nodes.unicanvas import VNCCS_UniCanvas, register_unicanvas_routes
 from .nodes.vncss_config import VNCCS_Config
 from .nodes.prompt_designer import VNCCS_PromptDesigner
@@ -14,6 +15,7 @@ NODE_CLASS_MAPPINGS = {
     "VNCCS_BBox_Extractor": VNCCS_BBox_Extractor,
     "VNCCS_PoseStudio": VNCCS_PoseStudio,
     "VNCCS_ApplyCropGuide": VNCCS_ApplyCropGuide,
+    "VNCCS_CharacterExport": VNCCS_CharacterExport,
     "VNCCS_UniCanvas": VNCCS_UniCanvas,
     "VNCCS_Config": VNCCS_Config,
     "VNCCS_PromptDesigner": VNCCS_PromptDesigner,
@@ -28,6 +30,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_BBox_Extractor": "VNCCS BBox Extractor",
     "VNCCS_PoseStudio": "VNCCS Pose Studio",
     "VNCCS_ApplyCropGuide": "VNCCS Apply Crop Guide",
+    "VNCCS_CharacterExport": "VNCCS Character Export",
     "VNCCS_UniCanvas": "VNCCS UniCanvas",
     "VNCCS_Config": "VNCSS Config",
     "VNCCS_PromptDesigner": "VNCCS Prompt Designer",

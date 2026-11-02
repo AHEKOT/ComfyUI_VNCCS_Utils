@@ -6,6 +6,7 @@ import { PoseViewerCore } from "../../web/pose_studio/core.js";
 import * as characters from "../../web/pose_studio/characters.mjs";
 import * as animation from "../../web/pose_studio/animation.mjs";
 import * as conditioning from "../../web/pose_studio/conditioning.mjs";
+import * as characterPasses from "../../web/pose_studio/character_passes.mjs";
 import * as cropGuide from "../../web/pose_studio/crop_guide.mjs";
 import * as cropGuideOverlay from "../../web/pose_studio/crop_guide_overlay.mjs";
 import { HAND_PRESETS } from "../../web/pose_studio/hand_presets.js";
@@ -55,7 +56,7 @@ export class Element {
 export function createScene({ skinned = false } = {}) {
     const frames = new Map(), timers = new Map(); let id = 0;
     const document = { createElement: tag => new Element(tag), createDocumentFragment: () => new Element(), body: new Element(), activeElement: null };
-    const context = { ...characters, ...animation, ...conditioning, ...cropGuide, ...cropGuideOverlay, ...openpose, isLikelyVideoFile, HAND_PRESETS, console, document, window: {}, Blob,
+    const context = { ...characters, ...animation, ...conditioning, ...characterPasses, ...cropGuide, ...cropGuideOverlay, ...openpose, isLikelyVideoFile, HAND_PRESETS, console, document, window: {}, Blob,
         getComputedStyle: element => ({ width: `${element.width}px`, height: `${element.height}px` }),
         localStorage: { getItem: () => null, setItem: noop },
         requestAnimationFrame: fn => { frames.set(++id, fn); return id; }, cancelAnimationFrame: id => frames.delete(id),

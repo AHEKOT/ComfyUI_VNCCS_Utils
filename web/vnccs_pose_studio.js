@@ -24,7 +24,11 @@ import {
     poseConditioningOutputNames,
     poseConditioningPasses,
     snapshotPoseCaptureCamera,
-} from "./pose_studio/conditioning.mjs?v=20261101.1";
+} from "./pose_studio/conditioning.mjs?v=20261102.1";
+import {
+    ensurePoseCharacterOutputs,
+    poseCharacterOutputNames,
+} from "./pose_studio/character_passes.mjs?v=20261102.1";
 import {
     defaultCropGuide,
     ensurePoseCropGuideOutputs,
@@ -7663,6 +7667,19 @@ class PoseStudioWidget {
             throw new Error("Pose Studio auxiliary passes could not be rendered.");
         }
         return images;
+    }
+
+    // Full Character ID pass and solo passes of every visible character for one
+    // captured image, through the camera of the RGB image just taken.
+    captureCharacterPassSet(width, height, { poseIndex, poseName }) {
+        const passes = this.viewer.captureCharacterPasses(width, height, {
+            characters: this.characters.map(character => ({ id: character.id, slot: character.slot })),
+            activeCharacterId: this.activeCharacterId,
+        });
+        if (!passes || typeof passes.character_id !== "string" || !Array.isArray(passes.characters)) {
+            throw new Error("Pose Studio character passes could not be rendered.");
+        }
+        return { pose_index: poseIndex, pose_name: poseName, ...passes };
     }
 
     // Pose Manager RUN sends the card bytes unchanged, so auxiliary passes reuse
@@ -15838,6 +15855,13 @@ class PoseStudioWidget {
                 + "are available in Image mode. Disconnect them or switch to Image mode.");
         }
         const conditioning = conditioningPasses.length ? [] : null;
+        // Per-character passes are rendered only for an execution with a linked
+        // character output, and only where Character Export applies (Studio,
+        // Image mode, LIST); Python stops other modes with an error.
+        const linkedCharacterOutputs = poseCharacterOutputNames(this.node);
+        const characterSets = linkedCharacterOutputs.length && fullCapture && options.executionCapture === true
+            && !animationMode && !poseManagerInterface && (this.exportParams.output_mode || "LIST") === "LIST"
+            ? [] : null;
 
         if (fullCapture && captureExplicitlyRequested
             && outputCount * (this.exportParams.view_width || 1024)
@@ -15869,6 +15893,7 @@ class PoseStudioWidget {
             this._executionCaptureSnapshot = null;
             this._executionLightingPromptSnapshot = null;
             this._executionConditioningSnapshot = null;
+            this._executionCharacterSnapshot = null;
             this._executionCropGuideSnapshot = this.cropGuidesForCapture(isDebugExecution ? debugPose : null);
         }
         if (reusePoseManagerCaptures) {
@@ -15982,6 +16007,11 @@ class PoseStudioWidget {
                                 poseCamera.pitch_deg,
                             ), true);
                             if (conditioning) conditioning[i] = this.captureConditioningPasses(w, h, conditioningPasses);
+                            if (characterSets) {
+                                characterSets[i] = this.captureCharacterPassSet(w, h, {
+                                    poseIndex: null, poseName: this.getLibraryPoseName(capturePoses[i]),
+                                });
+                            }
                             this.lightingPrompts[i] = this.generatePromptFromLights(
                                 isOriginalLighting ? [] : captureLights,
                                 debugPrompt,
@@ -16018,6 +16048,9 @@ class PoseStudioWidget {
                                 poseCamera.pitch_deg,
                             ), true);
                             if (conditioning) conditioning[i] = this.captureConditioningPasses(w, h, conditioningPasses);
+                            if (characterSets) {
+                                characterSets[i] = this.captureCharacterPassSet(w, h, { poseIndex: i, poseName: `Pose ${i + 1}` });
+                            }
                             const framePrompt = animationMode
                                 ? String(this.animationState.basePose?.prompt ?? this.getPosePrompt(this.activeTab))
                                 : this.getPosePrompt(i);
@@ -16025,6 +16058,7 @@ class PoseStudioWidget {
                         }
                     }
                     if (conditioning) this._executionConditioningSnapshot = conditioning;
+                    if (characterSets) this._executionCharacterSnapshot = characterSets;
                 } catch (error) {
                     this.poseCaptures = previousCaptures;
                     this.lightingPrompts = previousPrompts;
@@ -16107,6 +16141,8 @@ class PoseStudioWidget {
         delete exportToSave.crop_outputs;
         const linkedCropOutputs = poseCropGuideOutputNames(this.node);
         if (linkedCropOutputs.length) exportToSave.crop_outputs = linkedCropOutputs;
+        delete exportToSave.character_outputs;
+        if (linkedCharacterOutputs.length) exportToSave.character_outputs = linkedCharacterOutputs;
         this.ensureCropGuides();
 
         // captured_images are excluded from the widget to avoid inflating workflow size
@@ -16797,10 +16833,12 @@ app.registerExtension({
                 || []).slice();
             const capturedConditioning = widget._executionConditioningSnapshot;
             const capturedCropGuides = widget._executionCropGuideSnapshot;
+            const capturedCharacters = widget._executionCharacterSnapshot;
             widget._executionCaptureSnapshot = null;
             widget._executionLightingPromptSnapshot = null;
             widget._executionConditioningSnapshot = null;
             widget._executionCropGuideSnapshot = null;
+            widget._executionCharacterSnapshot = null;
             const animationCacheReady = await widget.flushAnimationCacheUpload();
             assertCurrent();
             const payload = {
@@ -16817,6 +16855,7 @@ app.registerExtension({
                 lighting_prompts: capturedLightingPrompts,
                 ...(capturedConditioning ? { captured_conditioning: capturedConditioning } : {}),
                 ...(capturedCropGuides ? { captured_crop_guides: capturedCropGuides } : {}),
+                ...(capturedCharacters ? { captured_characters: capturedCharacters } : {}),
             };
 
             return api.fetchApi('/vnccs/pose_sync/upload_capture', {
@@ -17153,6 +17192,7 @@ app.registerExtension({
             hideInternalWidget(this, "animation_image_batch");
             ensurePoseConditioningOutputs(this);
             ensurePoseCropGuideOutputs(this);
+            ensurePoseCharacterOutputs(this);
             this.setSize([900, 740]);
 
             // Create widget
@@ -17221,6 +17261,7 @@ app.registerExtension({
             if (onConfigure) onConfigure.apply(this, arguments);
             ensurePoseConditioningOutputs(this);
             ensurePoseCropGuideOutputs(this);
+            ensurePoseCharacterOutputs(this);
 
             if (this.studioWidget) {
                 syncStudioDOMWidgetWidth(this);
@@ -17238,14 +17279,16 @@ app.registerExtension({
             }
         };
 
-        // crop_preview is only drawn while linked, so record crop output links in
-        // pose_data at once; the changed state re-executes the node on the next run.
+        // crop_preview and the character outputs are only rendered while linked, so
+        // record their links in pose_data at once; the changed state re-executes the
+        // node on the next run.
         const onConnectionsChange = nodeType.prototype.onConnectionsChange;
         nodeType.prototype.onConnectionsChange = function (type, slot) {
             const result = onConnectionsChange?.apply(this, arguments);
             // type 2 is LiteGraph.OUTPUT; restoring a workflow is guarded by the widget itself.
             const name = type === 2 ? this.outputs?.[slot]?.name : null;
-            if (name && poseCropGuideOutputNames({ outputs: [{ name, links: [0] }] }).length) {
+            const probe = { outputs: [{ name, links: [0] }] };
+            if (name && (poseCropGuideOutputNames(probe).length || poseCharacterOutputNames(probe).length)) {
                 this.studioWidget?.syncToNode(false);
             }
             return result;

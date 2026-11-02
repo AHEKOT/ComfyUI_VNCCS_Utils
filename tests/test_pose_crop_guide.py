@@ -111,18 +111,18 @@ class CropGuideCoordinateTests(unittest.TestCase):
         import re
         names = tuple(re.findall(r'name: "(\w+)"', block))
         self.assertEqual(names, CROP.POSE_CROP_GUIDE_OUTPUTS)
-        self.assertEqual(POSE_STUDIO.VNCCS_PoseStudio.RETURN_NAMES[8:], names)
-        self.assertEqual(POSE_STUDIO.VNCCS_PoseStudio.RETURN_TYPES[8:], ("STRING", "IMAGE", "IMAGE"))
+        self.assertEqual(POSE_STUDIO.VNCCS_PoseStudio.RETURN_NAMES[8:11], names)
+        self.assertEqual(POSE_STUDIO.VNCCS_PoseStudio.RETURN_TYPES[8:11], ("STRING", "IMAGE", "IMAGE"))
 
 
 class PoseStudioCropOutputTests(unittest.TestCase):
     def test_images_stay_full_and_crops_match_crop_json(self):
         guides = [_guide(0.25, 0.1, 0.5, 0.6), _guide(0.0, 0.5, 0.35, 0.5)]
         node, result, arrays = _run(guides)
-        self.assertEqual(len(result), 11)
-        self.assertEqual(node.OUTPUT_IS_LIST, (True,) * 11)
+        self.assertEqual(len(result), 13)
+        self.assertEqual(node.OUTPUT_IS_LIST, (True,) * 13)
         images, _prompts = result[0], result[1]
-        crop_json, crop_images, previews = result[8:]
+        crop_json, crop_images, previews = result[8:11]
         self.assertEqual(len(crop_json), len(images))
         for index, (image, text, crop, preview) in enumerate(zip(images, crop_json, crop_images, previews)):
             self.assertEqual(tuple(image.shape), (1, HEIGHT, WIDTH, 3), "images are never cropped")
@@ -153,7 +153,7 @@ class PoseStudioCropOutputTests(unittest.TestCase):
 
     def test_disabled_guides_pass_the_full_image_and_old_payloads_fall_back(self):
         _node, result, arrays = _run([_guide(0.1, 0.1, 0.2, 0.2, enabled=False), None])
-        crop_json, crops, previews = result[8:]
+        crop_json, crops, previews = result[8:11]
         for index in range(2):
             self.assertFalse(json.loads(crop_json[index])["enabled"])
             self.assertIs(crops[index], result[0][index])
@@ -190,7 +190,7 @@ class PoseStudioCropOutputTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, reason):
                 _run(guides, **kwargs)
             node, result, _arrays = _run(guides, outputs=(), **kwargs)
-            self.assertEqual(len(result), 11)
+            self.assertEqual(len(result), 13)
             for text in result[8]:
                 record = json.loads(text)
                 self.assertFalse(record["enabled"])

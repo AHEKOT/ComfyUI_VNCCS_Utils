@@ -115,8 +115,9 @@ export function poseCaptureCameraFromSnapshot(THREE, snapshot) {
     return camera;
 }
 
-function buildPoseConditioningScene(THREE, entries) {
-    const scene = new THREE.Scene(), geometries = [], materials = [];
+/** Private pass scene of `entries`; `meshes[i]` draws `entries[i]`. */
+export function buildPoseConditioningScene(THREE, entries) {
+    const scene = new THREE.Scene(), geometries = [], materials = [], meshes = [];
     const dispose = () => {
         for (const geometry of geometries) geometry.dispose();
         for (const material of materials) material.dispose();
@@ -135,9 +136,11 @@ function buildPoseConditioningScene(THREE, entries) {
                 materials.push(material);
                 return material;
             });
-            scene.add(new THREE.Mesh(geometry, Array.isArray(mesh.material) ? replacements : replacements[0]));
+            const passMesh = new THREE.Mesh(geometry, Array.isArray(mesh.material) ? replacements : replacements[0]);
+            meshes.push(passMesh);
+            scene.add(passMesh);
         }
-        return { scene, materials, dispose };
+        return { scene, materials, meshes, dispose };
     } catch (error) {
         dispose();
         throw error;
