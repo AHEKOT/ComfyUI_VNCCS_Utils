@@ -227,6 +227,8 @@ export class PoseReferenceLayerController {
         if (!layer) return;
         this.recordHistory();
         this.updateLayer(id, patch);
+        // Row buttons capture the layer state, so rebuild them after Show/Hide and Lock.
+        this.renderList();
         this.commit();
     }
 

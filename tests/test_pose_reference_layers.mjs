@@ -601,6 +601,12 @@ test("panel list, sliders, numeric fields and resets edit the selected layer wit
     assert.deepEqual(panel.layers.map(item => item.id), ["top", "bottom"]);
     button(panel.ui.list.children[1], "Hide").click();
     assert.equal(panel.layers[0].visible, false);
+    button(panel.ui.list.children[1], "Show").click();
+    assert.equal(panel.layers[0].visible, true, "a hidden layer can be shown again");
+    button(panel.ui.list.children[1], "Lock").click();
+    assert.equal(panel.layers[0].locked, true);
+    button(panel.ui.list.children[1], "Unlock").click();
+    assert.equal(panel.layers[0].locked, false, "a locked layer can be unlocked again");
     button(panel.ui.list.children[0], "Delete").click();
     assert.deepEqual(panel.layers.map(item => item.id), ["top"]);
     viewer.undo();
