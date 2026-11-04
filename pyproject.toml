@@ -7,6 +7,7 @@ license = {file = "LICENSE"}
 dependencies = [
     "opencv-python",
     "huggingface_hub",
+    "dulwich>=1.2.20,<2",
     "aiohttp",
     "av",
     "kornia",

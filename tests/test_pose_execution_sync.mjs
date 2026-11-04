@@ -137,8 +137,9 @@ test("SAM manager execution waits for cards invalidated by current character sta
 
 for (const failure of ["apply", "upload"]) {
     test(`ordinary SAM pose reports ${failure} failure to its execution token`, async () => {
-        const { node, uploads, handlers, context } = harness();
+        const { Widget, node, uploads, handlers, context } = harness();
         node.studioWidget = {
+            applySAM3DPoseForCapture: Widget.prototype.applySAM3DPoseForCapture,
             viewer: { isInitialized: () => true, applySAM3DImport: () => failure !== "apply" },
             applyCapturedImageSize() {}, prepareSAM3DRenderFit: async () => null,
             refreshSAMMeshOverlay: async () => {}, syncMeshProportionSlidersFromViewer() {},

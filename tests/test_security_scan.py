@@ -9,6 +9,7 @@ from pathlib import Path
 from contextlib import redirect_stderr, redirect_stdout
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from zipfile import ZipFile
 
 from scripts.security_scan import (
     COMFY_REGISTRY_ISSUE_TYPES,
@@ -19,7 +20,7 @@ from scripts.security_scan import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCANNER = PROJECT_ROOT / "scripts" / "security_scan.py"
-EXPECTED_SCANNER_SHA256 = "8f0d956985c559aea07c1312e997c3d11316775e5d15e93cbafb65028fa29e4b"
+EXPECTED_SCANNER_SHA256 = "4950a48da709ee5a5d015508c615f2b6979f1a8c2f836dc29d0b13209bf8f226"
 EXPECTED_RULE_IDS = {
     "BLACKLISTED_URL",
     "CREDENTIAL_URL",
@@ -40,6 +41,7 @@ EXPECTED_RULE_IDS = {
     "PY_TEMP_DIRECTORY_ACCESS",
     "PY_URL_COMMAND_EXECUTION",
     "REMOVED_BEN2_CODE",
+    "ZIP_TOO_LARGE",
 }
 EXPECTED_COMFY_REGISTRY_ISSUE_TYPES = {
     "contains_blacklisted_url",
@@ -50,6 +52,7 @@ EXPECTED_COMFY_REGISTRY_ISSUE_TYPES = {
     "python_network_operations",
     "python_privilege_escalation",
     "python_url_command_execution",
+    "zip_too_large",
 }
 
 
@@ -80,6 +83,32 @@ def test_security_scanner_source_is_pinned():
 def test_security_rule_catalogs_are_complete():
     assert SCANNER_RULE_IDS == EXPECTED_RULE_IDS
     assert COMFY_REGISTRY_ISSUE_TYPES == EXPECTED_COMFY_REGISTRY_ISSUE_TYPES
+
+
+def _write_sized_zip(path, size):
+    # Sparse padding keeps the real archive boundary test small on disk.
+    payload = io.BytesIO()
+    with ZipFile(payload, "w") as archive:
+        archive.writestr("asset.bin", b"test")
+    with path.open("wb") as handle:
+        handle.seek(size - payload.tell())
+        handle.write(payload.getvalue())
+
+
+def test_registry_zip_size_boundary(tmp_path):
+    archive = tmp_path / "node.zip"
+    limit = 100 * 1024 * 1024
+    assert _run_scanner(tmp_path, "--archive", str(archive)).returncode != 0
+    archive.write_bytes(b"not a zip")
+    assert _run_scanner(tmp_path, "--archive", str(archive)).returncode != 0
+    _write_sized_zip(archive, limit)
+    assert _run_scanner(tmp_path, "--archive", str(archive)).returncode == 0
+    _write_sized_zip(archive, limit + 1)
+    result = _run_scanner(tmp_path, "--json")
+    assert result.returncode == 1
+    finding, = json.loads(result.stdout)
+    assert finding["rule_id"] == "ZIP_TOO_LARGE"
+    assert str(limit + 1) in finding["message"]
 
 
 def test_security_scanner_detects_every_mandatory_rule(tmp_path):
@@ -137,6 +166,7 @@ fetch("https://example.invalid/data");
         encoding="utf-8",
     )
 
+    _write_sized_zip(tmp_path / "node.zip", 100 * 1024 * 1024 + 1)
     result = _run_scanner(tmp_path, "--json")
     assert result.returncode == 1
     findings = json.loads(result.stdout)
@@ -232,9 +262,9 @@ def test_repository_passes_mandatory_security_scan():
 
 def test_ci_runs_security_scan_before_integrity_tests():
     workflow = (PROJECT_ROOT / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8")
-    scan_command = "python scripts/security_scan.py"
+    scan_command = "python scripts/security_scan.py --archive node.zip"
     test_command = "python tests/test_security_scan.py"
-    assert scan_command in workflow
+    assert workflow.index("node pack") < workflow.index(scan_command)
     assert workflow.index(scan_command) < workflow.index(test_command)
     assert "branches-ignore" not in workflow
 
@@ -254,6 +284,7 @@ def _run_with_temporary_path(test_function):
 if __name__ == "__main__":
     test_security_scanner_source_is_pinned()
     test_security_rule_catalogs_are_complete()
+    _run_with_temporary_path(test_registry_zip_size_boundary)
     _run_with_temporary_path(test_security_scanner_detects_every_mandatory_rule)
     _run_with_temporary_path(test_security_scanner_scans_repository_tests)
     _run_with_temporary_path(test_security_scanner_has_no_allowlist_interface)
@@ -262,4 +293,4 @@ if __name__ == "__main__":
     test_repository_passes_mandatory_security_scan()
     test_ci_runs_security_scan_before_integrity_tests()
     test_security_files_require_project_owner_review()
-    print("Security scanner integrity tests passed: 10 checks.")
+    print("Security scanner integrity tests passed: 11 checks.")

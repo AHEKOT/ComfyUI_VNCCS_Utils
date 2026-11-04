@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 
 
 const uniCanvasSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
@@ -131,8 +132,14 @@ test("adding a Pose Library repository downloads it and refreshes the library in
     const addEnd = poseStudioSource.indexOf("\n    createRepositoryTaskId", addStart);
     const normalizeMethod = poseStudioSource.slice(normalizeStart, addStart);
     const addMethod = poseStudioSource.slice(addStart, addEnd);
-    assert.match(normalizeMethod, /\['huggingface\.co', 'www\.huggingface\.co'\]/);
-    assert.match(normalizeMethod, /return `\$\{parts\[0\]\}\/\$\{parts\[1\]\}`;/);
+    const parser = runInNewContext(`({ ${normalizeMethod} })`, { URL });
+    for (const value of ["owner/library", "https://huggingface.co/owner/library/tree/main", "https://www.huggingface.co/owner/library"]) {
+        assert.equal(parser.normalizePoseRepositoryInput(value), "owner/library");
+    }
+    for (const value of ["", "owner", "owner/bad name", "https://example.com/owner/library",
+        "https://huggingface.co/datasets/owner/library", "https://huggingface.co/spaces/owner/library"]) {
+        assert.equal(parser.normalizePoseRepositoryInput(value), "");
+    }
     assert.match(addMethod, /this\.normalizePoseRepositoryInput\(input\?\.value\)/);
     assert.match(addMethod, /const taskId = this\.createRepositoryTaskId\("repo-add"\);/);
     assert.match(addMethod, /JSON\.stringify\(\{ repo_id: repoId, task_id: taskId \}\)/);
@@ -194,7 +201,7 @@ test("only explicit pose-set assets replace the Pose Manager pose list", () => {
 
 
 test("saving a current library pose does not serialize the whole Pose Manager set", () => {
-    const saveStart = poseStudioSource.indexOf("async saveToLibrary(name, includePreview = true, metadata = {})");
+    const saveStart = poseStudioSource.indexOf("buildLibraryAsset(prompt = this.getPosePrompt(this.activeTab))");
     const saveEnd = poseStudioSource.indexOf("\n    applyLibraryPoseFraming", saveStart);
     const saveMethod = poseStudioSource.slice(saveStart, saveEnd);
     assert.match(saveMethod, /type: animationMode \? "pose_animation" : "scene_pose"/);
@@ -279,7 +286,10 @@ test("Pose Manager SAM input applies proportions without replacing managed poses
     assert.match(eventMethod, /applyMode === "manager_proportions"/);
     assert.match(eventMethod, /applySAM3DProportionsToPoseManager\(poseData\)/);
     assert.match(eventMethod, /widget\.syncToNode\(true, \{[\s\S]*executionCapture: true/);
-    assert.match(eventMethod, /viewer\.applySAM3DImport\(/, "ordinary Pose Studio import must remain intact");
+    assert.match(eventMethod, /widget\.applySAM3DPoseForCapture\(poseData, assertCurrent\)/);
+    const captureMethod = poseStudioSource.slice(poseStudioSource.indexOf("async applySAM3DPoseForCapture("),
+        poseStudioSource.indexOf("async applySAM3DProportionsToPoseManager("));
+    assert.match(captureMethod, /viewer\.applySAM3DImport\(/, "ordinary Pose Studio import must remain intact");
 
     const coreImportStart = poseStudioCoreSource.indexOf("applySAM3DImport(data, shoulderYOffset = 0, options = {})");
     const coreImportEnd = poseStudioCoreSource.indexOf("\n    applyHMR2v1Import", coreImportStart);

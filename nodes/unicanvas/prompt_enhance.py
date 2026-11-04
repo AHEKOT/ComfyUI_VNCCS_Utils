@@ -192,8 +192,9 @@ def load_enhance_clip(name: str) -> Any:
     return clip
 
 
-def enhance_text(clip: Any, text: str, system_prompt: str, images: list[Image.Image] | None = None) -> str:
-    """Rewrite ``text``; "" when the encoder produced nothing usable. Caller holds the model lock.
+def generate_text(clip: Any, text: str, system_prompt: str, images: list[Image.Image] | None = None,
+                  seed: int | None = None) -> str:
+    """Return the raw vision-language response. Caller holds the model lock.
 
     ``images`` are the canvas and its references; each keeps its own size, so this tokenizes and
     generates directly (the TextGenerate node only takes one same-size batch).
@@ -208,14 +209,19 @@ def enhance_text(clip: Any, text: str, system_prompt: str, images: list[Image.Im
             tokens,
             do_sample=True,
             max_length=MAX_NEW_TOKENS,
-            seed=random.randrange(2**32),
+            seed=random.randrange(2**32) if seed is None else seed,
             mtp=True,
             **_SAMPLING,
         )
         generated = clip.decode(generated_ids)
     finally:
         _release_generation_state()
-    return extract_prompt(generated)
+    return generated
+
+
+def enhance_text(clip: Any, text: str, system_prompt: str, images: list[Image.Image] | None = None) -> str:
+    """Rewrite a prompt, retaining the existing prompt-only response contract."""
+    return extract_prompt(generate_text(clip, text, system_prompt, images))
 
 
 def apply_auto_enhance(request: Any, draw_clip: Any, source: Image.Image | None) -> None:
