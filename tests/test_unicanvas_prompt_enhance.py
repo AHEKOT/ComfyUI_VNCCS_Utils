@@ -29,6 +29,17 @@ def _request(**overrides):
 
 
 class ExtractPromptTests(unittest.TestCase):
+    def test_raw_generation_preserves_metadata_and_releases_state(self):
+        raw = '{"name":"Standing","category":"Idle","tags":["standing"]}'
+        calls = []
+        clip = types.SimpleNamespace(tokenize=lambda *args, **kwargs: "tokens",
+                                     generate=lambda *args, **kwargs: calls.append(kwargs) or "ids",
+                                     decode=lambda ids: raw)
+        with patch.object(ENHANCE, "_release_generation_state") as release:
+            self.assertEqual(ENHANCE.generate_text(clip, "Categories: Idle", "Return JSON", seed=41), raw)
+        self.assertEqual(calls[0]["seed"], 41)
+        release.assert_called_once()
+
     def test_official_json_answers(self):
         self.assertEqual(ENHANCE.extract_prompt('{"rewritten_prompt": "A red cat.", "wh_ratio": "3:2"}'), "A red cat.")
         self.assertEqual(ENHANCE.extract_prompt('```json\n{"Rewritten": "Replace the hat."}\n```'), "Replace the hat.")
