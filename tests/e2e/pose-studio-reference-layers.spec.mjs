@@ -531,7 +531,8 @@ test("reference layers: panel controls stay inside the section at default and na
     const right = selector => new Set([...c.section.content.querySelectorAll(selector)].map(el => el.getBoundingClientRect().right.toFixed(1))).size;
     return { problems, resetColumns: right(".vnccs-ps-reflayer-props .vnccs-ps-reset-btn"), valueColumns: right(".vnccs-ps-label-row .vnccs-ps-reflayer-value") };
   });
-  for (const size of [[1400, 880], [760, 880], [560, 880]]) {
+  // 900x740 is the size of a new node.
+  for (const size of [[1400, 880], [900, 740], [560, 740]]) {
     await page.evaluate(next => window.__node.setSize(next), size);
     await page.waitForTimeout(1000);
     expect(await audit()).toEqual({ problems: [], resetColumns: 1, valueColumns: 1 });
