@@ -90,6 +90,7 @@ async function run(page) {
   }
   expect(outputs, "RUN finished").toBeTruthy();
   await page.evaluate(async outputs => {
+    window.__outputs = outputs;
     window.__images = {};
     for (const [name, id] of Object.entries(window.__saves)) {
       const image = outputs[String(id)]?.images?.[0];
@@ -354,6 +355,107 @@ test("crop outputs: enabled in their group, and crop_image has the size of the g
   expect(crop.width).toBe(Math.ceil(rgb.width * 0.5));
   expect(crop.height).toBe(Math.ceil(rgb.height * 0.5));
   expect(rgb.width).toBeGreaterThan(crop.width);
+});
+
+/** Sizes that a saved workflow and its autosaved draft take; pass images must not reach them. */
+const workflowSizes = page => page.evaluate(async () => {
+  window.__app.graph.change();
+  await new Promise(resolve => setTimeout(resolve, 1500));
+  const stored = store => {
+    let total = 0;
+    for (let i = 0; i < store.length; i += 1) total += store.key(i).length + (store.getItem(store.key(i)) || "").length;
+    return total;
+  };
+  const graph = JSON.stringify(window.__app.graph.serialize());
+  return { graph: graph.length, local: stored(localStorage), session: stored(sessionStorage), passes: graph.includes("captured_characters") };
+});
+
+/** All frames of one SaveImage as a contact sheet; a batch is several images of one node. */
+async function saveFramesSheet(page, name, path) {
+  const url = await page.evaluate(async name => {
+    const images = window.__outputs[String(window.__saves[name])].images;
+    const cell = 200;
+    const columns = 6;
+    const canvas = document.createElement("canvas");
+    canvas.width = cell * columns;
+    canvas.height = cell * Math.ceil(images.length / columns);
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#18181e";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    for (const [index, image] of images.entries()) {
+      const src = `/view?filename=${encodeURIComponent(image.filename)}&subfolder=${encodeURIComponent(image.subfolder)}&type=${image.type}`;
+      const bitmap = await createImageBitmap(await (await fetch(src)).blob());
+      const scale = Math.min((cell - 8) / bitmap.width, (cell - 8) / bitmap.height);
+      context.drawImage(bitmap, cell * (index % columns) + 4, cell * Math.floor(index / columns) + 4, bitmap.width * scale, bitmap.height * scale);
+    }
+    return canvas.toDataURL("image/png");
+  }, name);
+  await writeFile(path, Buffer.from(url.split(",")[1], "base64"));
+}
+
+test("per-character export: no work until linked, one batch per character, and the workflow stays small", async ({ page }, testInfo) => {
+  await openPoseStudio(page);
+  await page.evaluate(async () => {
+    const w = window.__node.studioWidget;
+    await w.addCharacter();
+    w.addTab();
+    const viewer = w.viewer;
+    const capture = viewer.captureCharacterPasses;
+    window.__soloCaptures = 0;
+    viewer.captureCharacterPasses = (...args) => { window.__soloCaptures += 1; return capture.apply(viewer, args); };
+    const upload = window.fetch;
+    window.__uploads = [];
+    window.fetch = (url, options) => {
+      if (typeof options?.body === "string" && options.body.includes("captured_characters")) window.__uploads.push(options.body.length);
+      return upload(url, options);
+    };
+    window.__addSave("rgb", "images");
+  });
+  await page.waitForTimeout(1500);
+  const counts = () => page.evaluate(() => [window.__soloCaptures, window.__uploads.length]);
+
+  // Off: nothing is rendered, encoded or uploaded.
+  await run(page);
+  expect(await counts()).toEqual([0, 0]);
+  const off = await workflowSizes(page);
+
+  // On without a link: still nothing.
+  await openSettings(page);
+  await expect(page.locator(".vnccs-ps-settings-panel .vnccs-ps-section", { hasText: "Additional Outputs" })).toContainText("Per-character Export");
+  await toggle(page, "character_json");
+  await toggle(page, "character_passes");
+  expect(await outputNames(page)).toEqual([...BASE, "character_json", "character_passes"]);
+  await run(page);
+  expect(await counts()).toEqual([0, 0]);
+
+  // Linked: two poses and two characters.
+  await page.evaluate(() => {
+    const node = window.__node;
+    const preview = window.LiteGraph.createNode("PreviewAny");
+    preview.pos = [1080, 700];
+    window.__app.graph.add(preview);
+    node.connectByType(node.outputs.findIndex(output => output.name === "character_json"), preview, "*");
+    window.__previewId = preview.id;
+    window.__addSave("passes", "character_passes");
+  });
+  await run(page);
+  expect(await counts()).toEqual([2, 1]);
+  const uploadSize = await page.evaluate(() => window.__uploads[0]);
+  const passes = await page.evaluate(() => window.__outputs[String(window.__saves.passes)].images.length);
+  expect(passes, "2 poses x 2 characters x 3 frames").toBe(12);
+  const records = await page.evaluate(() => window.__outputs[String(window.__previewId)].text.map(text => JSON.parse(text)));
+  expect(records.map(record => record.characters.length)).toEqual([2, 2]);
+  await saveFramesSheet(page, "passes", testInfo.outputPath("character-passes.png"));
+
+  const on = await workflowSizes(page);
+  console.log(`[sizes] off ${JSON.stringify(off)} on ${JSON.stringify(on)} pass upload ${uploadSize}`);
+  expect(on.passes).toBe(false);
+  expect(off.passes).toBe(false);
+  // The sockets, the two lists in pose_data and the two extra nodes; never image bytes.
+  expect(on.graph - off.graph).toBeLessThan(4096);
+  expect(on.local - off.local).toBeLessThan(16384);
+  expect(on.session - off.session).toBeLessThan(16384);
+  expect(uploadSize).toBeGreaterThan(on.graph - off.graph);
 });
 
 test("a two-output workflow stays as it is", async ({ page }) => {
