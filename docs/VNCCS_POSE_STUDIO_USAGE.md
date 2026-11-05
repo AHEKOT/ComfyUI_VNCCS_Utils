@@ -200,8 +200,12 @@ The bar at the top-left of the viewport switches what a left drag edits:
 or with the character's own facing. The character follows the pointer while the
 mouse is held, camera orbit is paused for the drag, and each drag is one Undo
 step. Right/middle drags and the mouse wheel still orbit, pan, and zoom the
-view. In Move and Rotate, joint markers do not react, and a click on another
-character selects it. The gizmo is editor-only: it never appears in output
+view. In Move and Rotate, joint markers do not react. A click on another
+character selects it, and a click on empty space hides the gizmo until you click
+a character or select one in the Characters panel. A click on a handle without
+moving it changes nothing, and Redo stays available. If the pen or touch input
+is interrupted during a drag, the character stays where it was and the drag
+counts as one Undo step. The gizmo is editor-only: it never appears in output
 images.
 
 The Characters panel shows the same values under **Transform**:

@@ -74,8 +74,12 @@ const MODE_TITLES = {
     rotate: "Rotate: drag a ring to rotate the selected character about its pelvis",
 };
 const CLICK_TOLERANCE_PX = 4;
+const NO_CHANGE_EPSILON = 1e-9;
+// acos near 1 resolves about 1e-8 rad, so a zero rotation can read slightly above zero.
+const NO_ROTATION_RADIANS = 1e-6;
 
 const format = (value, digits) => String(Number(Number(value || 0).toFixed(digits)));
+const samePosition = (a, b) => AXES.every(axis => Math.abs(a[axis] - b[axis]) < NO_CHANGE_EPSILON);
 
 export class PoseCharacterTransformController {
     constructor(widget, { document: doc = globalThis.document } = {}) {
@@ -98,7 +102,11 @@ export class PoseCharacterTransformController {
         this._toolbarSignature = "";
         this._pivotBone = null;
         this._pivotMesh = null;
+        this._pointerId = null;
+        this._clearedCharacterId = null;
+        this._onCanvasPointerDown = event => this.handleCanvasPointerDown(event);
         this._onCanvasPointerUp = event => this.handleCanvasPointerUp(event);
+        this._onPointerInterrupted = event => this.handlePointerInterrupted(event);
     }
 
     get enabled() {
@@ -180,16 +188,21 @@ export class PoseCharacterTransformController {
         gizmo.addEventListener("objectChange", () => this.handleObjectChange());
         gizmo.addEventListener("change", () => viewer.requestRender?.());
         this.gizmo = gizmo;
+        // Capture phase: the pointer id must be known before the gizmo starts its drag.
+        viewer.canvas?.addEventListener?.("pointerdown", this._onCanvasPointerDown, true);
         viewer.canvas?.addEventListener?.("pointerup", this._onCanvasPointerUp);
-        viewer.canvas?.addEventListener?.("pointercancel", this._onCanvasPointerUp);
+        viewer.canvas?.addEventListener?.("pointercancel", this._onPointerInterrupted);
+        viewer.canvas?.addEventListener?.("lostpointercapture", this._onPointerInterrupted);
         this.applyGizmoMode();
         return true;
     }
 
     dispose() {
         if (this._drag) this.handleDraggingChanged(false);
+        this.viewer?.canvas?.removeEventListener?.("pointerdown", this._onCanvasPointerDown, true);
         this.viewer?.canvas?.removeEventListener?.("pointerup", this._onCanvasPointerUp);
-        this.viewer?.canvas?.removeEventListener?.("pointercancel", this._onCanvasPointerUp);
+        this.viewer?.canvas?.removeEventListener?.("pointercancel", this._onPointerInterrupted);
+        this.viewer?.canvas?.removeEventListener?.("lostpointercapture", this._onPointerInterrupted);
         if (this.gizmo) {
             this.gizmo.detach();
             this.gizmo.parent?.remove(this.gizmo);
@@ -209,7 +222,9 @@ export class PoseCharacterTransformController {
     setMode(mode) {
         const requested = normalizeCharacterTransformMode(mode);
         const next = requested !== "pose" && !this.isAvailable() ? "pose" : requested;
+        if (!this._drag) this._clearedCharacterId = null;
         if (this._drag || next === this.mode) {
+            if (!this._drag) this.applyGizmoMode();
             this.syncToolbar(true);
             return this.mode === requested;
         }
@@ -257,8 +272,23 @@ export class PoseCharacterTransformController {
         }
         gizmo.setMode(this.mode === "move" ? "translate" : "rotate");
         gizmo.setSpace(this.space);
-        if (gizmo.object !== this.proxy) gizmo.attach(this.proxy);
+        if (this.isSelectionCleared()) {
+            if (gizmo.object) gizmo.detach();
+        } else if (gizmo.object !== this.proxy) {
+            gizmo.attach(this.proxy);
+        }
         gizmo.enabled = this.isAvailable();
+    }
+
+    isSelectionCleared() {
+        return this._clearedCharacterId !== null && this._clearedCharacterId === this.activeCharacter()?.id;
+    }
+
+    /** Hide the gizmo until a character is clicked or selected again. */
+    clearSelection() {
+        this._clearedCharacterId = this.activeCharacter()?.id ?? null;
+        this.applyGizmoMode();
+        this.viewer?.requestRender?.();
     }
 
     // --- Character placement --------------------------------------------------
@@ -368,17 +398,11 @@ export class PoseCharacterTransformController {
                 this.gizmo.dragging = false;
                 return;
             }
-            const widget = this.widget;
-            widget._finishPoseGesture?.();
-            widget._libraryLoadToken = (widget._libraryLoadToken || 0) + 1;
-            viewer.recordState?.();
             viewer.isInteractionActive = true;
             const mesh = viewer.skinnedMesh;
             mesh.updateMatrixWorld(true);
             this._drag = {
                 changed: false,
-                history: viewer.history?.length,
-                future: viewer.future?.slice?.(),
                 mode: this.mode,
                 position: this.currentPosition(),
                 rotation: this.currentRotation(),
@@ -396,27 +420,31 @@ export class PoseCharacterTransformController {
         this._drag = null;
         if (viewer) viewer.isInteractionActive = false;
         this.syncProxyToCharacter();
-        if (!drag.changed) {
-            // A click on a handle without movement is not an edit: drop its undo entry.
-            if (viewer?.history?.length === drag.history + 1) {
-                viewer.history.pop();
-                if (drag.future) viewer.future = drag.future;
-            }
-        } else {
-            this.commit();
-        }
+        if (drag.changed) this.commit();
         viewer?.requestRender?.();
+    }
+
+    /** The undo entry of a drag is taken on its first real change, so a plain click leaves history alone. */
+    beginDragEdit(drag) {
+        if (drag.changed) return;
+        drag.changed = true;
+        const widget = this.widget;
+        widget._finishPoseGesture?.();
+        widget._libraryLoadToken = (widget._libraryLoadToken || 0) + 1;
+        this.viewer.recordState?.();
     }
 
     handleObjectChange() {
         const drag = this._drag;
         if (!drag || !this.proxy) return;
-        drag.changed = true;
         const THREE = this.viewer.THREE;
         if (drag.mode === "move") {
             const delta = this.proxy.position.clone().sub(drag.pivot);
             const position = translateCharacterPosition(drag.position, delta);
-            this.applyPlacement({ position }, { poleBase: drag.poleBase });
+            if (drag.changed || !samePosition(position, drag.position)) {
+                this.beginDragEdit(drag);
+                this.applyPlacement({ position }, { poleBase: drag.poleBase });
+            }
             // Keep the gizmo on the character when a range limit clamps it.
             this.proxy.position.set(
                 drag.pivot.x + position.x - drag.position.x,
@@ -426,6 +454,8 @@ export class PoseCharacterTransformController {
             return;
         }
         const delta = this.proxy.quaternion.clone().multiply(drag.quaternion.clone().invert());
+        if (!drag.changed && delta.angleTo(new THREE.Quaternion()) < NO_ROTATION_RADIANS) return;
+        this.beginDragEdit(drag);
         const result = rotateCharacterAboutPivot(THREE, {
             position: drag.position,
             rotation: drag.rotation,
@@ -446,14 +476,41 @@ export class PoseCharacterTransformController {
         return true;
     }
 
+    handleCanvasPointerDown(event) {
+        if (!this._drag) this._pointerId = event.pointerId;
+    }
+
     handleCanvasPointerUp(event) {
         const pick = this._pick;
         this._pick = null;
-        if (!pick || this._drag || this.mode === "pose" || event.type !== "pointerup") return;
+        if (!pick || this._drag || this.mode === "pose") return;
         if (Math.hypot(event.clientX - pick.x, event.clientY - pick.y) > CLICK_TOLERANCE_PX) return;
         const id = this.characterIdAt(event);
+        if (!id) {
+            this.clearSelection();
+            return;
+        }
+        this._clearedCharacterId = null;
+        this.applyGizmoMode();
+        this.viewer?.requestRender?.();
         const active = this.activeCharacter();
-        if (id && active && id !== active.id) void this.widget.selectCharacter?.(id);
+        if (active && id !== active.id) void this.widget.selectCharacter?.(id);
+    }
+
+    /**
+     * pointercancel / lostpointercapture: TransformControls only ends a drag on
+     * pointerup, so end it here. The character stays where the user last saw it,
+     * and the gesture commits like a normal release (one undo step).
+     */
+    handlePointerInterrupted(event) {
+        if (event.pointerId !== this._pointerId) return;
+        this._pick = null;
+        const gizmo = this.gizmo;
+        if (!gizmo?.dragging) return;
+        const canvas = this.viewer?.canvas;
+        canvas?.removeEventListener?.("pointermove", gizmo._onPointerMove);
+        if (canvas?.hasPointerCapture?.(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+        gizmo.pointerUp({ x: 0, y: 0, button: 0 });
     }
 
     /** Nearest character mesh under the pointer, or null. */
@@ -646,6 +703,10 @@ export class PoseCharacterTransformController {
         if (!this.isAvailable() || this._drag) return;
         const value = Number(rawValue);
         if (rawValue === "" || !Number.isFinite(value)) return;
+        if (!this._fieldEditActive) {
+            const current = kind === "position" ? this.currentPosition()[axis] : this.currentRotation()[axis];
+            if (Math.abs((kind === "position" ? value : wrapDegrees(value)) - current) < NO_CHANGE_EPSILON) return;
+        }
         this.beginFieldEdit();
         if (kind === "position") {
             const position = this.currentPosition();
@@ -665,6 +726,7 @@ export class PoseCharacterTransformController {
 
     resetPosition() {
         if (!this.isAvailable() || this._drag) return false;
+        if (samePosition(this.currentPosition(), { x: 0, y: 0, z: 0 })) return false;
         this.widget._finishPoseGesture?.();
         this.viewer.recordState?.();
         this.applyPlacement({ position: { x: 0, y: 0, z: 0 } });
@@ -674,6 +736,7 @@ export class PoseCharacterTransformController {
 
     resetRotation() {
         if (!this.isAvailable() || this._drag) return false;
+        if (samePosition(this.currentRotation(), { x: 0, y: 0, z: 0 })) return false;
         this.widget._finishPoseGesture?.();
         this.viewer.recordState?.();
         this.applyPlacement(setCharacterRotationAboutPivot(this.viewer.THREE, {
@@ -716,6 +779,11 @@ export class PoseCharacterTransformController {
         if (!this.viewer) return;
         if (!this.gizmo && this.viewer.isInitialized?.()) this.onViewerReady();
         const available = this.isAvailable();
+        if (this._clearedCharacterId !== null && !this._drag && !this.isSelectionCleared()) {
+            // Another control selected a different character: show the gizmo on it.
+            this._clearedCharacterId = null;
+            this.applyGizmoMode();
+        }
         if (this.mode !== "pose" && !this._drag) {
             if (!this.enabled || this.widget.isAnimationMode?.()) {
                 this.setMode("pose");

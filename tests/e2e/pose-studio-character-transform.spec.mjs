@@ -274,6 +274,120 @@ for (const zoom of [0.6, 1, 1.4]) {
   });
 }
 
+const gizmoState = page => page.evaluate(() => {
+  const w = window.__node.studioWidget, v = w.viewer, g = w.characterTransform.gizmo;
+  return {
+    attached: !!g.object,
+    visible: g.visible,
+    dragging: g.dragging,
+    drag: !!w.characterTransform._drag,
+    orbit: v.orbit.enabled,
+    interaction: v.isInteractionActive,
+    undo: v.history.length,
+    redo: v.future.length,
+    x: w.getActiveCharacter().transform.x,
+  };
+});
+
+/** A point on the viewport with no character under it, away from the toolbar. */
+const emptyPoint = page => page.evaluate(() => {
+  const c = window.__node.studioWidget.characterTransform;
+  const rect = c.viewer.canvas.getBoundingClientRect();
+  for (const [fx, fy] of [[0.95, 0.5], [0.05, 0.5], [0.95, 0.95], [0.05, 0.95]]) {
+    const event = { clientX: rect.left + fx * rect.width, clientY: rect.top + fy * rect.height };
+    if (!c.characterIdAt(event)) return { x: event.clientX, y: event.clientY };
+  }
+  return null;
+});
+
+for (const zoom of [0.6, 1, 1.4]) {
+  test(`character gizmo: deselect, no-op clicks and interrupted gestures at canvas zoom ${zoom}`, async ({ page }) => {
+    test.setTimeout(240_000);
+    const errors = [];
+    page.on("pageerror", error => errors.push(String(error).split("\n")[0]));
+    await openPoseStudio(page, zoom);
+    await clickAt(page, toolbarButton(page, "Move"));
+    expect((await gizmoState(page)).attached).toBe(true);
+
+    // Empty space hides the gizmo; orbit still works; a click on the character shows it again.
+    const empty = await emptyPoint(page);
+    expect(empty, "empty viewport point").toBeTruthy();
+    const before = await state(page);
+    await page.mouse.click(empty.x, empty.y);
+    let gizmo = await gizmoState(page);
+    expect(gizmo.attached).toBe(false);
+    expect(gizmo.visible).toBe(false);
+    expect(gizmo.orbit).toBe(true);
+    expect(gizmo.undo).toBe(0);
+    await page.screenshot({ path: test.info().outputPath("gizmo-deselected.png") });
+
+    await page.mouse.move(empty.x, empty.y);
+    await page.mouse.down({ button: "right" });
+    await page.mouse.move(empty.x - 40, empty.y + 10, { steps: 4 });
+    await page.mouse.up({ button: "right" });
+    expect((await state(page)).camera).not.toEqual(before.camera);
+    expect((await gizmoState(page)).attached).toBe(false);
+
+    const pelvis = (await state(page)).pelvis;
+    await page.mouse.click(pelvis.x, pelvis.y);
+    expect((await gizmoState(page)).attached).toBe(true);
+
+    // Move -> Undo -> a click on a handle without moving keeps Redo and adds no undo entry.
+    const samples = await gizmoDrag(page, "X", { x: 90, y: 0 });
+    const xs = samples.map(sample => sample.transform.x);
+    for (let i = 1; i < xs.length; i += 1) expect(xs[i]).not.toBe(xs[i - 1]);
+    const moved = await gizmoState(page);
+    await page.evaluate(() => window.__node.studioWidget.viewer.undo());
+    const undone = await gizmoState(page);
+    expect(undone.redo).toBe(1);
+    const point = await handle(page, "X");
+    await page.mouse.move(point.x, point.y);
+    await page.mouse.down();
+    await page.mouse.up();
+    const after = await gizmoState(page);
+    expect(after.redo).toBe(1);
+    expect(after.undo).toBe(undone.undo);
+    await page.evaluate(() => window.__node.studioWidget.viewer.redo());
+    expect((await gizmoState(page)).x).toBeCloseTo(moved.x, 5);
+
+    // A real touch gesture cancelled by the browser (CDP touchCancel -> pointercancel).
+    const client = await page.context().newCDPSession(page);
+    const seen = [];
+    await page.evaluate(() => {
+      window.__cancels = 0;
+      window.__node.studioWidget.viewer.canvas.addEventListener("pointercancel", () => { window.__cancels += 1; });
+    });
+    const touchStart = await handle(page, "X");
+    const undoBefore = (await gizmoState(page)).undo;
+    const touch = (x, y) => [{ x, y, id: 1 }];
+    await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: touch(touchStart.x, touchStart.y) });
+    for (let i = 1; i <= 5; i += 1) {
+      await client.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: touch(touchStart.x + i * 12, touchStart.y) });
+      // Touch moves are delivered with the next frame.
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      seen.push(await gizmoState(page));
+    }
+    expect(seen.at(-1).dragging, "the touch drag is active").toBe(true);
+    expect(seen.at(-1).orbit).toBe(false);
+    for (let i = 1; i < seen.length; i += 1) expect(seen[i].x).not.toBe(seen[i - 1].x);
+    await client.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+    await page.waitForFunction(() => window.__cancels > 0);
+    const interrupted = await gizmoState(page);
+    expect(interrupted.dragging).toBe(false);
+    expect(interrupted.drag).toBe(false);
+    expect(interrupted.orbit).toBe(true);
+    expect(interrupted.interaction).toBeFalsy();
+    expect(interrupted.undo).toBe(undoBefore + 1);
+    expect(interrupted.x).toBeCloseTo(seen.at(-1).x, 5);
+
+    // The widget stays usable with the mouse.
+    const next = await gizmoDrag(page, "X", { x: 60, y: 0 });
+    expect(next.at(-1).transform.x).not.toBe(interrupted.x);
+    expect((await gizmoState(page)).undo).toBe(undoBefore + 2);
+    expect(errors).toEqual([]);
+  });
+}
+
 test("character gizmo: workflow reload and a RUN that matches the viewport composition", async ({ page }) => {
   test.setTimeout(420_000);
   await openPoseStudio(page, 1);

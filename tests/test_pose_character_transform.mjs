@@ -504,6 +504,249 @@ test("Clicking a character in Move / Rotate mode selects it without touching bon
     assert.equal(w.getActiveCharacter().id, second);
 });
 
+/** Project a world point to the test canvas (140 x 140 at the origin). */
+const clientPoint = (scene, point) => {
+    const ndc = point.clone().project(scene.viewer.camera);
+    return { clientX: (ndc.x + 1) * 70, clientY: (1 - ndc.y) * 70, pointerId: 1, type: "pointerup" };
+};
+const click = (controller, event) => {
+    controller.handleCanvasPointerDown(event);
+    assert.equal(controller.handleViewerPointerDown(event), true);
+    controller.handleCanvasPointerUp(event);
+};
+/** Press a handle and stop, optionally with pointer moves that do not change the placement. */
+function pressHandle(scene, axis, { stationaryMoves = 0 } = {}) {
+    const { gizmo } = scene.controller;
+    const start = findHandle(scene, axis);
+    scene.controller.handleCanvasPointerDown({ pointerId: 1 });
+    gizmo.pointerHover(start);
+    gizmo.pointerDown(start);
+    assert.equal(gizmo.dragging, true, `${axis} drag starts`);
+    for (let i = 0; i < stationaryMoves; i += 1) {
+        gizmo.pointerMove({ x: start.x, y: start.y, button: -1 });
+        frame(scene);
+    }
+    return start;
+}
+const OFF_CHARACTER = { clientX: 3, clientY: 3, pointerId: 1, type: "pointerup" };
+
+test("A click on empty space hides the gizmo; a click on a character shows it again", async () => {
+    const scene = gizmoScene();
+    const { w, viewer, controller } = scene;
+    const first = w.getActiveCharacter().id;
+    assert.equal(await w.addCharacter(), true);
+    const second = w.getActiveCharacter().id;
+    controller.applyPlacement({ position: { x: 8, y: 0, z: 0 } });
+    controller.commit();
+    viewer.camera.position.set(4, 0, 45);
+    viewer.camera.lookAt(4, 0, 0);
+    viewer.camera.updateMatrixWorld(true);
+    w.selectCharacter = async id => { scene.selected = id; return true; };
+
+    controller.setMode("move");
+    assert.equal(controller.gizmo.object, controller.proxy);
+    assert.equal(controller.characterIdAt(OFF_CHARACTER), null, "the corner is empty");
+    const history = viewer.history.length;
+    const orbit = scene.orbitChanges.length;
+
+    // An orbit drag starting on empty space keeps the selection.
+    controller.handleCanvasPointerDown(OFF_CHARACTER);
+    controller.handleViewerPointerDown(OFF_CHARACTER);
+    controller.handleCanvasPointerUp({ ...OFF_CHARACTER, clientX: OFF_CHARACTER.clientX + 20 });
+    assert.equal(controller.gizmo.object, controller.proxy, "an orbit drag is not a click");
+
+    click(controller, OFF_CHARACTER);
+    assert.equal(controller.gizmo.object, undefined, "the gizmo is detached");
+    assert.equal(controller.gizmo.visible, false, "and hidden");
+    assert.equal(w.getActiveCharacter().id, second, "the panel keeps its active character");
+    assert.equal(viewer.history.length, history, "deselecting is not an edit");
+    assert.equal(scene.orbitChanges.length, orbit, "orbit is never switched off by a click");
+
+    // A hidden gizmo stays hidden across renders and takes no input.
+    frame(scene);
+    controller.onViewportRender();
+    assert.equal(controller.gizmo.object, undefined);
+    controller.gizmo.pointerHover({ x: 0, y: 0, button: 0 });
+    assert.equal(controller.gizmo.axis, null);
+
+    // Clicking the same character brings it back.
+    const activeChest = viewer.skinnedMesh.localToWorld(new THREE.Vector3(0, 2, 0));
+    click(controller, clientPoint(scene, activeChest));
+    assert.equal(controller.gizmo.object, controller.proxy, "the active character shows its gizmo again");
+    assert.equal(scene.selected, undefined, "the active character is not re-selected");
+
+    // Clicking another character selects it and shows the gizmo.
+    click(controller, OFF_CHARACTER);
+    const otherChest = viewer.passiveCharacters.get(first).mesh.localToWorld(new THREE.Vector3(0, 2, 0));
+    click(controller, clientPoint(scene, otherChest));
+    assert.equal(scene.selected, first);
+    assert.equal(controller.gizmo.object, controller.proxy);
+
+    // Selecting from the panel while the gizmo is hidden shows it on that character.
+    click(controller, OFF_CHARACTER);
+    assert.equal(controller.gizmo.object, undefined);
+    delete w.selectCharacter;
+    assert.equal(await w.selectCharacter(first), true);
+    controller.onViewportRender();
+    assert.equal(controller.gizmo.object, controller.proxy, "a panel selection shows the gizmo");
+
+    // Switching mode shows it as well.
+    click(controller, OFF_CHARACTER);
+    controller.setMode("rotate");
+    assert.equal(controller.gizmo.object, controller.proxy, "a mode switch shows the gizmo");
+    click(controller, OFF_CHARACTER);
+    controller.setMode("rotate");
+    assert.equal(controller.gizmo.object, controller.proxy, "the active mode button shows the gizmo");
+    click(controller, OFF_CHARACTER);
+    controller.setMode("pose");
+    assert.equal(controller.gizmo.object, undefined);
+    controller.setMode("move");
+    assert.equal(controller.gizmo.object, controller.proxy, "returning from Pose shows the gizmo");
+});
+
+for (const [mode, axis] of [["move", "X"], ["rotate", "Y"]]) {
+    test(`A ${mode} handle click without movement keeps Undo and Redo`, () => {
+        const scene = gizmoScene();
+        const { w, viewer, controller } = scene;
+        controller.setMode(mode);
+        const steps = mode === "move" ? [[0.05, 0], [0.1, 0]] : [[0.05, 0.05], [0.1, 0.1]];
+        drag(scene, axis, steps);
+        viewer.undo();
+        frame(scene);
+        assert.equal(viewer.future.length, 1, "the drag can be redone");
+        const history = viewer.history.slice();
+        const future = viewer.future.slice();
+        const syncs = scene.syncs;
+
+        for (const stationaryMoves of [0, 3]) {
+            const start = pressHandle(scene, axis, { stationaryMoves });
+            controller.gizmo.pointerUp({ ...start, button: 0 });
+            frame(scene);
+            assert.deepEqual(viewer.history, history, `no undo entry (${stationaryMoves} moves)`);
+            assert.deepEqual(viewer.future, future, `Redo survives (${stationaryMoves} moves)`);
+            assert.equal(scene.syncs, syncs, "nothing is committed");
+            assert.equal(scene.orbitChanges.at(-1), true, "orbit is back");
+        }
+
+        const undone = JSON.stringify([w.exportParams.cam_offset_x, viewer.modelRotation]);
+        viewer.redo();
+        assert.notEqual(JSON.stringify([w.exportParams.cam_offset_x, viewer.modelRotation]), undone, "Redo still applies the drag");
+    });
+}
+
+test("Fields and Reset buttons that change nothing keep Undo and Redo", () => {
+    const scene = gizmoScene();
+    const { viewer, controller } = scene;
+    controller.setMode("move");
+    drag(scene, "X", [[0.05, 0], [0.1, 0]]);
+    viewer.undo();
+    frame(scene);
+    const history = viewer.history.slice();
+    const future = viewer.future.slice();
+    assert.equal(controller.resetPosition(), false);
+    assert.equal(controller.resetRotation(), false);
+    controller.handleFieldInput("position", "x", "0");
+    controller.handleFieldInput("rotation", "y", "360");
+    controller.finishFieldEdit();
+    assert.deepEqual(viewer.history, history);
+    assert.deepEqual(viewer.future, future);
+});
+
+test("A full Undo history loses nothing to a no-op click and one entry to a real drag", () => {
+    const scene = gizmoScene();
+    const { viewer, controller } = scene;
+    controller.setMode("move");
+    for (let i = 0; i < viewer.maxHistory + 2; i += 1) drag(scene, "X", [[0.02, 0], [0.04, 0]]);
+    assert.equal(viewer.history.length, viewer.maxHistory, "history is full");
+    const history = viewer.history.slice();
+
+    const start = pressHandle(scene, "X", { stationaryMoves: 2 });
+    controller.gizmo.pointerUp({ ...start, button: 0 });
+    frame(scene);
+    assert.deepEqual(viewer.history, history, "the oldest entry survives a no-op click");
+
+    drag(scene, "X", [[0.02, 0], [0.04, 0]]);
+    assert.equal(viewer.history.length, viewer.maxHistory);
+    assert.deepEqual(viewer.history.slice(0, -1), history.slice(1), "a real drag drops only the oldest entry");
+});
+
+for (const type of ["pointercancel", "lostpointercapture"]) {
+    test(`${type} ends a drag: one undo step, orbit restored, widget usable`, () => {
+        const scene = gizmoScene();
+        const { w, viewer, controller } = scene;
+        controller.setMode("move");
+        const history = viewer.history.length;
+        const start = pressHandle(scene, "X");
+        const seen = [];
+        for (const dx of [0.05, 0.1, 0.15]) {
+            controller.gizmo.pointerMove({ x: start.x + dx, y: start.y, button: -1 });
+            frame(scene);
+            seen.push(w.getActiveCharacter().transform.x);
+            assert.equal(viewer.isInteractionActive, true);
+            assert.equal(scene.orbitChanges.at(-1), false);
+        }
+        assert.ok(seen[0] > 0 && seen[1] > seen[0] && seen[2] > seen[1], `continuous X ${seen}`);
+
+        // Another pointer's event does not end this drag.
+        viewer.canvas.emit(type, { pointerId: 2 });
+        assert.equal(controller.gizmo.dragging, true, "a second pointer is ignored");
+
+        viewer.canvas.emit(type, { pointerId: 1 });
+        assert.equal(controller.gizmo.dragging, false);
+        assert.equal(controller.gizmo.axis, null);
+        assert.equal(controller._drag, null);
+        assert.equal(viewer.isInteractionActive, false);
+        assert.equal(scene.orbitChanges.at(-1), true, "orbit is back");
+        assert.equal(viewer.history.length, history + 1, "one undo step");
+        assert.equal(scene.syncs, 1, "one commit");
+        close(w.getActiveCharacter().transform.x, seen.at(-1), "the character stays where it was last shown");
+
+        // A late event of the same gesture changes nothing, and stray moves do not edit.
+        viewer.canvas.emit(type === "pointercancel" ? "lostpointercapture" : "pointercancel", { pointerId: 1 });
+        controller.gizmo.pointerMove({ x: start.x + 0.4, y: start.y, button: -1 });
+        assert.equal(scene.syncs, 1);
+        close(w.getActiveCharacter().transform.x, seen.at(-1), "no edit after the gesture ended");
+
+        // The widget stays usable.
+        drag(scene, "X", [[0.05, 0], [0.1, 0]]);
+        assert.ok(w.getActiveCharacter().transform.x > seen.at(-1), "the next drag works");
+        assert.equal(viewer.history.length, history + 2);
+        viewer.undo();
+        close(w.getActiveCharacter().transform.x, seen.at(-1), "Undo returns to the interrupted result");
+        viewer.undo();
+        close(w.getActiveCharacter().transform.x, 0, "Undo returns to the start");
+    });
+}
+
+test("An interrupted gesture without movement records nothing and keeps Redo", () => {
+    const scene = gizmoScene();
+    const { viewer, controller } = scene;
+    controller.setMode("rotate");
+    drag(scene, "Y", [[0.05, 0.05], [0.1, 0.1]]);
+    viewer.undo();
+    frame(scene);
+    const history = viewer.history.slice();
+    const future = viewer.future.slice();
+    pressHandle(scene, "Y");
+    viewer.canvas.emit("pointercancel", { pointerId: 1 });
+    assert.equal(controller.gizmo.dragging, false);
+    assert.equal(scene.orbitChanges.at(-1), true);
+    assert.deepEqual(viewer.history, history);
+    assert.deepEqual(viewer.future, future);
+});
+
+test("A normal release followed by lostpointercapture commits once", () => {
+    const scene = gizmoScene();
+    const { viewer, controller } = scene;
+    controller.setMode("move");
+    drag(scene, "X", [[0.05, 0], [0.1, 0]]);
+    assert.equal(scene.syncs, 1);
+    const history = viewer.history.length;
+    viewer.canvas.emit("lostpointercapture", { pointerId: 1 });
+    assert.equal(scene.syncs, 1);
+    assert.equal(viewer.history.length, history);
+});
+
 test("Animation mode disables Move / Rotate and never edits keyframes", () => {
     const scene = gizmoScene();
     const { w, viewer, controller } = scene;

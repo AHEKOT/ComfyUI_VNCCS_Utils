@@ -35,7 +35,7 @@ import {
     normalizeSAMProjectionFrame,
     serializePoseStudioCharacter,
 } from "./pose_studio/characters.mjs?v=20260908.14";
-import { PoseCharacterTransformController } from "./pose_studio/character_transform_controller.mjs?v=20261102.2";
+import { PoseCharacterTransformController } from "./pose_studio/character_transform_controller.mjs?v=20261105.1";
 import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
