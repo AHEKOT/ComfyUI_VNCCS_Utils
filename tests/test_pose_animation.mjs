@@ -355,7 +355,10 @@ test("playback advances exactly FPS timeline frames per second", () => {
 
 test("animation capture always uses the current yellow-frame camera", () => {
     const stalePoseCamera = { zoom: 4.5, offset_x: 3, offset_y: -2, yaw_deg: 30 };
-    const yellowFrameCamera = { zoom: 1, offset_x: 0, offset_y: 0, yaw_deg: 0, pitch_deg: 0 };
+    const yellowFrameCamera = {
+        zoom: 1, offset_x: 0, offset_y: 0, yaw_deg: 0, pitch_deg: 0,
+        fov_deg: 30, distance: 45, maintain_subject_size: false, view: null,
+    };
     assert.deepEqual(
         resolveCaptureCameraParams(stalePoseCamera, yellowFrameCamera, true),
         yellowFrameCamera,

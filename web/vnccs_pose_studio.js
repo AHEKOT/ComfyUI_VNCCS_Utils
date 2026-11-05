@@ -19,6 +19,25 @@ import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js?v=1791
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js?v=1791754604000";
 import { installCustomSelects } from "./shared/custom_select.mjs?v=20261104-scaled-menu";
 import {
+    poseCaptureCameraFromSnapshot,
+    poseConditioningPasses,
+    snapshotPoseCaptureCamera,
+} from "./pose_studio/conditioning.mjs?v=20261105.2";
+import {
+    POSE_ADDITIONAL_OUTPUT_GROUPS,
+    POSE_BASE_OUTPUT_COUNT,
+    poseAdditionalOutputNames,
+    poseLinkedAdditionalOutputNames,
+    restorePoseAdditionalOutputs,
+    savedPoseAdditionalOutputs,
+    setPoseAdditionalOutput,
+} from "./pose_studio/additional_outputs.mjs?v=20261105.3";
+import {
+    defaultCropGuide,
+    normalizeCropGuide,
+} from "./pose_studio/crop_guide.mjs?v=20261105.1";
+import { PoseCropGuideController } from "./pose_studio/crop_guide_overlay.mjs?v=20261105.1";
+import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
     cameraFramingToCharacterTransform,
@@ -74,6 +93,15 @@ import {
     isCharacterTransformTrack,
     normalizeAnimationState,
     resolveCaptureCameraParams,
+    normalizeCaptureLens,
+    computeSubjectSizeDistance,
+    DEFAULT_CAPTURE_FOV_DEG,
+    MIN_CAPTURE_FOV_DEG,
+    MAX_CAPTURE_FOV_DEG,
+    DEFAULT_CAPTURE_DISTANCE,
+    MIN_CAPTURE_DISTANCE,
+    MAX_CAPTURE_DISTANCE,
+    CAPTURE_LENS_STEP,
     resolveDebugLightingMode,
     retimeAnimationTiming,
     restoreAnimationStateSnapshot,
@@ -82,7 +110,7 @@ import {
     serializeAnimationStateSnapshot,
     setCharacterTransformKeyframe,
     setTrackKeyframeFromEuler,
-} from "./pose_studio/animation.mjs?v=1791754604000";
+} from "./pose_studio/animation.mjs?v=20261105.1";
 
 const VNCCS_POSE_MORPH_WORKER_URL = new URL("./pose_studio/morph_worker.js", import.meta.url);
 let VNCCS_SHARED_MORPH_WORKER = null;
@@ -413,6 +441,24 @@ const STYLES = `
     color: var(--ps-accent);
     margin-left: auto;
     font-family: var(--ps-font-mono);
+}
+
+.vnccs-ps-input.vnccs-ps-value-input {
+    width: 52px;
+    padding: 1px 4px;
+    margin-left: auto;
+    font-size: 9px;
+    font-family: var(--ps-font-mono);
+    color: var(--ps-accent);
+    text-align: right;
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+
+.vnccs-ps-input.vnccs-ps-value-input::-webkit-inner-spin-button,
+.vnccs-ps-input.vnccs-ps-value-input::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
 }
 
 .vnccs-ps-label-row {
@@ -4303,6 +4349,8 @@ class PoseStudioWidget {
             },
         }];  // Array of pose data
         this.posePrompts = [""]; // User prompt per pose tab
+        this.cropGuides = [defaultCropGuide()]; // Scene-level crop guide per pose tab
+        this.cropGuideController = null;
         this.activeTab = 0;
         this.poseCaptures = []; // Cache for captured images
         this.animationState = createDefaultAnimationState({}, {
@@ -4354,6 +4402,10 @@ class PoseStudioWidget {
             cam_offset_y: 0,
             cam_yaw_deg: 0,
             cam_pitch_deg: 0,
+            cam_fov_deg: DEFAULT_CAPTURE_FOV_DEG,
+            cam_distance: DEFAULT_CAPTURE_DISTANCE,
+            cam_maintain_subject_size: false,
+            cam_view: null,
             output_mode: "LIST",
             grid_columns: 2,
             bg_color: [255, 255, 255],
@@ -4374,6 +4426,8 @@ class PoseStudioWidget {
             animation_image_batch: false,
             hand_controls_v2: true,
             directional_skydome_enabled: false,
+            crop_guide_visible: true, // Editor-only crop guide overlay preferences
+            crop_guide_dim: true,
         };
 
         const primaryCharacter = createPoseStudioCharacter({
@@ -4513,6 +4567,9 @@ class PoseStudioWidget {
         document.removeEventListener("pointerdown", this._boundHandleDocumentPointerDown);
         document.removeEventListener("pointerup", this._boundHandleDocumentPointerUp);
         document.removeEventListener("pointercancel", this._boundHandleDocumentPointerCancel);
+        document.removeEventListener("pointerdown", this._boundTrackPoseStudioFocus, true);
+        document.removeEventListener("focusin", this._boundTrackPoseStudioFocus, true);
+        window.removeEventListener("keydown", this._boundHandleCaptureViewShortcut, true);
         clearTimeout(this._animationCacheUploadTimer);
         this._animationCacheUploadTimer = null;
         this._activeVideoImportClose?.();
@@ -4521,6 +4578,7 @@ class PoseStudioWidget {
         this.animationTimeline?.destroy?.();
         this._customSelectController?.disconnect();
         this._customSelectController = null;
+        this.cropGuideController?.dispose();
         if (this._containerResizeObserver) {
             this._containerResizeObserver.disconnect();
             this._containerResizeObserver = null;
@@ -4601,6 +4659,7 @@ class PoseStudioWidget {
     }
 
     createUI() {
+        this.installCaptureViewShortcut();
         this._createLayout();
         this._createLeftPanel();
         this._createCenterPanel();
@@ -5246,8 +5305,15 @@ class PoseStudioWidget {
         const camAngleSection = this.createSection("Camera Angle", false);
         camAngleSection.content.appendChild(this.createSliderField("Yaw", "cam_yaw_deg", -180, 180, 1, 0, this.exportParams, true));
         camAngleSection.content.appendChild(this.createSliderField("Pitch", "cam_pitch_deg", -89, 89, 1, 0, this.exportParams, true));
+        this.createCaptureLensControls(camAngleSection);
         leftPanel.appendChild(camAngleSection.el);
         this.hideSectionInUniCanvas(camAngleSection);
+
+        // --- CROP GUIDE SECTION ---
+        const cropSection = this.createSection("Crop Guide", false);
+        this.ensureCropGuideController().createControls(cropSection.content);
+        leftPanel.appendChild(cropSection.el);
+        this.hideSectionInUniCanvas(cropSection);
 
         // --- EXPORT SETTINGS SECTION ---
         const exportSection = this.createSection("Export Settings", false);
@@ -5372,6 +5438,7 @@ class PoseStudioWidget {
 
         this.canvas = document.createElement("canvas");
         this.canvasContainer.appendChild(this.canvas);
+        this.ensureCropGuideController().attach(this.canvasContainer, this.canvas);
         this._createHandPopover();
         centerPanel.appendChild(this.canvasContainer);
 
@@ -6381,6 +6448,7 @@ class PoseStudioWidget {
             // Model/pose/camera restoration can finish after the initial pad draw.
             onViewportRender: () => {
                 this.radarRedraw?.();
+                this.cropGuideController?.draw();
                 this.host.onViewportRender?.();
             },
             transparentBackground: this.host.embedded === true,
@@ -6408,10 +6476,7 @@ class PoseStudioWidget {
                     { reveal: true },
                 );
             },
-            captureHistoryContext: () => ({
-                mesh: { ...this.meshParams }, transform: { ...this.getActiveCharacter()?.transform },
-                cameraParams: this.currentCameraParams(), prompt: this.getPosePrompt(),
-            }),
+            captureHistoryContext: () => this.imageHistoryContext(),
             onHistoryRestore: pose => this.restoreImageHistory(pose),
             onPoseChange: (pose) => {
                 this.updateRotationSliders();
@@ -6444,6 +6509,47 @@ class PoseStudioWidget {
     // built (other code reads them); they are just not shown.
     hideSectionInUniCanvas(section) {
         if (this.host?.embedded === true && section?.el) section.el.style.display = "none";
+    }
+
+    createAdditionalOutputsSection() {
+        const section = this.createSection("Additional Outputs", true);
+        const enabled = new Set(poseAdditionalOutputNames(this.node));
+        for (const group of POSE_ADDITIONAL_OUTPUT_GROUPS) {
+            const title = document.createElement("div");
+            title.style.cssText = "font-size:11px;font-weight:600;color:#aaa;margin:2px 0 8px;";
+            title.textContent = group.title;
+            section.content.appendChild(title);
+            for (const output of group.outputs) {
+                const row = document.createElement("div");
+                row.className = "vnccs-ps-field";
+                row.style.marginBottom = "8px";
+                const label = document.createElement("label");
+                label.style.cssText = "display:flex;align-items:flex-start;gap:10px;cursor:pointer;user-select:none;";
+                const checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.name = `additional_output_${output.name}`;
+                checkbox.checked = enabled.has(output.name);
+                checkbox.style.marginTop = "2px";
+                checkbox.addEventListener("change", () => this.setAdditionalOutput(output.name, checkbox.checked));
+                const text = document.createElement("span");
+                const name = document.createElement("strong");
+                name.textContent = output.name;
+                const hint = document.createElement("small");
+                hint.style.cssText = "display:block;color:#888;margin-top:3px;line-height:1.35;";
+                hint.textContent = output.hint;
+                text.append(name, hint);
+                label.append(checkbox, text);
+                row.appendChild(label);
+                section.content.appendChild(row);
+            }
+        }
+        return section;
+    }
+
+    setAdditionalOutput(name, enabled) {
+        if (!setPoseAdditionalOutput(this.node, name, enabled)) return;
+        this.node.setDirtyCanvas?.(true, true);
+        this.syncToNode(false, { skipCapture: true });
     }
 
     createSection(title, expanded = true) {
@@ -7195,6 +7301,7 @@ class PoseStudioWidget {
         this.exportParams.cam_offset_x = nextTransform.x;
         this.exportParams.cam_offset_y = nextTransform.y;
         this.exportParams.cam_zoom = nextTransform.zoom;
+        this.setExportCaptureLens(this.currentCaptureLens());
         const cameraParams = this.currentCameraParams();
         character.transform = nextTransform;
         this.captureAnimationTransformEdits(previousTransform, nextTransform);
@@ -7205,8 +7312,8 @@ class PoseStudioWidget {
             this.poses[this.activeTab] = pose;
             character.poses = this.poses;
 
-            // Camera angles describe the shared scene view. Keep them identical
-            // for every character on this pose tab while leaving each
+            // Camera angles and lens describe the shared scene view. Keep them
+            // identical for every character on this pose tab while leaving each
             // character's own position and zoom untouched.
             for (const sceneCharacter of this.characters || []) {
                 if (sceneCharacter.id === character.id) continue;
@@ -7217,6 +7324,10 @@ class PoseStudioWidget {
                     ...existing,
                     yaw_deg: cameraParams.yaw_deg,
                     pitch_deg: cameraParams.pitch_deg,
+                    fov_deg: cameraParams.fov_deg,
+                    distance: cameraParams.distance,
+                    maintain_subject_size: cameraParams.maintain_subject_size,
+                    view: cameraParams.view,
                 };
                 sceneCharacter.poses[this.activeTab] = scenePose;
             }
@@ -7236,8 +7347,48 @@ class PoseStudioWidget {
             offset_y: this.exportParams.cam_offset_y,
             zoom: this.exportParams.cam_zoom,
             yaw_deg: this.exportParams.cam_yaw_deg || 0,
-            pitch_deg: this.exportParams.cam_pitch_deg || 0
+            pitch_deg: this.exportParams.cam_pitch_deg || 0,
+            ...this.currentCaptureLens(),
         };
+    }
+
+    currentCaptureLens() {
+        return normalizeCaptureLens({
+            fov_deg: this.exportParams.cam_fov_deg,
+            distance: this.exportParams.cam_distance,
+            maintain_subject_size: this.exportParams.cam_maintain_subject_size,
+            view: this.exportParams.cam_view,
+        });
+    }
+
+    setExportCaptureLens(source) {
+        // Missing or invalid lens fields fall back to the legacy 30 degree / 45 camera.
+        const lens = normalizeCaptureLens(source);
+        this.exportParams.cam_fov_deg = lens.fov_deg;
+        this.exportParams.cam_distance = lens.distance;
+        this.exportParams.cam_maintain_subject_size = lens.maintain_subject_size;
+        this.exportParams.cam_view = lens.view;
+        return lens;
+    }
+
+    applySubjectSizeDistance(previousFov) {
+        if (this.exportParams.cam_maintain_subject_size !== true) {
+            this._subjectSizeAnchor = null;
+            return;
+        }
+        // Solve from the lens at the start of the adjustment, not the previous
+        // step, so repeated or clamped slider moves cannot accumulate drift.
+        const anchor = this._subjectSizeAnchor;
+        const base = anchor
+            && anchor.fov_deg === previousFov
+            && anchor.distance === this.exportParams.cam_distance
+            ? anchor.base
+            : normalizeCaptureLens({ fov_deg: previousFov, distance: this.exportParams.cam_distance });
+        const fov = normalizeCaptureLens({ fov_deg: this.exportParams.cam_fov_deg }).fov_deg;
+        const distance = computeSubjectSizeDistance(base.distance, base.fov_deg, fov);
+        this.exportParams.cam_fov_deg = fov;
+        this.exportParams.cam_distance = distance;
+        this._subjectSizeAnchor = { base, fov_deg: fov, distance };
     }
 
     cameraParamsForPose(
@@ -7273,6 +7424,10 @@ class PoseStudioWidget {
                         );
                         params.yaw_deg = activeCamera.yaw_deg;
                         params.pitch_deg = activeCamera.pitch_deg;
+                        params.fov_deg = activeCamera.fov_deg;
+                        params.distance = activeCamera.distance;
+                        params.maintain_subject_size = activeCamera.maintain_subject_size;
+                        params.view = activeCamera.view;
                     }
                     pose.cameraParams = params;
                     character.poses[index] = pose;
@@ -7294,6 +7449,7 @@ class PoseStudioWidget {
         this.exportParams.cam_zoom = params.zoom;
         this.exportParams.cam_yaw_deg = params.yaw_deg;
         this.exportParams.cam_pitch_deg = params.pitch_deg;
+        this.setExportCaptureLens(params);
         character.transform = normalizeCharacterTransform({
             ...character.transform,
             x: params.offset_x,
@@ -7361,6 +7517,56 @@ class PoseStudioWidget {
             this.animationState.basePose.prompt = prompt;
         }
         if (index === this.activeTab) this.exportParams.user_prompt = prompt;
+    }
+
+    imageHistoryContext() {
+        return {
+            mesh: { ...this.meshParams }, transform: { ...this.getActiveCharacter()?.transform },
+            cameraParams: this.currentCameraParams(), prompt: this.getPosePrompt(),
+            cropGuide: { ...this.getCropGuide() },
+        };
+    }
+
+    // One crop guide per static pose tab, scene-level like the prompt and the lens.
+    // Data saved before the crop guide existed loads as a disabled guide.
+    ensureCropGuides() {
+        if (!Array.isArray(this.cropGuides)) this.cropGuides = [];
+        while (this.cropGuides.length < this.poses.length) this.cropGuides.push(defaultCropGuide());
+        while (this.cropGuides.length > this.poses.length) this.cropGuides.pop();
+    }
+
+    getCropGuide(index = this.activeTab) {
+        this.ensureCropGuides();
+        return this.cropGuides[index] || defaultCropGuide();
+    }
+
+    setCropGuide(index, guide, { sync = true } = {}) {
+        this.ensureCropGuides();
+        if (index < 0 || index >= this.cropGuides.length) return;
+        this.cropGuides[index] = normalizeCropGuide(guide);
+        this.cropGuideController?.refresh();
+        if (sync) this.syncToNode(false);
+    }
+
+    restoreCropGuides(guides) {
+        this.cropGuides = Array.isArray(guides) ? guides.map(normalizeCropGuide) : [];
+        this.ensureCropGuides();
+        this.cropGuideController?.refresh();
+    }
+
+    ensureCropGuideController() {
+        if (!this.cropGuideController) this.cropGuideController = new PoseCropGuideController(this, { document });
+        return this.cropGuideController;
+    }
+
+    // A crop guide gesture is one image-history step, like a camera control gesture.
+    beginCropGuideGesture() {
+        this._finishPoseGesture?.();
+        if (!this.isAnimationMode()) this.viewer?.recordState?.();
+    }
+
+    finishCropGuideGesture() {
+        this.syncToNode(false);
     }
 
     syncPromptFieldToActiveTab() {
@@ -7605,6 +7811,58 @@ class PoseStudioWidget {
         return true;
     }
 
+    // Auxiliary passes of the scene as currently posed, through the capture
+    // camera of the RGB image just taken (or a Pose Manager card's camera).
+    captureConditioningPasses(width, height, passes, camera = null) {
+        const images = this.viewer.captureConditioning(width, height, {
+            characters: this.characters.map(character => ({ id: character.id, slot: character.slot })),
+            activeCharacterId: this.activeCharacterId,
+            passes,
+            ...(camera ? { camera } : {}),
+        });
+        if (!images || passes.some(pass => typeof images[pass] !== "string")) {
+            throw new Error("Pose Studio auxiliary passes could not be rendered.");
+        }
+        return images;
+    }
+
+    // Pose Manager RUN sends the card bytes unchanged, so auxiliary passes reuse
+    // the exact camera each card was captured with, keyed by the card image.
+    rememberPoseCaptureCamera(capture) {
+        if (!this._poseCaptureCameras) this._poseCaptureCameras = new Map();
+        this._poseCaptureCameras.set(capture, snapshotPoseCaptureCamera(this.viewer.captureCamera));
+        if (this._poseCaptureCameras.size > (this.poses?.length || 0) + 8) {
+            const current = new Set(this.poseCaptures || []);
+            for (const key of [...this._poseCaptureCameras.keys()]) {
+                if (!current.has(key)) this._poseCaptureCameras.delete(key);
+            }
+        }
+    }
+
+    captureManagerConditioning(passes) {
+        const w = this.exportParams.view_width || 1024;
+        const h = this.exportParams.view_height || 1024;
+        const cameras = this.poses.map((_pose, index) => this._poseCaptureCameras?.get(this.poseCaptures?.[index]));
+        if (cameras.some(camera => !camera)) {
+            throw new Error("Pose Manager previews are not ready; RUN cannot render auxiliary outputs for incomplete cards.");
+        }
+        const originalPose = this.viewer.getPose();
+        const results = [];
+        try {
+            for (let i = 0; i < this.poses.length; i++) {
+                this.viewer.setPose(this.poses[i] || {}, true);
+                this.updateCharacterScene({ poseIndex: i });
+                results.push(this.captureConditioningPasses(
+                    w, h, passes, poseCaptureCameraFromSnapshot(this.viewer.THREE, cameras[i]),
+                ));
+            }
+        } finally {
+            this.viewer.setPose(originalPose, true);
+            this.updateCharacterScene({ poseIndex: this.activeTab });
+        }
+        return results;
+    }
+
     layoutPoseManager() {
         if (!this.managerStage || !this.managerGrid) return;
         const count = Math.max(1, this.poses?.length || 1);
@@ -7847,6 +8105,7 @@ class PoseStudioWidget {
                 );
                 this.viewer.setPose(pose, true);
                 this.updateCharacterScene({ poseIndex: i });
+                this.viewer.setCaptureLens?.(poseCamera);
 
                 if (isOriginalLighting) {
                     this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
@@ -7870,6 +8129,7 @@ class PoseStudioWidget {
                     poseCamera.pitch_deg,
                 );
                 this.setPoseCapture(i, nextCapture, true);
+                this.rememberPoseCaptureCamera(nextCapture);
                 this.lightingPrompts[i] = this.generatePromptFromLights(
                     isOriginalLighting ? [] : this.lightParams,
                     this.getPosePrompt(i)
@@ -7888,6 +8148,7 @@ class PoseStudioWidget {
                 // Per-card fitting temporarily moves the shared capture camera.
                 // Restore its neutral scene framing so opening Studio or applying a
                 // library pose cannot inherit the final manager card's offsets.
+                this.viewer.setCaptureLens?.(activeCamera);
                 this.viewer.updateCaptureCamera?.(
                     w,
                     h,
@@ -8028,6 +8289,7 @@ class PoseStudioWidget {
 
     applyCameraToViewer(snap = true) {
         if (!this.viewer) return;
+        this.viewer.setCaptureLens?.(this.currentCaptureLens());
         const args = [
             this.exportParams.view_width,
             this.exportParams.view_height,
@@ -8043,17 +8305,196 @@ class PoseStudioWidget {
         else if (this.viewer.updateCaptureCamera) this.viewer.updateCaptureCamera(...args);
     }
 
-    syncCameraWidgets() {
-        for (const key of ['cam_zoom', 'cam_offset_x', 'cam_offset_y', 'cam_yaw_deg', 'cam_pitch_deg']) {
+    syncCameraWidgets({ replaceFocusedNumber = false } = {}) {
+        for (const key of ['cam_zoom', 'cam_offset_x', 'cam_offset_y', 'cam_yaw_deg', 'cam_pitch_deg', 'cam_fov_deg', 'cam_distance']) {
             const widget = this.exportWidgets[key];
             if (widget) {
                 if (!(widget.type === "number" && document.activeElement === widget)) widget.value = this.exportParams[key];
                 if (widget._vnccsValueSpan) {
                     widget._vnccsValueSpan.innerText = Number(this.exportParams[key] || 0).toFixed(2);
                 }
+                const numberInput = widget._vnccsNumberInput;
+                if (numberInput && (replaceFocusedNumber || document.activeElement !== numberInput)) {
+                    numberInput.value = String(Number(Number(this.exportParams[key] || 0).toFixed(2)));
+                }
             }
         }
+        const maintainWidget = this.exportWidgets.cam_maintain_subject_size;
+        if (maintainWidget) maintainWidget.checked = this.exportParams.cam_maintain_subject_size === true;
+        this.syncCaptureLensControls();
         if (this.radarRedraw) this.radarRedraw();
+    }
+
+    syncCaptureLensControls() {
+        // A SAM projection camera carries its own FOV and position. The manual
+        // lens stays stored with the pose and applies again once SAM is paused.
+        const samLens = !!this.viewer?._samProjectionCameraFrame;
+        for (const key of ['cam_fov_deg', 'cam_distance', 'cam_maintain_subject_size']) {
+            const widget = this.exportWidgets?.[key];
+            if (!widget) continue;
+            widget.disabled = samLens;
+            if (widget._vnccsNumberInput) widget._vnccsNumberInput.disabled = samLens;
+        }
+        if (this._captureLensSamNote) this._captureLensSamNote.style.display = samLens ? "block" : "none";
+        const aligned = !!this.exportParams.cam_view;
+        if (this._alignCaptureViewButton) this._alignCaptureViewButton.disabled = samLens;
+        if (this._orbitCaptureViewButton) this._orbitCaptureViewButton.disabled = !aligned;
+        if (this._captureViewNote) this._captureViewNote.style.display = aligned ? "block" : "none";
+    }
+
+    // Align Camera to View (Ctrl+Shift+F): copy the editor view to the capture
+    // camera. snapToCaptureCamera() is the opposite direction.
+    alignCaptureCameraToView() {
+        if (!this.viewer?.computeCaptureViewFromEditor || this.viewer._samProjectionCameraFrame) return false;
+        const aligned = this.viewer.computeCaptureViewFromEditor();
+        if (!aligned) return false;
+        if (!this.isAnimationMode()) this.viewer.recordState?.();
+        this.setExportCaptureLens({ ...this.currentCaptureLens(), ...aligned });
+        // Yaw and Pitch show the aligned direction and orbit the view from there.
+        const angles = this.viewer.captureViewAngles(aligned.view);
+        this.exportParams.cam_yaw_deg = angles.yaw_deg;
+        this.exportParams.cam_pitch_deg = angles.pitch_deg;
+        this.syncCameraWidgets();
+        this._subjectSizeAnchor = null;
+        this.persistActivePoseCameraParams();
+        // The editor keeps its view: the capture camera now shows exactly that view.
+        this.applyCameraToViewer(false);
+        this.syncToNode(true);
+        return true;
+    }
+
+    useOrbitCaptureCamera() {
+        if (!this.exportParams.cam_view) return false;
+        if (!this.isAnimationMode()) this.viewer?.recordState?.();
+        this.setExportCaptureLens({ ...this.currentCaptureLens(), view: null });
+        this.persistActivePoseCameraParams();
+        this.applyCameraToViewer(true);
+        this.syncToNode(true);
+        return true;
+    }
+
+    installCaptureViewShortcut() {
+        // Ctrl+Shift+F belongs to Pose Studio only after the user last pointed or
+        // focused inside it; otherwise the browser and ComfyUI keep the shortcut.
+        this._boundTrackPoseStudioFocus = event => {
+            this._poseStudioHasFocus = !!this.container?.contains(event.target);
+        };
+        this._boundHandleCaptureViewShortcut = event => this.handleCaptureViewShortcut(event);
+        document.addEventListener("pointerdown", this._boundTrackPoseStudioFocus, true);
+        document.addEventListener("focusin", this._boundTrackPoseStudioFocus, true);
+        window.addEventListener("keydown", this._boundHandleCaptureViewShortcut, true);
+    }
+
+    handleCaptureViewShortcut(event) {
+        if (!event.ctrlKey || !event.shiftKey || event.altKey || event.metaKey) return false;
+        if (event.code !== "KeyF" && String(event.key || "").toLowerCase() !== "f") return false;
+        if (!this._poseStudioHasFocus || this._disposed || this.host?.embedded === true) return false;
+        if (!this.container?.isConnected) return false;
+        if (event.target?.matches?.("input, select, textarea, [contenteditable='true']")) return false;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        this.alignCaptureCameraToView();
+        return true;
+    }
+
+    createCaptureLensControls(section) {
+        const fields = [
+            ["FOV", "cam_fov_deg", MIN_CAPTURE_FOV_DEG, MAX_CAPTURE_FOV_DEG, DEFAULT_CAPTURE_FOV_DEG],
+            ["Distance", "cam_distance", MIN_CAPTURE_DISTANCE, MAX_CAPTURE_DISTANCE, DEFAULT_CAPTURE_DISTANCE],
+        ];
+        // Slider and number field share one step, so both accept the same values.
+        const step = CAPTURE_LENS_STEP;
+        const formatLensValue = key => String(Number(Number(this.exportParams[key] || 0).toFixed(2)));
+        const syncLensValues = () => {
+            // Maintain Subject Size edits Distance while FOV moves, so both pairs follow.
+            for (const [, key] of fields) {
+                const slider = this.exportWidgets[key];
+                slider.value = String(this.exportParams[key]);
+                const input = slider._vnccsNumberInput;
+                if (input && document.activeElement !== input) input.value = formatLensValue(key);
+            }
+        };
+        for (const [label, key, min, max, defaultValue] of fields) {
+            const field = this.createSliderField(label, key, min, max, step, defaultValue, this.exportParams, true);
+            // Exact numeric entry drives the paired slider, so both share one update path.
+            const slider = this.exportWidgets[key];
+            const input = document.createElement("input");
+            input.type = "number";
+            input.className = "vnccs-ps-input vnccs-ps-value-input";
+            input.min = min;
+            input.max = max;
+            input.step = step;
+            input.value = formatLensValue(key);
+            input.title = key === "cam_fov_deg" ? "Vertical field of view in degrees" : "Capture camera distance";
+            // The slider's gesture tracking records one undo step for the whole numeric edit.
+            input.addEventListener("input", () => {
+                if (input.value === "" || !Number.isFinite(Number(input.value))) return;
+                slider.value = String(Math.max(min, Math.min(max, Number(input.value))));
+                slider.dispatchEvent(new Event("input"));
+            });
+            input.addEventListener("change", () => {
+                slider.dispatchEvent(new Event("change"));
+                input.value = formatLensValue(key);
+            });
+            slider._vnccsNumberInput = input;
+            // The number field replaces the read-only value beside the label.
+            slider._vnccsValueSpan.replaceWith(input);
+            slider._vnccsValueSpan = null;
+            slider.addEventListener("input", syncLensValues);
+            section.content.appendChild(field);
+        }
+
+        const maintainField = document.createElement("label");
+        maintainField.className = "vnccs-ps-field vnccs-ps-checkbox-field";
+        maintainField.title = "Move the camera when FOV changes so the subject keeps its size and only the perspective changes.";
+        const maintainCheckbox = document.createElement("input");
+        maintainCheckbox.type = "checkbox";
+        maintainCheckbox.checked = this.exportParams.cam_maintain_subject_size === true;
+        const maintainLabel = document.createElement("span");
+        maintainLabel.className = "vnccs-ps-label";
+        maintainLabel.innerText = "Maintain Subject Size";
+        maintainCheckbox.addEventListener("change", () => {
+            if (!this.isAnimationMode()) this.viewer?.recordState?.();
+            this.exportParams.cam_maintain_subject_size = maintainCheckbox.checked;
+            this._subjectSizeAnchor = null;
+            this.persistActivePoseCameraParams();
+            this.syncToNode(false, { skipCapture: true });
+        });
+        maintainField.append(maintainCheckbox, maintainLabel);
+        section.content.appendChild(maintainField);
+        this.exportWidgets.cam_maintain_subject_size = maintainCheckbox;
+
+        const samNote = document.createElement("div");
+        samNote.className = "vnccs-ps-label";
+        samNote.style.display = "none";
+        samNote.innerText = "SAM camera is applied: its projection sets the lens. FOV and Distance apply again when SAM camera is paused or cleared.";
+        section.content.appendChild(samNote);
+        this._captureLensSamNote = samNote;
+
+        const viewRow = document.createElement("div");
+        viewRow.className = "vnccs-ps-row";
+        const alignButton = document.createElement("button");
+        alignButton.className = "vnccs-ps-btn";
+        alignButton.innerText = "Align Camera to View";
+        alignButton.title = "Copy the editor view (position, rotation, FOV and zoom) to the capture camera (Ctrl+Shift+F)";
+        alignButton.addEventListener("click", () => this.alignCaptureCameraToView());
+        const orbitButton = document.createElement("button");
+        orbitButton.className = "vnccs-ps-btn";
+        orbitButton.innerText = "Orbit Camera";
+        orbitButton.title = "Return to the regular capture camera driven by Yaw, Pitch, FOV and Distance";
+        orbitButton.addEventListener("click", () => this.useOrbitCaptureCamera());
+        viewRow.append(alignButton, orbitButton);
+        section.content.appendChild(viewRow);
+        this._alignCaptureViewButton = alignButton;
+        this._orbitCaptureViewButton = orbitButton;
+
+        const viewNote = document.createElement("div");
+        viewNote.className = "vnccs-ps-label";
+        viewNote.style.display = "none";
+        viewNote.innerText = "Capture camera is aligned to a saved view. Yaw and Pitch orbit it around its pivot; Orbit Camera returns to the regular camera.";
+        section.content.appendChild(viewNote);
+        this._captureViewNote = viewNote;
+        this.syncCaptureLensControls();
     }
 
     clearSAMCameraMode() {
@@ -8071,6 +8512,7 @@ class PoseStudioWidget {
     }
 
     _updateSAMCameraBanner() {
+        this.syncCaptureLensControls();
         if (!this._samCamBanner) return;
         const show = this.exportParams.samApplyCamera && this._samCamBannerVisible;
         if (!show) {
@@ -8122,6 +8564,7 @@ class PoseStudioWidget {
         if (!keepAngles) {
             this.exportParams.cam_yaw_deg = 0;
             this.exportParams.cam_pitch_deg = 0;
+            this.setExportCaptureLens({});
         }
         this.persistActivePoseCameraParams();
         this.syncCameraWidgets();
@@ -8305,15 +8748,26 @@ class PoseStudioWidget {
             valueSpan.innerText = key === 'age' ? Math.round(val) : val.toFixed(2);
 
             if (isExport) {
+                const previousValue = this.exportParams[key];
                 this.exportParams[key] = val;
+                if (key === 'cam_fov_deg') this.applySubjectSizeDistance(previousValue);
                 // Live preview for camera params - sync viewport too
-                const isCamParam = ['cam_zoom', 'cam_offset_x', 'cam_offset_y', 'cam_yaw_deg', 'cam_pitch_deg'].includes(key);
+                const isCamParam = ['cam_zoom', 'cam_offset_x', 'cam_offset_y', 'cam_yaw_deg', 'cam_pitch_deg', 'cam_fov_deg', 'cam_distance'].includes(key);
+                if ((key === 'cam_yaw_deg' || key === 'cam_pitch_deg') && this.exportParams.cam_view && this.viewer?.rotateCaptureView) {
+                    // An aligned view orbits around its own pivot.
+                    this.exportParams.cam_view = this.viewer.rotateCaptureView(
+                        this.exportParams.cam_view, this.exportParams.cam_yaw_deg || 0, this.exportParams.cam_pitch_deg || 0);
+                }
                 if (isCamParam) {
                     this.pendingAgeCameraFit = false;
                     this.persistActivePoseCameraParams();
                 }
                 if (isCamParam && this.viewer) {
-                    this.applyCameraToViewer(true);
+                    // FOV and Distance apply to a view the user moved instead of resetting it.
+                    const keepView = (key === 'cam_fov_deg' || key === 'cam_distance')
+                        && this.viewer.isViewAtCaptureCamera?.() === false;
+                    this.applyCameraToViewer(!keepView);
+                    if (keepView) this.viewer.applyCaptureLensToView?.();
                 }
                 this.syncToNode(false, { skipCapture: true });
             } else {
@@ -8348,7 +8802,7 @@ class PoseStudioWidget {
 
         slider.addEventListener("change", () => {
             if (isExport) {
-                const needsFull = ['view_width', 'view_height', 'cam_zoom', 'bg_color', 'cam_offset_x', 'cam_offset_y', 'cam_yaw_deg', 'cam_pitch_deg'].includes(key);
+                const needsFull = ['view_width', 'view_height', 'cam_zoom', 'bg_color', 'cam_offset_x', 'cam_offset_y', 'cam_yaw_deg', 'cam_pitch_deg', 'cam_fov_deg', 'cam_distance'].includes(key);
                 this.syncToNode(needsFull);
             } else if (isLiveMorphSlider) {
                 this.onMeshParamsChanged(key, { finalize: true });
@@ -9491,11 +9945,16 @@ class PoseStudioWidget {
             this.exportParams.cam_zoom = camera.zoom;
             this.exportParams.cam_yaw_deg = camera.yaw_deg || 0;
             this.exportParams.cam_pitch_deg = camera.pitch_deg || 0;
+            this.setExportCaptureLens(camera);
             if (character && context?.transform) character.transform = { ...context.transform };
             this.persistActivePoseCameraParams();
             this.applyCameraToViewer(false);
+            this.viewer.restoreEditorLens?.();
+            // Undo ends a numeric edit, so a field that kept the focus shows the restored value too.
+            this.syncCameraWidgets({ replaceFocusedNumber: true });
         }
         if (context?.prompt !== undefined) this.setPosePrompt(this.activeTab, context.prompt);
+        if (context && "cropGuide" in context) this.setCropGuide(this.activeTab, context.cropGuide, { sync: false });
         this.syncCharacterEditorControls();
         this.syncPromptFieldToActiveTab();
     }
@@ -9541,6 +10000,7 @@ class PoseStudioWidget {
         if (this.viewer) {
             this.updateCaptureCameraPreview();
         }
+        this.cropGuideController?.refresh();
 
         this.syncToNode(false);
     }
@@ -9574,6 +10034,7 @@ class PoseStudioWidget {
         }
         this.poses = this.getActiveCharacter().poses;
         this.posePrompts.push("");
+        this.ensureCropGuides();
         this.activeTab = this.poses.length - 1;
         this.updateTabs();
         this.clearSAMCameraMode();
@@ -9613,6 +10074,9 @@ class PoseStudioWidget {
         if (this.posePrompts && this.posePrompts.length > idx) {
             this.posePrompts.splice(idx, 1);
         }
+        if (this.cropGuides && this.cropGuides.length > idx) {
+            this.cropGuides.splice(idx, 1);
+        }
 
         // Adjust active tab logic
         if (idx < this.activeTab) {
@@ -9633,6 +10097,7 @@ class PoseStudioWidget {
 
         this.updateTabs();
         this.syncPromptFieldToActiveTab();
+        this.cropGuideController?.refresh();
         this.syncToNode(false);
     }
 
@@ -10425,6 +10890,10 @@ class PoseStudioWidget {
             yaw_deg: Number(this.exportParams.cam_yaw_deg) || 0,
             pitch_deg: Number(this.exportParams.cam_pitch_deg) || 0,
         };
+        // The fit measures through the regular front camera with the current FOV and
+        // Distance, and the result only holds for that same lens.
+        const previousLens = this.currentCaptureLens();
+        const fitLens = { ...previousLens, view: null };
         const neutralTransform = { x: 0, y: 0, z: 0, zoom: 1 };
         this.viewer.setActiveCharacterAppearance({
             color: character.color,
@@ -10432,6 +10901,7 @@ class PoseStudioWidget {
         });
         this.exportParams.cam_yaw_deg = 0;
         this.exportParams.cam_pitch_deg = 0;
+        this.setExportCaptureLens(fitLens);
         this.applyCameraToViewer(true);
 
         const framing = this.viewer?.fitSAM3DToStandardCamera?.(
@@ -10444,6 +10914,7 @@ class PoseStudioWidget {
         if (!framing) {
             this.exportParams.cam_yaw_deg = previousAngles.yaw_deg;
             this.exportParams.cam_pitch_deg = previousAngles.pitch_deg;
+            this.setExportCaptureLens(previousLens);
             this.viewer.setActiveCharacterAppearance({
                 color: character.color,
                 transform: previousTransform,
@@ -10485,6 +10956,7 @@ class PoseStudioWidget {
         this.applyLibraryPoseTransform(transform, {
             yaw_deg: 0,
             pitch_deg: 0,
+            ...fitLens,
         });
         this.updateRotationSliders();
         return true;
@@ -13162,9 +13634,13 @@ class PoseStudioWidget {
             timeline: { ...this.sharedTimeline },
             activeTab: animationMode ? this.activeTab : 0,
             pose_prompts: animationMode ? scenePrompts : [savePrompt],
+            ...(animationMode
+                ? { crop_guides: this.cropGuides.map(guide => ({ ...guide })) }
+                : { crop_guide: { ...this.getCropGuide() } }),
             camera: {
                 yaw_deg: this.exportParams.cam_yaw_deg || 0,
                 pitch_deg: this.exportParams.cam_pitch_deg || 0,
+                ...this.currentCaptureLens(),
             },
             prompt: savePrompt,
         };
@@ -13212,6 +13688,7 @@ class PoseStudioWidget {
 
             if (!animationMode && includePreview) {
                 this.updateCharacterScene({ poseIndex: this.activeTab });
+                this.viewer.setCaptureLens?.(this.currentCaptureLens());
                 preview = this.viewer.capture(
                     this.exportParams.view_width,
                     this.exportParams.view_height,
@@ -13296,6 +13773,7 @@ class PoseStudioWidget {
         this.exportParams.cam_zoom = transform.zoom;
         this.exportParams.cam_yaw_deg = yaw;
         this.exportParams.cam_pitch_deg = pitch;
+        this.setExportCaptureLens(cameraParams);
         if (!this.isAnimationMode()) this.persistActivePoseCameraParams();
 
         this.viewer.setActiveCharacterAppearance({
@@ -13435,6 +13913,9 @@ class PoseStudioWidget {
             ? asset.pose_prompts.map(value => String(value ?? ""))
             : [String(asset.prompt || "")];
         while (this.posePrompts.length < (active?.poses?.length || 1)) this.posePrompts.push("");
+        this.cropGuides = Array.isArray(asset.crop_guides)
+            ? asset.crop_guides.map(normalizeCropGuide)
+            : [];
 
         this.sharedTimeline = {
             fps: Number(asset.timeline?.fps) || 12,
@@ -13456,6 +13937,7 @@ class PoseStudioWidget {
             this.exportParams.cam_yaw_deg = Number(asset.camera.yaw_deg) || 0;
             this.exportParams.cam_pitch_deg = Number(asset.camera.pitch_deg) || 0;
         }
+        this.setExportCaptureLens(asset.camera);
         this.ensurePoseCameraParams();
         this.restoreActivePoseCameraParams({ updateViewer: false });
 
@@ -13478,6 +13960,7 @@ class PoseStudioWidget {
         this.syncPromptFieldToActiveTab();
         this.syncCharacterEditorControls();
         this.renderCharactersUI();
+        this.restoreCropGuides(this.cropGuides);
         this.syncToNode(false, { skipCapture: true, skipAnimationHistory: true });
     }
 
@@ -13510,6 +13993,7 @@ class PoseStudioWidget {
             while (character.poses.length > this.poses.length) character.poses.pop();
         }
         this.posePrompts = this.poses.map(pose => String(pose?.prompt || ""));
+        this.restoreCropGuides(asset?.crop_guides);
         this.poseCaptures = [];
         this.lightingPrompts = [];
         this.activeTab = 0;
@@ -13626,9 +14110,12 @@ class PoseStudioWidget {
                         ?? data.pose?.sam_projection
                         ?? data.pose?.camera?.sam_projection,
                     );
+                    // Poses saved before the lens was editable use the legacy 30 degree / 45 camera.
+                    const savedLens = normalizeCaptureLens({ ...(data.pose?.camera || {}), ...(savedFraming || {}) });
                     const savedAngles = {
                         yaw_deg: savedFraming?.yaw_deg ?? data.pose?.camera?.yaw_deg ?? 0,
                         pitch_deg: savedFraming?.pitch_deg ?? data.pose?.camera?.pitch_deg ?? 0,
+                        ...savedLens,
                     };
                     const pose = this.stripSceneCameraFromPose(poseSource);
                     if (this.host?.embedded !== true && (activeSceneTransform || savedFraming)) {
@@ -13650,9 +14137,17 @@ class PoseStudioWidget {
                         this.applyLibraryPoseTransform(activeSceneTransform, savedAngles);
                     } else if (savedFraming) {
                         this.applyLibraryPoseFraming(savedFraming);
+                    } else {
+                        this.setExportCaptureLens(savedLens);
+                        if (!this.isAnimationMode()) this.persistActivePoseCameraParams();
+                        this.syncCameraWidgets();
+                        this.applyCameraToViewer(true);
                     }
                     if (savedSAMProjection && this.host?.embedded !== true) {
                         this.applyLibrarySAMProjection(savedSAMProjection);
+                    }
+                    if (this.host?.embedded !== true) {
+                        this.setCropGuide(this.activeTab, data.pose?.crop_guide, { sync: false });
                     }
                     if (this.isAnimationMode()) {
                         this.animationState.basePose.prompt = pose.prompt ?? this.animationState.basePose.prompt ?? "";
@@ -14121,6 +14616,7 @@ class PoseStudioWidget {
         samMeshLabel.appendChild(samMeshText);
         samMeshRow.appendChild(samMeshLabel);
         debugSection.content.appendChild(samMeshRow);
+        content.appendChild(this.createAdditionalOutputsSection().el);
         content.appendChild(debugSection.el);
 
         // Skin Texture Section
@@ -15467,6 +15963,15 @@ class PoseStudioWidget {
         return this._nodeWidgetCache.byName.get(name);
     }
 
+    // Crop guides of the images an execution captures, in capture order. Debug Mode
+    // renders one library pose, so it uses that asset's guide (disabled if none).
+    cropGuidesForCapture(debugAsset = null) {
+        if (this.isAnimationMode()) return null;
+        if (debugAsset) return [{ ...normalizeCropGuide(debugAsset.crop_guide), pose_index: null }];
+        this.ensureCropGuides();
+        return this.cropGuides.map((guide, index) => ({ ...guide, pose_index: index }));
+    }
+
     queueCaptureUpload(captureId) {
         const captures = this.poseCaptures || [];
         if (
@@ -15572,6 +16077,18 @@ class PoseStudioWidget {
         const outputCount = isDebugExecution
             ? 1
             : animationMode ? this.animationState.frameCount : this.poses.length;
+        // Additional outputs are rendered only for execution and only when enabled
+        // and linked; ordinary editing and unused outputs never pay for them.
+        const additionalOutputs = poseAdditionalOutputNames(this.node);
+        const linkedAdditionalOutputs = poseLinkedAdditionalOutputNames(this.node);
+        const conditioningPasses = fullCapture && options.executionCapture === true
+            ? poseConditioningPasses(linkedAdditionalOutputs)
+            : [];
+        if (conditioningPasses.length && animationMode) {
+            throw new Error("Pose Studio depth, normal, outline, silhouette, mask and character_id outputs "
+                + "are available in Image mode. Turn them off in Settings > Additional Outputs or switch to Image mode.");
+        }
+        const conditioning = conditioningPasses.length ? [] : null;
 
         if (fullCapture && captureExplicitlyRequested
             && outputCount * (this.exportParams.view_width || 1024)
@@ -15602,6 +16119,8 @@ class PoseStudioWidget {
         if (options.executionCapture === true) {
             this._executionCaptureSnapshot = null;
             this._executionLightingPromptSnapshot = null;
+            this._executionConditioningSnapshot = null;
+            this._executionCropGuideSnapshot = this.cropGuidesForCapture(isDebugExecution ? debugPose : null);
         }
         if (reusePoseManagerCaptures) {
             const managerCapturesReady = this.poseCaptures.length === outputCount
@@ -15614,6 +16133,7 @@ class PoseStudioWidget {
             // camera fitting, or any other render-time reinterpretation.
             this._executionCaptureSnapshot = this.poseCaptures.slice();
             this._executionLightingPromptSnapshot = this.lightingPrompts.slice();
+            if (conditioning) this._executionConditioningSnapshot = this.captureManagerConditioning(conditioningPasses);
         }
 
         // Any animation edit invalidates the previous widget-rendered sequence.
@@ -15645,6 +16165,7 @@ class PoseStudioWidget {
                 offset_y: 0,
                 yaw_deg: this.exportParams.cam_yaw_deg || 0,
                 pitch_deg: this.exportParams.cam_pitch_deg || 0,
+                ...this.currentCaptureLens(),
             };
             const debugPrompt = isDebugExecution ? this.getPosePrompt(this.activeTab) : "";
             const debugLightingMode = resolveDebugLightingMode({
@@ -15683,6 +16204,7 @@ class PoseStudioWidget {
                             const poseCamera = transform ? {
                                 yaw_deg: Number(savedFraming?.yaw_deg ?? asset.camera?.yaw_deg ?? 0),
                                 pitch_deg: Number(savedFraming?.pitch_deg ?? asset.camera?.pitch_deg ?? 0),
+                                ...normalizeCaptureLens({ ...(asset.camera || {}), ...(savedFraming || {}) }),
                             } : currentCaptureCamera;
                             if (![poseCamera.yaw_deg, poseCamera.pitch_deg].every(Number.isFinite)) {
                                 throw new TypeError("Pose framing requires finite camera angles.");
@@ -15695,6 +16217,7 @@ class PoseStudioWidget {
                             // Apply saved framing only to the temporary render, preserving authored state.
                             if (transform) this.viewer.setActiveCharacterAppearance({ transform });
                             this.viewer.setSAMProjectionCameraFrame(projection);
+                            this.viewer.setCaptureLens(poseCamera);
                             const captureLights = debugLightingMode === "original"
                                 ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
                                 : debugLightingMode === "manual" ? userLights : debugLights;
@@ -15709,6 +16232,7 @@ class PoseStudioWidget {
                                 poseCamera.yaw_deg,
                                 poseCamera.pitch_deg,
                             ), true);
+                            if (conditioning) conditioning[i] = this.captureConditioningPasses(w, h, conditioningPasses);
                             this.lightingPrompts[i] = this.generatePromptFromLights(
                                 isOriginalLighting ? [] : captureLights,
                                 debugPrompt,
@@ -15726,6 +16250,7 @@ class PoseStudioWidget {
                                 currentCaptureCamera,
                                 animationMode,
                             );
+                            this.viewer.setCaptureLens(poseCamera);
                             // Lighting Toggle
                             if (isOriginalLighting) {
                                 this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
@@ -15743,12 +16268,14 @@ class PoseStudioWidget {
                                 poseCamera.yaw_deg,
                                 poseCamera.pitch_deg,
                             ), true);
+                            if (conditioning) conditioning[i] = this.captureConditioningPasses(w, h, conditioningPasses);
                             const framePrompt = animationMode
                                 ? String(this.animationState.basePose?.prompt ?? this.getPosePrompt(this.activeTab))
                                 : this.getPosePrompt(i);
                             this.lightingPrompts[i] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams, framePrompt);
                         }
                     }
+                    if (conditioning) this._executionConditioningSnapshot = conditioning;
                 } catch (error) {
                     this.poseCaptures = previousCaptures;
                     this.lightingPrompts = previousPrompts;
@@ -15778,6 +16305,7 @@ class PoseStudioWidget {
                         // Restore Camera Visualization
                         const yaw = this.exportParams.cam_yaw_deg || 0;
                         const pitch = this.exportParams.cam_pitch_deg || 0;
+                        this.viewer.setCaptureLens(this.currentCaptureLens());
                         this.viewer.updateCaptureCamera(w, h, 1, 0, 0, yaw, pitch);
                     } finally {
                         if (captureBatchStarted || this.viewer._captureBatch) this.viewer.endCaptureBatch?.();
@@ -15794,6 +16322,7 @@ class PoseStudioWidget {
                 this.updateCharacterScene(animationMode
                     ? { frame: this.animationState.currentFrame }
                     : { poseIndex: this.activeTab });
+                this.viewer.setCaptureLens(activeCamera);
                 if (isOriginalLighting) {
                     this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
                 } else {
@@ -15824,6 +16353,15 @@ class PoseStudioWidget {
         const exportToSave = { ...this.exportParams };
         delete exportToSave.background_url;
         delete exportToSave.debugPortraitMode;
+        delete exportToSave.conditioning_outputs;
+        delete exportToSave.crop_outputs;
+        delete exportToSave.additional_outputs;
+        delete exportToSave.linked_additional_outputs;
+        if (additionalOutputs.length) {
+            exportToSave.additional_outputs = additionalOutputs;
+            exportToSave.linked_additional_outputs = linkedAdditionalOutputs;
+        }
+        this.ensureCropGuides();
 
         // captured_images are excluded from the widget to avoid inflating workflow size
         // (each 1024×1024 PNG is ~500KB base64; multiple poses exceed ComfyUI localStorage limit)
@@ -15902,6 +16440,7 @@ class PoseStudioWidget {
             characters: serializedCharacters,
             timeline: { ...this.sharedTimeline },
             pose_prompts: [...this.posePrompts],
+            crop_guides: this.cropGuides.map(guide => ({ ...guide })),
             // Legacy mirrors keep older Pose Studio builds able to open the
             // primary character without understanding the v3 scene schema.
             mesh: primaryCharacter?.mesh || this.meshParams,
@@ -16055,6 +16594,7 @@ class PoseStudioWidget {
                 "schema_version", "mesh", "export", "poses", "image_poses", "animation",
                 "lights", "activeTab", "capture_id", "lighting_prompts", "background_url",
                 "captured_images", "node_id", "characters", "active_character_id", "timeline", "pose_prompts",
+                "crop_guides",
             ]);
             this._passthroughPoseData = Object.fromEntries(
                 Object.entries(data).filter(([key]) => !knownRootKeys.has(key)),
@@ -16135,6 +16675,12 @@ class PoseStudioWidget {
             if (data.export) {
                 this.exportParams = { ...this.exportParams, ...data.export };
                 delete this.exportParams.debugPortraitMode;
+                this.setExportCaptureLens({
+                    fov_deg: data.export.cam_fov_deg,
+                    distance: data.export.cam_distance,
+                    maintain_subject_size: data.export.cam_maintain_subject_size,
+                    view: data.export.cam_view,
+                });
                 if (!data.export.editor_mode && data.export.content_mode) {
                     this.exportParams.editor_mode = data.export.content_mode;
                 }
@@ -16193,6 +16739,7 @@ class PoseStudioWidget {
             if (Array.isArray(data.pose_prompts)) {
                 this.posePrompts = data.pose_prompts.map(value => String(value ?? ""));
             }
+            this.restoreCropGuides(data.crop_guides);
 
             let cachedAnimationReference = null;
             const restoredAnimationSource = Array.isArray(data.characters)
@@ -16502,8 +17049,12 @@ app.registerExtension({
             const capturedLightingPrompts = (widget._executionLightingPromptSnapshot
                 || widget.lightingPrompts
                 || []).slice();
+            const capturedConditioning = widget._executionConditioningSnapshot;
+            const capturedCropGuides = widget._executionCropGuideSnapshot;
             widget._executionCaptureSnapshot = null;
             widget._executionLightingPromptSnapshot = null;
+            widget._executionConditioningSnapshot = null;
+            widget._executionCropGuideSnapshot = null;
             const animationCacheReady = await widget.flushAnimationCacheUpload();
             assertCurrent();
             const payload = {
@@ -16517,7 +17068,9 @@ app.registerExtension({
                     ? widgetData.animation
                     : widget.buildSceneAnimationCachePayload(),
                 captured_images: capturedImages,
-                lighting_prompts: capturedLightingPrompts
+                lighting_prompts: capturedLightingPrompts,
+                ...(capturedConditioning ? { captured_conditioning: capturedConditioning } : {}),
+                ...(capturedCropGuides ? { captured_crop_guides: capturedCropGuides } : {}),
             };
 
             return api.fetchApi('/vnccs/pose_sync/upload_capture', {
@@ -16832,6 +17385,7 @@ app.registerExtension({
             hideInternalWidget(this, "pose_data");
             ensureAnimationImageBatchWidget(this);
             hideInternalWidget(this, "animation_image_batch");
+            restorePoseAdditionalOutputs(this);
             this.setSize([900, 740]);
 
             // Create widget
@@ -16898,6 +17452,7 @@ app.registerExtension({
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (info) {
             if (onConfigure) onConfigure.apply(this, arguments);
+            restorePoseAdditionalOutputs(this, savedPoseAdditionalOutputs(this));
 
             if (this.studioWidget) {
                 syncStudioDOMWidgetWidth(this);
@@ -16913,6 +17468,17 @@ app.registerExtension({
                     this.onResize(this.size); // Force correct aspect ratio on config
                 }, 500);
             }
+        };
+
+        // Linked additional outputs are saved in pose_data, so a new link re-executes the node.
+        const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+        nodeType.prototype.onConnectionsChange = function (type, slot) {
+            const result = onConnectionsChange?.apply(this, arguments);
+            // type 2 is LiteGraph.OUTPUT.
+            if (type === 2 && slot >= POSE_BASE_OUTPUT_COUNT) {
+                this.studioWidget?.syncToNode(false, { skipCapture: true });
+            }
+            return result;
         };
 
         // Re-capture with fresh random params on each execution when Debug Mode is enabled

@@ -5,6 +5,10 @@ import * as THREE from "../../web/vendor/three/three.module.js";
 import { PoseViewerCore } from "../../web/pose_studio/core.js";
 import * as characters from "../../web/pose_studio/characters.mjs";
 import * as animation from "../../web/pose_studio/animation.mjs";
+import * as additionalOutputs from "../../web/pose_studio/additional_outputs.mjs";
+import * as conditioning from "../../web/pose_studio/conditioning.mjs";
+import * as cropGuide from "../../web/pose_studio/crop_guide.mjs";
+import * as cropGuideOverlay from "../../web/pose_studio/crop_guide_overlay.mjs";
 import { HAND_PRESETS } from "../../web/pose_studio/hand_presets.js";
 import * as openpose from "../../web/pose_studio/imports/openpose.js";
 import { isLikelyVideoFile } from "../../web/pose_studio/imports/video.mjs";
@@ -24,6 +28,12 @@ export class Element {
     appendChild(child) { this.children.push(child); child.parentElement = this; return child; }
     append(...children) { children.forEach(child => this.appendChild(child)); }
     replaceChildren(...children) { this.children = []; this.append(...children); }
+    replaceWith(element) {
+        const siblings = this.parentElement.children;
+        siblings[siblings.indexOf(this)] = element;
+        element.parentElement = this.parentElement;
+        this.parentElement = null;
+    }
     addEventListener(type, fn) { (this.events[type] ||= []).push(fn); }
     removeEventListener() {}
     dispatchEvent(event) { for (const fn of this.events[event.type] || []) fn(event); this[`on${event.type}`]?.(event); }
@@ -52,7 +62,7 @@ export class Element {
 export function createScene({ skinned = false } = {}) {
     const frames = new Map(), timers = new Map(); let id = 0;
     const document = { createElement: tag => new Element(tag), createDocumentFragment: () => new Element(), body: new Element(), activeElement: null };
-    const context = { ...characters, ...animation, ...openpose, isLikelyVideoFile, HAND_PRESETS, console, document, window: {}, Blob,
+    const context = { ...characters, ...animation, ...additionalOutputs, ...conditioning, ...cropGuide, ...cropGuideOverlay, ...openpose, isLikelyVideoFile, HAND_PRESETS, console, document, window: {}, Blob,
         getComputedStyle: element => ({ width: `${element.width}px`, height: `${element.height}px` }),
         localStorage: { getItem: () => null, setItem: noop },
         requestAnimationFrame: fn => { frames.set(++id, fn); return id; }, cancelAnimationFrame: id => frames.delete(id),
@@ -102,7 +112,7 @@ export function createScene({ skinned = false } = {}) {
     }
     morph();
     viewer.options.onViewportRender = () => w.radarRedraw?.();
-    viewer.options.captureHistoryContext = () => ({ mesh: { ...w.meshParams }, transform: { ...w.getActiveCharacter().transform }, cameraParams: w.currentCameraParams(), prompt: w.getPosePrompt() });
+    viewer.options.captureHistoryContext = () => w.imageHistoryContext();
     viewer.options.onHistoryRestore = pose => w.restoreImageHistory(pose);
     viewer.options.onPoseChange = () => { w.updateRotationSliders(); w.syncToNode(); };
     w.createSliderField("Zoom", "cam_zoom", 0.1, 7, 0.01, 1, w.exportParams, true);
