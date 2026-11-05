@@ -5,7 +5,7 @@
  */
 
 
-import { normalizeCaptureLens } from "./animation.mjs?v=1791754604000";
+import { normalizeCaptureLens } from "./animation.mjs?v=20261105.1";
 import { capturePoseConditioning } from "./conditioning.mjs?v=20261101.1";
 
 // Determine the extension's base URL dynamically to support varied directory names
@@ -4838,6 +4838,22 @@ export class PoseViewerCore {
         this.orbit.enableDamping = false;
         this.orbit.update();
         this.orbit.enableDamping = prevDamping;
+        this.requestRender();
+    }
+
+    // Undo and Redo restore the editor position and pivot from the pose snapshot. The
+    // snapshot has no editor lens, so it is rebuilt here from the restored capture lens.
+    restoreEditorLens() {
+        if (!this.camera || !this.captureCamera) return;
+        const samProjection = !!this._samProjectionCameraFrame;
+        this.camera.fov = samProjection ? POSE_STUDIO_EDITOR_FOV : this._editorFovForCaptureLens();
+        this.camera.zoom = samProjection ? 1 : this.captureCamera.zoom;
+        this.camera.updateProjectionMatrix();
+        this._viewLensDistance = this.captureLens.distance;
+        // A view restored at the capture camera follows later lens edits again.
+        if (this.camera.position.distanceToSquared(this.captureCamera.position) < 1e-10) {
+            this._snappedView = { position: this.camera.position.clone(), target: this.orbit.target.clone() };
+        }
         this.requestRender();
     }
 

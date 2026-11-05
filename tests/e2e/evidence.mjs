@@ -18,6 +18,27 @@ const outDir = resolve(import.meta.dirname, "evidence", topic);
 const launchOptions = process.env.PW_CHROMIUM_PATH ? { executablePath: process.env.PW_CHROMIUM_PATH } : {};
 await mkdir(outDir, { recursive: true });
 
+if (topic === "pose-library-creator") {
+  if (phase !== "after") throw new Error("Pose Library Creator evidence supports After captures only.");
+  const { capturePoseLibraryCreator } = await import("../browser/pose_library_creator.mjs");
+  await capturePoseLibraryCreator({ ...launchOptions, output: outDir });
+  process.exit(0);
+}
+
+if (topic === "pose-library-scroll") {
+  if (phase !== "after") throw new Error("Pose Library scroll evidence supports After captures only.");
+  const { capturePoseLibraryScroll } = await import("../browser/pose_library_scroll.mjs");
+  await capturePoseLibraryScroll({ ...launchOptions, output: outDir });
+  process.exit(0);
+}
+
+if (topic === "pose-repositories") {
+  if (phase !== "after") throw new Error("Pose repository evidence supports After captures only.");
+  const { capturePoseLibraryRepositories } = await import("../browser/pose_library_repositories.mjs");
+  await capturePoseLibraryRepositories({ ...launchOptions, output: outDir });
+  process.exit(0);
+}
+
 if (phase === "compose") {
   const before = await readFile(resolve(outDir, "before.png"));
   const after = await readFile(resolve(outDir, "after.png"));

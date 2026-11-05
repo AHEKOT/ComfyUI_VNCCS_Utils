@@ -300,6 +300,20 @@ Common settings:
 | background color | Used for final render and grid background. |
 | `directional_skydome_enabled` | Show/export the directional skydome and expose the `camera_prompt` input. |
 
+Type an exact value in the number beside the FOV or Distance label. The number and
+the slider both step by 0.1 and update together while you drag or type; one edit is one
+Undo step, and Undo restores the viewport camera along with the capture lens.
+
+FOV alone keeps the camera where it is, so it changes how much of the scene fits in the
+frame, like a zoom: near and far figures keep their proportions. To change those
+proportions, change Distance, or turn on **Maintain Subject Size** and change FOV: the
+subject keeps its size while near figures grow and far figures shrink at a wide FOV, and
+the reverse at a narrow one. The viewport and RUN output show the same perspective.
+
+The SAM standard-camera fit measures through the current FOV and Distance and keeps
+them. It uses the regular front camera, so a saved **Align Camera to View** is cleared
+when the fit succeeds.
+
 The lens is stored with each pose tab's `cameraParams` (`fov_deg`, `distance`,
 `maintain_subject_size`), mirrored on every character like yaw/pitch, and in the
 library asset's `camera` block. Poses and workflows saved without these fields load
