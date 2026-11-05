@@ -427,6 +427,8 @@ test("per-character export: no work until linked, one batch per character, and t
   await toggle(page, "character_json");
   await toggle(page, "character_passes");
   expect(await outputNames(page)).toEqual([...BASE, "character_json", "character_passes"]);
+  await page.locator('input[name="additional_output_character_passes"]').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("per-character-settings.png") });
   await run(page);
   expect(await counts()).toEqual([0, 0]);
 
