@@ -15,7 +15,6 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 torch = None
 POSE_STUDIO = None
-APPLY = None
 
 
 def _load_crop_guide():
@@ -44,11 +43,10 @@ def _load(module, path):
 
 def _require_node():
     """Tensor-dependent node tests are skipped where CI does not install PyTorch."""
-    global torch, POSE_STUDIO, APPLY
+    global torch, POSE_STUDIO
     torch = pytest.importorskip("torch")
     if POSE_STUDIO is None:
         POSE_STUDIO = _load("pose_studio", ROOT / "nodes" / "pose_studio.py")
-        APPLY = _load("apply_crop_guide", ROOT / "nodes" / "apply_crop_guide.py")
 
 
 CROP = _load_crop_guide()
@@ -244,110 +242,6 @@ class PoseStudioCropOutputTests(unittest.TestCase):
             node, result, _arrays = _run(guides, linked=(), **kwargs)
             self.assertEqual(len(result), len(node.RETURN_TYPES))
             self.assertEqual(list(result[2:5]), [[], [], []])
-
-
-class ApplyCropGuideTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        _require_node()
-
-    def setUp(self):
-        self.node = APPLY.VNCCS_ApplyCropGuide()
-        self.source = torch.from_numpy(_capture(0, 80, 60).astype(np.float32) / 255).unsqueeze(0)
-        self.record = CROP.build_crop_json(_guide(0.25, 0.2, 0.5, 0.5), 80, 60, 0)
-        self.text = json.dumps(self.record)
-
-    def apply(self, images, texts, mode=None):
-        return self.node.apply(images, texts, None if mode is None else [mode])[0]
-
-    def test_same_resolution_equals_pose_studio_crop(self):
-        before = self.source.clone()
-        (crop,) = self.apply([self.source], [self.text])
-        rect = self.record["pixel_rect"]
-        torch.testing.assert_close(crop, CROP.crop_image(self.source, rect))
-        self.assertEqual(tuple(crop.shape), (1, 30, 40, 3))
-        torch.testing.assert_close(self.source, before, msg="source pixels are never modified")
-
-    def test_resized_generation_crops_the_same_region_without_interpolation(self):
-        # A 2x nearest-neighbour "generation" of the source: the crop is the 2x crop exactly.
-        generated = self.source.repeat_interleave(2, dim=1).repeat_interleave(2, dim=2)
-        (crop,) = self.apply([generated], [self.text])
-        (small,) = self.apply([self.source], [self.text])
-        self.assertEqual(tuple(crop.shape), (1, 60, 80, 3))
-        torch.testing.assert_close(crop, small.repeat_interleave(2, dim=1).repeat_interleave(2, dim=2))
-        # Arbitrary different resolution: the same normalized rectangle with floor/ceil rounding.
-        odd = torch.rand(1, 45, 60, 3)
-        (crop,) = self.apply([odd], [self.text])
-        rect = CROP.crop_pixel_rect(self.record["rect"], 60, 45)
-        self.assertEqual(rect, {"x": 15, "y": 9, "width": 30, "height": 23})
-        torch.testing.assert_close(crop, odd[:, 9:32, 15:45, :])
-
-    def test_letterboxed_results_are_refused_unless_stretch_is_chosen(self):
-        letterboxed = torch.zeros(1, 80, 80, 3)
-        with self.assertRaisesRegex(ValueError, "aspect ratios differ"):
-            self.apply([letterboxed], [self.text])
-        (crop,) = self.apply([letterboxed], [self.text], "stretch")
-        self.assertEqual(tuple(crop.shape), (1, 40, 40, 3))
-
-    def test_disabled_guide_returns_the_image_unchanged(self):
-        text = json.dumps(CROP.build_crop_json(_guide(0.25, 0.2, 0.5, 0.5, enabled=False), 80, 60))
-        (image,) = self.apply([self.source], [text])
-        self.assertIs(image, self.source)
-
-    def test_invalid_crop_json_errors_are_clear(self):
-        cases = {
-            "": "empty",
-            "{": "not valid JSON",
-            "[]": "JSON object",
-            json.dumps({**self.record, "schema_version": 2}): "newer than this node supports",
-            json.dumps({**self.record, "schema_version": "1"}): "schema_version",
-            json.dumps({**self.record, "enabled": "yes"}): "enabled must be true or false",
-            json.dumps({**self.record, "rect": {"x": 0.8, "y": 0, "width": 0.5, "height": 0.5}}): "inside the image",
-            json.dumps({**self.record, "rect": {"x": -0.1, "y": 0, "width": 0.5, "height": 0.5}}): "inside the image",
-            json.dumps({**self.record, "rect": {"x": 0, "y": 0, "width": 0, "height": 0.5}}): "inside the image",
-            json.dumps({**self.record, "rect": {"x": "0", "y": 0, "width": 0.5, "height": 0.5}}): "finite number",
-            json.dumps({**self.record, "source": {"width": 0, "height": 5}}): "source",
-            json.dumps({**self.record, "coordinate_system": "bottom_left"}): "coordinate_system",
-        }
-        for text, message in cases.items():
-            with self.assertRaisesRegex(ValueError, message, msg=text):
-                self.apply([self.source], [text])
-        nan = self.text.replace('"x": 0.25', '"x": NaN')
-        with self.assertRaisesRegex(ValueError, "finite number"):
-            self.apply([self.source], [nan])
-
-    def test_lists_keep_pose_correspondence_and_never_stack_different_sizes(self):
-        guides = [_guide(0, 0, 0.5, 0.5), _guide(0.5, 0.5, 0.25, 0.25), _guide(0, 0, 1, 1)]
-        texts = [json.dumps(CROP.build_crop_json(guide, 80, 60, index)) for index, guide in enumerate(guides)]
-        images = [self.source * (index + 1) / 3 for index in range(3)]
-        crops = self.apply(images, texts)
-        self.assertEqual([tuple(crop.shape) for crop in crops], [(1, 30, 40, 3), (1, 15, 20, 3), (1, 60, 80, 3)])
-        torch.testing.assert_close(crops[1], images[1][:, 30:45, 40:60, :])
-        # One batch with one image per pose is split in pose order.
-        batch = torch.cat(images, dim=0)
-        split = self.apply([batch], texts)
-        for crop, expected in zip(split, crops):
-            torch.testing.assert_close(crop, expected)
-        # One crop_json applies to every image and keeps each batch together.
-        same = self.apply([batch, self.source], [texts[1]])
-        self.assertEqual([tuple(crop.shape) for crop in same], [(3, 15, 20, 3), (1, 15, 20, 3)])
-        with self.assertRaisesRegex(ValueError, "2 image item"):
-            self.apply([self.source, self.source], texts)
-        with self.assertRaisesRegex(ValueError, "aspect_mismatch"):
-            self.apply([self.source], [self.text], "squash")
-
-    def test_pose_studio_output_feeds_apply_crop_guide(self):
-        guides = [_guide(0.1, 0.2, 0.4, 0.5), _guide(0.5, 0.0, 0.5, 1.0)]
-        _node, result, arrays = _run(guides)
-        images, crop_json, crop_images = result[0], result[2], result[3]
-        direct = self.node.apply(images, crop_json)[0]
-        for crop, expected in zip(direct, crop_images):
-            torch.testing.assert_close(crop, expected)
-        # The same crop_json crops a resized "generated" copy of each image at its own resolution.
-        generated = [image.repeat_interleave(3, dim=1).repeat_interleave(3, dim=2) for image in images]
-        cropped = self.node.apply(generated, crop_json)[0]
-        for crop, expected in zip(cropped, crop_images):
-            torch.testing.assert_close(crop, expected.repeat_interleave(3, dim=1).repeat_interleave(3, dim=2))
 
 
 if __name__ == "__main__":

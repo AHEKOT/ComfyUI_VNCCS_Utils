@@ -340,7 +340,7 @@ Stored guide fields: `schema_version` (1), `enabled`, `x`, `y`, `width`, `height
 `custom_aspect_ratio` (`[w, h]`) and `aspect_ratio_locked`. NaN, Infinity, negative,
 non-numeric or oversized values are rejected (the guide loads disabled) or clamped inside.
 
-Pixel conversion, identical in the browser, in Pose Studio and in Apply Crop Guide:
+Pixel conversion, identical in the browser and in Pose Studio:
 left and top use `floor(x * width)`, right and bottom use `ceil((x + w) * width)` and
 are exclusive, all clamped to the image, at least 1 pixel; width and height are the
 differences of the boundaries. Products within 1e-6 pixel of an integer count as that
@@ -381,35 +381,12 @@ output is only produced while it is linked, so an unconnected `crop_image` costs
 copy. An enabled guide gives a copy of the crop that never shares pixels with `images`; a
 disabled guide gives the full image. Pose Manager RUN and its card cache are unchanged.
 
-### VNCCS Apply Crop Guide
+### Using the rectangle elsewhere
 
-`VNCCS Apply Crop Guide` (`VNCCS_ApplyCropGuide`, category `VNCCS/pose`) crops any image
-with a `crop_json`: inputs `image` (IMAGE), `crop_json` (STRING) and `aspect_mismatch`;
-output `cropped_image` (IMAGE list). It parses and validates the JSON, uses the input
-image's real resolution, converts the normalized rectangle with the same rounding and
-crops without resizing or interpolation. Invalid JSON, unknown schema versions,
-non-numeric or out-of-range rectangles stop with a clear error. A disabled guide returns
-the image unchanged.
-
-Pairing: one `crop_json` crops every image (each batch keeps its size); N images and N
-`crop_json` values pair in order; one batch of N images and N `crop_json` values is split
-per pose. Crops of different sizes are separate list items and are never stacked into one
-tensor. The same `crop_json` crops the depth, normal, outline, silhouette and Character ID
-outputs identically.
-
-Typical workflow: `images` -> ControlNet / generation -> `VNCCS Apply Crop Guide`
-(`crop_json` from Pose Studio) -> Save Image.
-
-Applying the rectangle to an image of a different resolution:
-
-1. **Pure resize** (same content scaled, e.g. 1280 x 720 -> 1920 x 1080): supported; the
-   same normalized rectangle is converted at the new resolution.
-2. **Letterbox, padding or center crop**: the rectangle must go through the same geometric
-   transform first. Apply Crop Guide refuses an aspect ratio that differs by more than 1 %
-   by default; choose `stretch` only when the image was resized without padding or
-   cropping (stretched).
-3. **The generator moved or reframed the subject**: no guarantee; the rectangle marks the
-   image region, not the subject.
+`rect` in `crop_json` is normalized, so it stays valid for an image that was only resized.
+After letterboxing, padding or a center crop it must go through the same transform first,
+and it marks an image region, not the subject, if a generator moved or reframed the
+subject.
 
 ## Camera and Framing
 

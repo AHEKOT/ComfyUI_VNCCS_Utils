@@ -1,7 +1,6 @@
 from .nodes.vnccs_nodes import VNCCS_PositionControl, VNCCS_VisualPositionControl
 from .nodes.vnccs_bbox_extractor import VNCCS_BBox_Extractor
 from .nodes.pose_studio import VNCCS_PoseStudio
-from .nodes.apply_crop_guide import VNCCS_ApplyCropGuide
 from .nodes.pose_library_creator import VNCCS_PoseLibraryCreator
 from .nodes.unicanvas import VNCCS_UniCanvas, register_unicanvas_routes
 from .nodes.vncss_config import VNCCS_Config
@@ -14,7 +13,6 @@ NODE_CLASS_MAPPINGS = {
     "VNCCS_VisualPositionControl": VNCCS_VisualPositionControl,
     "VNCCS_BBox_Extractor": VNCCS_BBox_Extractor,
     "VNCCS_PoseStudio": VNCCS_PoseStudio,
-    "VNCCS_ApplyCropGuide": VNCCS_ApplyCropGuide,
     "VNCCS_PoseLibraryCreator": VNCCS_PoseLibraryCreator,
     "VNCCS_UniCanvas": VNCCS_UniCanvas,
     "VNCCS_Config": VNCCS_Config,
@@ -29,7 +27,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_VisualPositionControl": "VNCCS Visual Camera Control",
     "VNCCS_BBox_Extractor": "VNCCS BBox Extractor",
     "VNCCS_PoseStudio": "VNCCS Pose Studio",
-    "VNCCS_ApplyCropGuide": "VNCCS Apply Crop Guide",
     "VNCCS_PoseLibraryCreator": "VNCCS Pose Library Creator",
     "VNCCS_UniCanvas": "VNCCS UniCanvas",
     "VNCCS_Config": "VNCSS Config",
