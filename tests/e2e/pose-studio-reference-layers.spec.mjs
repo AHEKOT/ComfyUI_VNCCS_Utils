@@ -11,7 +11,9 @@ test.use({ viewport: { width: 1600, height: 1000 } });
 async function openPoseStudio(page) {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => (window.comfyAPI?.app?.app ?? window.app)?.graph && window.LiteGraph, null, { timeout: 120_000 });
-  await page.waitForTimeout(1500);
+  // Extensions register after the graph exists, and a fresh user directory opens the Templates dialog.
+  await page.waitForTimeout(5000);
+  for (let i = 0; i < 3; i += 1) { await page.keyboard.press("Escape"); await page.waitForTimeout(150); }
   await page.evaluate(() => {
     const app = window.comfyAPI?.app?.app ?? window.app;
     app.graph.clear();
