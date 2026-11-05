@@ -1,6 +1,6 @@
 import { defaultState, normalizeState, mergeText, readEditor, removeBlock, promptId, randomSeed, EditHistory, CONDITION_OPERATORS, MAX_PROMPT_OUTPUTS, MAX_STATE_CHARS, hasCycle, templateText } from "./state.mjs";
 import { ensureStyles } from "./styles.mjs";
-import { installCustomSelects } from "../shared/custom_select.mjs";
+import { installCustomSelects } from "../shared/custom_select.mjs?v=20261104-scaled-menu";
 import { DocumentStorage } from "./storage.mjs";
 import { readPromptResponse } from "./response.mjs";
 import { syncPromptOutputs } from "./outputs.mjs";

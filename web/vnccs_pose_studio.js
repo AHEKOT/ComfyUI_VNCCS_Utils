@@ -17,7 +17,7 @@ import {
 import { HAND_PRESETS } from "./pose_studio/hand_presets.js";
 import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js?v=1791754604000";
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js?v=1791754604000";
-import { installCustomSelects } from "./shared/custom_select.mjs";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=20261104-scaled-menu";
 import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
@@ -2398,6 +2398,102 @@ const STYLES = `
     background: var(--ps-accent-subtle);
     border-color: var(--ps-accent-border);
     color: var(--ps-accent-hover);
+}
+
+.vnccs-ps-publish-overlay {
+    container-type: size;
+}
+
+.vnccs-ps-publish-modal {
+    font-size: clamp(20px, min(2.25cqw, 2.8cqh), 32px);
+    width: min(36em, calc(100% - 32px));
+    max-height: calc(100% - 32px);
+    box-sizing: border-box;
+}
+
+.vnccs-ps-publish-modal .vnccs-ps-modal-title {
+    flex-shrink: 0;
+    padding: 1em 1.25em;
+    font-size: 1.2em;
+    line-height: 1.3;
+    letter-spacing: 0;
+}
+
+.vnccs-ps-publish-modal .vnccs-ps-modal-content {
+    gap: 0.9em;
+    padding: 1.2em 1.5em;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.vnccs-ps-publish-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4em;
+    min-width: 0;
+}
+
+.vnccs-ps-publish-field > span {
+    color: var(--ps-text-muted);
+    font-size: 0.8em;
+    font-weight: 600;
+}
+
+.vnccs-ps-publish-modal .vnccs-ps-input {
+    min-height: 2.5em;
+    padding: 0.6em 0.75em;
+    font-size: 1em;
+}
+
+.vnccs-ps-publish-check {
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
+}
+
+.vnccs-ps-publish-check input {
+    width: 1.1em;
+    height: 1.1em;
+    margin: 0;
+    font-size: inherit;
+    accent-color: var(--ps-accent);
+}
+
+.vnccs-ps-publish-help {
+    margin: 0;
+    color: var(--ps-text-muted);
+    font-size: 0.8em;
+    line-height: 1.5;
+}
+
+.vnccs-ps-publish-actions {
+    display: flex;
+    flex-shrink: 0;
+    gap: 0.75em;
+    padding: 0 1.5em 1.5em;
+}
+
+.vnccs-ps-publish-actions .vnccs-ps-modal-btn {
+    flex: 1;
+    min-height: 2.5em;
+    justify-content: center;
+    font-size: 1em;
+    font-weight: 600;
+}
+
+.vnccs-ps-publish-actions .primary {
+    background: var(--ps-accent);
+    color: var(--ps-bg);
+}
+
+.vnccs-ps-publish-actions .primary:hover {
+    background: var(--ps-accent-hover);
+}
+
+.vnccs-ps-publish-modal :focus-visible {
+    outline: 2px solid var(--ps-accent);
+    outline-offset: 2px;
 }
 
 .vnccs-ps-save-library-modal {
@@ -10418,6 +10514,30 @@ class PoseStudioWidget {
         }
     }
 
+    async applySAM3DPoseForCapture(poseData, assertCurrent, signal = null) {
+        const fitData = await this.prepareSAM3DRenderFit(poseData, { signal });
+        assertCurrent();
+        const poseForImport = fitData?.poseData || poseData;
+
+        const ok = this.viewer.applySAM3DImport(
+            poseForImport,
+            this._shoulderYOffset || 0
+        );
+        if (!ok) {
+            throw new Error("Failed to apply SAM 3D Body pose to Pose Studio.");
+        }
+        this._lastSAM3DPoseData = poseForImport;
+        this._lastSAM3DMeshData = fitData?.meshData || null;
+        if (fitData?.meshData) {
+            this.applySAM3DMeshOverlayFit(fitData.meshData, poseForImport);
+        } else {
+            await this.refreshSAMMeshOverlay(poseForImport);
+            assertCurrent();
+        }
+        this.syncMeshProportionSlidersFromViewer();
+        this.applySAM3DFrameCameraParams(poseForImport, fitData?.meshData || null);
+    }
+
     async applySAM3DProportionsToPoseManager(poseData) {
         if (!this.viewer?.isInitialized?.()) {
             throw new Error("Pose viewer is not ready.");
@@ -12186,56 +12306,60 @@ class PoseStudioWidget {
     }
 
     async publishLocalPoseRepository(forceConfigure = false) {
-        this.showMessage("Remote publishing is disabled by the VNCCS security policy.", true);
-        return;
-
-        const repo = this.localPoseRepository || {};
-        if (forceConfigure || !repo.publish_repo_id || !repo.publishing_enabled) {
-            this.showPublishLocalRepositoryModal(forceConfigure);
-            return;
-        }
-        await this.runLocalPoseRepositoryPublish({
-            repo_id: repo.publish_repo_id,
-            create: false,
-        });
+        if (this._localPoseRepositoryPublishActive) return;
+        this.showPublishLocalRepositoryModal(forceConfigure);
     }
 
     showPublishLocalRepositoryModal(forceConfigure = false) {
         const current = this.localPoseRepository || {};
         const overlay = document.createElement('div');
-        overlay.className = 'vnccs-ps-modal-overlay';
+        overlay.className = 'vnccs-ps-modal-overlay vnccs-ps-publish-overlay';
 
         const modal = document.createElement('div');
-        modal.className = 'vnccs-ps-modal';
-        modal.style.maxWidth = "420px";
+        modal.className = 'vnccs-ps-modal vnccs-ps-publish-modal';
+        modal.setAttribute('role', 'dialog');
+        modal.setAttribute('aria-modal', 'true');
+        modal.setAttribute('aria-label', 'Publish Local Pose Repository');
         modal.innerHTML = `
             <div class="vnccs-ps-modal-title">Publish Local Pose Repository</div>
             <div class="vnccs-ps-modal-content">
-                <label class="vnccs-ps-library-field">
+                <label class="vnccs-ps-publish-field">
                     <span>Target</span>
                     <select class="vnccs-ps-input vnccs-ps-publish-mode">
                         <option value="create">Create new repository</option>
                         <option value="existing">Use existing repository</option>
                     </select>
                 </label>
-                <label class="vnccs-ps-library-field">
+                <label class="vnccs-ps-publish-field">
                     <span>Hugging Face repo</span>
                     <input class="vnccs-ps-input vnccs-ps-publish-repo" type="text" placeholder="owner/repository" value="${this.escapeHtml(current.publish_repo_id || "")}">
                 </label>
-                <label class="vnccs-ps-library-field vnccs-ps-publish-private-row">
+                <div class="vnccs-ps-publish-field vnccs-ps-publish-private-row">
                     <span>Visibility</span>
-                    <label style="display:flex;align-items:center;gap:8px;color:var(--ps-text-muted);font-size:12px;">
+                    <label class="vnccs-ps-publish-check">
                         <input class="vnccs-ps-publish-private" type="checkbox"> Private repository
                     </label>
+                </div>
+                <label class="vnccs-ps-publish-field">
+                    <span>Hugging Face write token</span>
+                    <input class="vnccs-ps-input vnccs-ps-publish-token" type="password" autocomplete="off" placeholder="Write access to this repository">
                 </label>
-                <p class="vnccs-ps-library-field">Remote publishing is disabled by the VNCCS security policy.</p>
+                <p class="vnccs-ps-publish-help">The token is used for this publish only and is not saved.</p>
             </div>
-            <button class="vnccs-ps-modal-btn primary" style="justify-content:center;">Publish</button>
-            <button class="vnccs-ps-modal-btn cancel">Cancel</button>
+            <div class="vnccs-ps-publish-actions">
+                <button class="vnccs-ps-modal-btn cancel">Cancel</button>
+                <button class="vnccs-ps-modal-btn primary">Publish</button>
+            </div>
         `;
 
         const modeEl = modal.querySelector('.vnccs-ps-publish-mode');
         const repoEl = modal.querySelector('.vnccs-ps-publish-repo');
+        for (const input of [repoEl, modal.querySelector('.vnccs-ps-publish-token')]) {
+            input.addEventListener('input', () => {
+                input.setCustomValidity("");
+                input.style.borderColor = "";
+            });
+        }
         const privateRow = modal.querySelector('.vnccs-ps-publish-private-row');
         let previousMode = current.publish_repo_id ? "existing" : "create";
         let existingRepoDraft = current.publish_repo_id || "";
@@ -12253,17 +12377,30 @@ class PoseStudioWidget {
         syncMode();
 
         modal.querySelector('.vnccs-ps-modal-btn.primary').onclick = async () => {
-            const repoId = modal.querySelector('.vnccs-ps-publish-repo').value.trim();
+            const repoId = this.normalizePoseRepositoryInput(repoEl.value);
+            const tokenInput = modal.querySelector('.vnccs-ps-publish-token');
+            const token = tokenInput.value.trim();
             if (!repoId) {
                 const repoInput = modal.querySelector('.vnccs-ps-publish-repo');
                 repoInput.style.borderColor = "rgba(255,71,87,0.7)";
-                repoInput.placeholder = "Repository id is required";
+                repoInput.setCustomValidity("Enter owner/repository or a Hugging Face repository URL.");
+                repoInput.reportValidity();
                 repoInput.focus();
                 return;
             }
+            repoEl.setCustomValidity("");
+            if (!token) {
+                tokenInput.setCustomValidity("A Hugging Face write token is required.");
+                tokenInput.reportValidity();
+                tokenInput.focus();
+                return;
+            }
+            tokenInput.setCustomValidity("");
+            tokenInput.value = "";
             overlay.remove();
             await this.runLocalPoseRepositoryPublish({
                 repo_id: repoId,
+                token,
                 create: modeEl.value === "create",
                 private: modal.querySelector('.vnccs-ps-publish-private').checked,
             });
@@ -12328,13 +12465,16 @@ class PoseStudioWidget {
 
     normalizePoseRepositoryInput(value) {
         const raw = String(value || "").trim();
-        if (!/^https?:\/\//i.test(raw)) return raw.replace(/^\/+|\/+$/g, "");
+        if (!/^https?:\/\//i.test(raw)) {
+            const repo = raw.replace(/^\/+|\/+$/g, "");
+            return /^[\w.-]+\/[\w.-]+$/.test(repo) ? repo : "";
+        }
         try {
             const url = new URL(raw);
             if (!['huggingface.co', 'www.huggingface.co'].includes(url.hostname.toLowerCase())) return "";
             const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
             if (parts.length < 2 || parts[0] === 'datasets' || parts[0] === 'spaces') return "";
-            return `${parts[0]}/${parts[1]}`;
+            return this.normalizePoseRepositoryInput(`${parts[0]}/${parts[1]}`);
         } catch (_err) {
             return "";
         }
@@ -12343,7 +12483,11 @@ class PoseStudioWidget {
     async addPoseRepository() {
         const input = this.librarySettingsEl?.querySelector('.vnccs-ps-library-repo-input');
         const repoId = this.normalizePoseRepositoryInput(input?.value);
-        if (!repoId) return;
+        if (!repoId) {
+            this.showRepositoryNotice("Enter owner/repository or a Hugging Face model repository URL.", true);
+            input?.focus();
+            return;
+        }
         const previousRepositories = [...(this.poseRepositories || [])];
         const taskId = this.createRepositoryTaskId("repo-add");
         const progressKey = `repo:${repoId}`;
@@ -12714,6 +12858,7 @@ class PoseStudioWidget {
         }
         if (!this.libraryGrid) return;
 
+        const scrollTop = this.libraryGrid.scrollTop;
         this.renderLibraryCategories();
         this.libraryGrid.innerHTML = '';
         const filtered = this.getFilteredLibraryPoses();
@@ -12792,6 +12937,7 @@ class PoseStudioWidget {
 
         const selected = (this.libraryPoses || []).find(pose => this.getLibraryPoseId(pose) === this.librarySelectedName) || null;
         this.renderLibraryInspector(selected);
+        this.libraryGrid.scrollTop = scrollTop;
     }
 
     selectLibraryPose(pose) {
@@ -13213,6 +13359,90 @@ class PoseStudioWidget {
         return result;
     }
 
+    buildLibraryAsset(prompt = this.getPosePrompt(this.activeTab)) {
+        const animationMode = this.isAnimationMode();
+        const savePrompt = String(prompt ?? "");
+        let assetData;
+        this.captureActiveCharacterRuntime();
+        this.syncSharedTimelineFromActive();
+        const savedSAMProjection = (
+            !animationMode
+            && this._samCameraModeActive
+            && this._samCamDisplayActive
+        )
+            ? normalizeSAMProjectionFrame(this._samCamStoredProjectionFrame)
+            : null;
+        const scenePrompts = [...this.posePrompts];
+        while (scenePrompts.length <= this.activeTab) scenePrompts.push("");
+        scenePrompts[this.activeTab] = savePrompt;
+        const sceneCharacters = this.characters.map(character => {
+            this.ensureCharacterRuntime(character);
+            const animationSnapshot = JSON.parse(serializeAnimationStateSnapshot(character.animationState));
+            if (animationSnapshot.basePose) this.stripSceneCameraFromPose(animationSnapshot.basePose);
+            if (character.id === this.activeCharacterId) {
+                animationSnapshot.basePose = animationSnapshot.basePose || {};
+                animationSnapshot.basePose.prompt = savePrompt;
+            }
+            const serialized = serializePoseStudioCharacter(character, animationSnapshot);
+            if (character.id === this.activeCharacterId) {
+                serialized.poses[this.activeTab] = serialized.poses[this.activeTab] || {};
+                serialized.poses[this.activeTab].prompt = savePrompt;
+            }
+            // A library pose is one point on the pose axis, even when the
+            // scene contains several characters. Pose sets are exported
+            // separately with the explicit `type: "pose_set"` format.
+            if (!animationMode) {
+                const selectedPose = serialized.poses[this.activeTab]
+                    || serialized.poses[0]
+                    || {};
+                if (character.id === this.activeCharacterId && savedSAMProjection) {
+                    selectedPose.sam_projection = JSON.parse(JSON.stringify(savedSAMProjection));
+                }
+                serialized.poses = [selectedPose];
+            }
+            return serialized;
+        });
+        const sceneBase = {
+            type: animationMode ? "pose_animation" : "scene_pose",
+            schema_version: 3,
+            active_character_id: this.activeCharacterId,
+            characters: sceneCharacters,
+            timeline: { ...this.sharedTimeline },
+            activeTab: animationMode ? this.activeTab : 0,
+            pose_prompts: animationMode ? scenePrompts : [savePrompt],
+            camera: {
+                yaw_deg: this.exportParams.cam_yaw_deg || 0,
+                pitch_deg: this.exportParams.cam_pitch_deg || 0,
+                ...this.currentCaptureLens(),
+            },
+            prompt: savePrompt,
+        };
+        if (animationMode) {
+            this.ensureAnimationInitialized();
+            if (!this._applyingAnimationPose) this.captureAnimationEdits();
+            this.commitAnimationHistory();
+            const snapshot = JSON.parse(serializeAnimationStateSnapshot(this.animationState));
+            snapshot.basePose = snapshot.basePose || {};
+            snapshot.basePose.prompt = savePrompt;
+            this.stripSceneCameraFromPose(snapshot.basePose);
+            assetData = {
+                ...sceneBase,
+                animation: snapshot,
+                prompt: snapshot.basePose.prompt,
+            };
+        } else {
+            const pose = this.stripSceneCameraFromPose(this.viewer.getPose());
+            pose.cameraParams = this.currentCameraParams();
+            if (savedSAMProjection) {
+                pose.sam_projection = JSON.parse(JSON.stringify(savedSAMProjection));
+            }
+            pose.prompt = savePrompt;
+            assetData = { ...pose, ...sceneBase, prompt: pose.prompt };
+        }
+
+        return assetData;
+    }
+
     async saveToLibrary(name, includePreview = true, metadata = {}) {
         if (!this.viewer) return false;
 
@@ -13224,85 +13454,9 @@ class PoseStudioWidget {
             if (animationMode && (this._animationCacheRestorePending || this._deferredAnimationReference)) {
                 throw new Error("Animation tracks are not loaded. Restore the animation before saving it.");
             }
-            this.captureActiveCharacterRuntime();
-            this.syncSharedTimelineFromActive();
-            const savedSAMProjection = (
-                !animationMode
-                && this._samCameraModeActive
-                && this._samCamDisplayActive
-            )
-                ? normalizeSAMProjectionFrame(this._samCamStoredProjectionFrame)
-                : null;
-            const savePrompt = String(metadata.prompt ?? this.getPosePrompt(this.activeTab) ?? "");
-            const scenePrompts = [...this.posePrompts];
-            while (scenePrompts.length <= this.activeTab) scenePrompts.push("");
-            scenePrompts[this.activeTab] = savePrompt;
-            const sceneCharacters = this.characters.map(character => {
-                this.ensureCharacterRuntime(character);
-                const animationSnapshot = JSON.parse(serializeAnimationStateSnapshot(character.animationState));
-                if (animationSnapshot.basePose) this.stripSceneCameraFromPose(animationSnapshot.basePose);
-                if (character.id === this.activeCharacterId) {
-                    animationSnapshot.basePose = animationSnapshot.basePose || {};
-                    animationSnapshot.basePose.prompt = savePrompt;
-                }
-                const serialized = serializePoseStudioCharacter(character, animationSnapshot);
-                if (character.id === this.activeCharacterId) {
-                    serialized.poses[this.activeTab] = serialized.poses[this.activeTab] || {};
-                    serialized.poses[this.activeTab].prompt = savePrompt;
-                }
-                // A library pose is one point on the pose axis, even when the
-                // scene contains several characters. Pose sets are exported
-                // separately with the explicit `type: "pose_set"` format.
-                if (!animationMode) {
-                    const selectedPose = serialized.poses[this.activeTab]
-                        || serialized.poses[0]
-                        || {};
-                    if (character.id === this.activeCharacterId && savedSAMProjection) {
-                        selectedPose.sam_projection = JSON.parse(JSON.stringify(savedSAMProjection));
-                    }
-                    serialized.poses = [selectedPose];
-                }
-                return serialized;
-            });
-            const sceneBase = {
-                type: animationMode ? "pose_animation" : "scene_pose",
-                schema_version: 3,
-                active_character_id: this.activeCharacterId,
-                characters: sceneCharacters,
-                timeline: { ...this.sharedTimeline },
-                activeTab: animationMode ? this.activeTab : 0,
-                pose_prompts: animationMode ? scenePrompts : [savePrompt],
-                camera: {
-                    yaw_deg: this.exportParams.cam_yaw_deg || 0,
-                    pitch_deg: this.exportParams.cam_pitch_deg || 0,
-                    ...this.currentCaptureLens(),
-                },
-                prompt: savePrompt,
-            };
-            if (animationMode) {
-                this.ensureAnimationInitialized();
-                if (!this._applyingAnimationPose) this.captureAnimationEdits();
-                this.commitAnimationHistory();
-                const snapshot = JSON.parse(serializeAnimationStateSnapshot(this.animationState));
-                snapshot.basePose = snapshot.basePose || {};
-                snapshot.basePose.prompt = savePrompt;
-                this.stripSceneCameraFromPose(snapshot.basePose);
-                assetData = {
-                    ...sceneBase,
-                    animation: snapshot,
-                    prompt: snapshot.basePose.prompt,
-                };
-                if (metadata.previewFile) {
-                    preview = await this.readLibraryFileAsDataUrl(metadata.previewFile, 40 * 1024 * 1024);
-                }
-            } else {
-                const pose = this.stripSceneCameraFromPose(this.viewer.getPose());
-                pose.cameraParams = this.currentCameraParams();
-                if (savedSAMProjection) {
-                    pose.sam_projection = JSON.parse(JSON.stringify(savedSAMProjection));
-                }
-                pose.prompt = savePrompt;
-                assetData = { ...pose, ...sceneBase, prompt: pose.prompt };
+            assetData = this.buildLibraryAsset(metadata.prompt ?? this.getPosePrompt(this.activeTab));
+            if (animationMode && metadata.previewFile) {
+                preview = await this.readLibraryFileAsDataUrl(metadata.previewFile, 40 * 1024 * 1024);
             }
 
             if (!animationMode && includePreview) {
@@ -14380,7 +14534,7 @@ class PoseStudioWidget {
         modal.appendChild(okBtn);
         overlay.appendChild(modal);
 
-        this.canvasContainer.appendChild(overlay);
+        (this.libraryModal ? this.container : this.canvasContainer).appendChild(overlay);
     }
 
     showDeleteConfirmModal(poseOrName) {
@@ -14437,9 +14591,14 @@ class PoseStudioWidget {
             const response = await fetch(`/vnccs/pose_library/delete/${encodeURIComponent(name)}${this.getLibraryPoseQuery(poseOrName)}`, { method: 'DELETE' });
             const result = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(result?.error || `HTTP ${response.status}`);
-            if (typeof poseOrName === 'string' && this.librarySelectedName === name) this.librarySelectedName = null;
-            if (typeof poseOrName !== 'string' && this.librarySelectedName === this.getLibraryPoseId(poseOrName)) this.librarySelectedName = null;
-            this.refreshLibrary(false);
+            const deletedId = typeof poseOrName === 'string' ? name : this.getLibraryPoseId(poseOrName);
+            if (this.librarySelectedName === deletedId) {
+                const visible = this.getFilteredLibraryPoses();
+                const index = visible.findIndex(pose => (typeof poseOrName === 'string' ? pose.name : this.getLibraryPoseId(pose)) === deletedId);
+                // Keep the inspector open so deleting a card does not reflow the gallery columns.
+                this.librarySelectedName = this.getLibraryPoseId(visible[index + 1] || visible[index - 1]) || null;
+            }
+            await this.refreshLibrary(false);
         } catch (err) {
             console.error(`Failed to delete ${itemType}:`, err);
             this.showMessage(`Failed to delete ${itemType}: ${err?.message || err}`, true);
@@ -16764,27 +16923,7 @@ app.registerExtension({
                     return;
                 }
 
-                const fitData = await widget.prepareSAM3DRenderFit(poseData);
-                assertCurrent();
-                const poseForImport = fitData?.poseData || poseData;
-
-                const ok = widget.viewer.applySAM3DImport(
-                    poseForImport,
-                    widget._shoulderYOffset || 0
-                );
-                if (!ok) {
-                    throw new Error("Failed to apply SAM 3D Body pose to Pose Studio.");
-                }
-                widget._lastSAM3DPoseData = poseForImport;
-                widget._lastSAM3DMeshData = fitData?.meshData || null;
-                if (fitData?.meshData) {
-                    widget.applySAM3DMeshOverlayFit(fitData.meshData, poseForImport);
-                } else {
-                    await widget.refreshSAMMeshOverlay(poseForImport);
-                    assertCurrent();
-                }
-                widget.syncMeshProportionSlidersFromViewer();
-                widget.applySAM3DFrameCameraParams(poseForImport, fitData?.meshData || null);
+                await widget.applySAM3DPoseForCapture(poseData, assertCurrent);
                 widget.setSkydomeFromCameraPrompt(cameraPrompt, { force: true });
 
                 widget.updateTabs();

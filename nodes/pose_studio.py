@@ -309,6 +309,7 @@ class VNCCS_PoseStudio:
         start_time,
         timeout=15.0,
         sync_token=None,
+        interrupt_check=None,
     ):
         import time
         import folder_paths
@@ -319,6 +320,8 @@ class VNCCS_PoseStudio:
         filepath = os.path.join(temp_dir, f"vnccs_debug_{file_id}.json")
 
         while time.time() - start_time < timeout:
+            if interrupt_check is not None:
+                interrupt_check()
             if os.path.exists(filepath) and os.path.getmtime(filepath) > start_time - 1.0:
                 try:
                     with open(filepath, "r", encoding="utf-8") as f:
