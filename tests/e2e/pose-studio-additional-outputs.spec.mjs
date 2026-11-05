@@ -335,7 +335,7 @@ test("a workflow saved with all eight sockets keeps its link on the right output
   expect(await savedList(page)).toEqual(["character_id"]);
 });
 
-test("crop outputs: enabled in their group, and crop_image has the size of the guide", async ({ page }) => {
+test("crop outputs: enabled in their group, and crop_image has the size of the guide", async ({ page }, testInfo) => {
   await openPoseStudio(page);
   await openSettings(page);
   const section = page.locator(".vnccs-ps-settings-panel .vnccs-ps-section", { hasText: "Additional Outputs" });
@@ -349,8 +349,10 @@ test("crop outputs: enabled in their group, and crop_image has the size of the g
     w.setCropGuide(0, { schema_version: 1, enabled: true, x: 0.25, y: 0.25, width: 0.5, height: 0.5 });
     window.__addSave("rgb", "images");
     window.__addSave("crop", "crop_image");
+    window.__addSave("preview", "crop_preview");
   });
   await run(page);
+  await saveOutputSheet(page, testInfo.outputPath("crop-outputs.png"));
   const [rgb, crop] = [await classify(page, "rgb"), await classify(page, "crop")];
   expect(crop.width).toBe(Math.ceil(rgb.width * 0.5));
   expect(crop.height).toBe(Math.ceil(rgb.height * 0.5));
