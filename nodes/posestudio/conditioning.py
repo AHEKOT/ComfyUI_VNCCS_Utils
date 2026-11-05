@@ -10,7 +10,7 @@ from io import BytesIO
 import numpy as np
 from PIL import Image
 
-# Appended after ``images`` and ``lighting_prompt``; never reorder.
+# Outputs a user can enable in the widget's Additional Outputs settings.
 POSE_CONDITIONING_OUTPUTS = ("depth", "normal", "outline", "silhouette", "mask", "character_id")
 POSE_CONDITIONING_PASSES = ("depth", "normal", "outline", "character_id")
 _PASS_FOR_OUTPUT = {
@@ -24,13 +24,22 @@ _MAX_PASS_BYTES = 32 * 1024 * 1024
 _MAX_TOTAL_CHARS = 64 * 1024 * 1024
 
 
-def requested_conditioning_outputs(export):
-    """Linked auxiliary outputs recorded by the widget in ``export.conditioning_outputs``."""
-    names = export.get("conditioning_outputs") if isinstance(export, dict) else None
-    if not isinstance(names, list):
+def enabled_additional_outputs(export):
+    """Enabled outputs in socket order: the first fills slot 2, the next slot 3 and so on.
+
+    The widget saves this list in ``export.additional_outputs``. Anything else would
+    send an image to the wrong link, so an invalid list is an error.
+    """
+    names = export.get("additional_outputs") if isinstance(export, dict) else None
+    if names is None:
         return ()
-    requested = {name for name in names if isinstance(name, str)}
-    return tuple(name for name in POSE_CONDITIONING_OUTPUTS if name in requested)
+    if (
+        not isinstance(names, list)
+        or len(set(map(str, names))) != len(names)
+        or any(name not in POSE_CONDITIONING_OUTPUTS for name in names)
+    ):
+        raise ValueError(f"export.additional_outputs is not a valid output list: {names!r}")
+    return tuple(names)
 
 
 def conditioning_passes(outputs):

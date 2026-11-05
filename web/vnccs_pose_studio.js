@@ -19,12 +19,15 @@ import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js?v=1791
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js?v=1791754604000";
 import { installCustomSelects } from "./shared/custom_select.mjs?v=20261104-scaled-menu";
 import {
-    ensurePoseConditioningOutputs,
+    POSE_ADDITIONAL_OUTPUT_GROUPS,
     poseCaptureCameraFromSnapshot,
-    poseConditioningOutputNames,
+    poseAdditionalOutputNames,
     poseConditioningPasses,
+    restorePoseAdditionalOutputs,
+    savedPoseAdditionalOutputs,
+    setPoseAdditionalOutput,
     snapshotPoseCaptureCamera,
-} from "./pose_studio/conditioning.mjs?v=20261101.1";
+} from "./pose_studio/conditioning.mjs?v=20261105.1";
 import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
@@ -6487,6 +6490,47 @@ class PoseStudioWidget {
     // built (other code reads them); they are just not shown.
     hideSectionInUniCanvas(section) {
         if (this.host?.embedded === true && section?.el) section.el.style.display = "none";
+    }
+
+    createAdditionalOutputsSection() {
+        const section = this.createSection("Additional Outputs", true);
+        const enabled = new Set(poseAdditionalOutputNames(this.node));
+        for (const group of POSE_ADDITIONAL_OUTPUT_GROUPS) {
+            const title = document.createElement("div");
+            title.style.cssText = "font-size:11px;font-weight:600;color:#aaa;margin:2px 0 8px;";
+            title.textContent = group.title;
+            section.content.appendChild(title);
+            for (const output of group.outputs) {
+                const row = document.createElement("div");
+                row.className = "vnccs-ps-field";
+                row.style.marginBottom = "8px";
+                const label = document.createElement("label");
+                label.style.cssText = "display:flex;align-items:flex-start;gap:10px;cursor:pointer;user-select:none;";
+                const checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.name = `additional_output_${output.name}`;
+                checkbox.checked = enabled.has(output.name);
+                checkbox.style.marginTop = "2px";
+                checkbox.addEventListener("change", () => this.setAdditionalOutput(output.name, checkbox.checked));
+                const text = document.createElement("span");
+                const name = document.createElement("strong");
+                name.textContent = output.name;
+                const hint = document.createElement("small");
+                hint.style.cssText = "display:block;color:#888;margin-top:3px;line-height:1.35;";
+                hint.textContent = output.hint;
+                text.append(name, hint);
+                label.append(checkbox, text);
+                row.appendChild(label);
+                section.content.appendChild(row);
+            }
+        }
+        return section;
+    }
+
+    setAdditionalOutput(name, enabled) {
+        if (!setPoseAdditionalOutput(this.node, name, enabled)) return;
+        this.node.setDirtyCanvas?.(true, true);
+        this.syncToNode(false, { skipCapture: true });
     }
 
     createSection(title, expanded = true) {
@@ -14485,6 +14529,7 @@ class PoseStudioWidget {
         samMeshLabel.appendChild(samMeshText);
         samMeshRow.appendChild(samMeshLabel);
         debugSection.content.appendChild(samMeshRow);
+        content.appendChild(this.createAdditionalOutputsSection().el);
         content.appendChild(debugSection.el);
 
         // Skin Texture Section
@@ -15936,15 +15981,15 @@ class PoseStudioWidget {
         const outputCount = isDebugExecution
             ? 1
             : animationMode ? this.animationState.frameCount : this.poses.length;
-        // Auxiliary passes are rendered only for execution and only when one of
-        // their outputs is linked; ordinary editing never pays for them.
-        const linkedConditioningOutputs = poseConditioningOutputNames(this.node);
+        // Additional outputs are rendered only for execution and only when enabled;
+        // ordinary editing and disabled outputs never pay for them.
+        const additionalOutputs = poseAdditionalOutputNames(this.node);
         const conditioningPasses = fullCapture && options.executionCapture === true
-            ? poseConditioningPasses(linkedConditioningOutputs)
+            ? poseConditioningPasses(additionalOutputs)
             : [];
         if (conditioningPasses.length && animationMode) {
             throw new Error("Pose Studio depth, normal, outline, silhouette, mask and character_id outputs "
-                + "are available in Image mode. Disconnect them or switch to Image mode.");
+                + "are available in Image mode. Turn them off in Settings > Additional Outputs or switch to Image mode.");
         }
         const conditioning = conditioningPasses.length ? [] : null;
 
@@ -16211,7 +16256,8 @@ class PoseStudioWidget {
         delete exportToSave.background_url;
         delete exportToSave.debugPortraitMode;
         delete exportToSave.conditioning_outputs;
-        if (linkedConditioningOutputs.length) exportToSave.conditioning_outputs = linkedConditioningOutputs;
+        delete exportToSave.additional_outputs;
+        if (additionalOutputs.length) exportToSave.additional_outputs = additionalOutputs;
 
         // captured_images are excluded from the widget to avoid inflating workflow size
         // (each 1024×1024 PNG is ~500KB base64; multiple poses exceed ComfyUI localStorage limit)
@@ -17229,7 +17275,7 @@ app.registerExtension({
             hideInternalWidget(this, "pose_data");
             ensureAnimationImageBatchWidget(this);
             hideInternalWidget(this, "animation_image_batch");
-            ensurePoseConditioningOutputs(this);
+            restorePoseAdditionalOutputs(this);
             this.setSize([900, 740]);
 
             // Create widget
@@ -17296,7 +17342,7 @@ app.registerExtension({
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (info) {
             if (onConfigure) onConfigure.apply(this, arguments);
-            ensurePoseConditioningOutputs(this);
+            restorePoseAdditionalOutputs(this, savedPoseAdditionalOutputs(this));
 
             if (this.studioWidget) {
                 syncStudioDOMWidgetWidth(this);
