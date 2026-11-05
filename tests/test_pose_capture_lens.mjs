@@ -173,6 +173,252 @@ test("numeric fields drive the paired sliders and stay synchronized", () => {
     assert.equal(w.exportWidgets.cam_distance._vnccsNumberInput.value, "60");
 });
 
+test("FOV and Distance each have one numeric editor beside the label and share the slider step", () => {
+    const scene = lensScene();
+    const { w } = scene;
+    const fields = scene.section.content.children.slice(0, 2);
+    for (const [field, key, value] of [[fields[0], "cam_fov_deg", "30"], [fields[1], "cam_distance", "45"]]) {
+        const slider = w.exportWidgets[key];
+        const input = slider._vnccsNumberInput;
+        assert.equal(input.type, "number");
+        assert.equal(input.value, value);
+        assert.equal(input.step, slider.step, `${key} number field and slider use one step`);
+        assert.equal(Number(slider.step), 0.1);
+        assert.equal(String(input.min), String(slider.min));
+        assert.equal(String(input.max), String(slider.max));
+        assert.equal(field.children.length, 2, "label row and slider only: no extra full-width field");
+        const [labelRow, sliderWrap] = field.children;
+        assert.deepEqual(sliderWrap.children, [slider]);
+        const valueRow = labelRow.children[1];
+        assert.equal(valueRow.children[0], input, "the number field replaces the value beside the label");
+        assert.equal(valueRow.children[1].className, "vnccs-ps-reset-btn", "the reset button stays aligned after it");
+        assert.equal(valueRow.children.length, 2);
+    }
+});
+
+test("number fields follow the slider on every input event and the slider follows typing", () => {
+    const scene = lensScene();
+    const { w } = scene;
+    const fov = w.exportWidgets.cam_fov_deg;
+    const distance = w.exportWidgets.cam_distance;
+    fov.emit("pointerdown");
+    for (const value of [33, 41, 58.5]) {
+        fov.value = String(value);
+        fov.emit("input");
+        assert.equal(fov._vnccsNumberInput.value, String(value), "live during the drag");
+    }
+    fov.emit("change");
+    fov.emit("pointerup");
+
+    distance._vnccsNumberInput.value = "45.1";
+    distance._vnccsNumberInput.emit("input");
+    assert.equal(w.exportParams.cam_distance, 45.1);
+    assert.equal(distance.value, "45.1", "the slider shows the typed value");
+
+    // Reset goes through the slider and updates the number field too.
+    const resetButton = fov.parentElement.parentElement.children[0].children[1].children[1];
+    resetButton.onclick({ stopPropagation: noop });
+    assert.equal(fov._vnccsNumberInput.value, "30");
+
+    // Maintain Subject Size moves Distance while FOV moves, and both pairs stay in step.
+    w.exportWidgets.cam_maintain_subject_size.checked = true;
+    w.exportWidgets.cam_maintain_subject_size.emit("change");
+    fov.emit("pointerdown");
+    for (const value of [40, 55, 70]) {
+        fov.value = String(value);
+        fov.emit("input");
+        assert.equal(distance.value, String(w.exportParams.cam_distance), "Distance slider is live");
+        assert.equal(distance._vnccsNumberInput.value, String(Number(w.exportParams.cam_distance.toFixed(2))), "Distance field is live");
+    }
+    fov.emit("change");
+    fov.emit("pointerup");
+});
+
+test("typing a number is one undo step that returns to the value before the edit", () => {
+    const scene = lensScene();
+    const { w, viewer } = scene;
+    const input = w.exportWidgets.cam_fov_deg._vnccsNumberInput;
+    const history = viewer.history.length;
+    for (const typed of ["6", "62"]) {
+        input.value = typed;
+        input.emit("input");
+    }
+    assert.equal(w.exportParams.cam_fov_deg, 62);
+    input.emit("change");
+    assert.equal(viewer.history.length, history + 1, "one undo step for the whole edit");
+    viewer.undo();
+    assert.equal(w.exportParams.cam_fov_deg, 30, "Undo returns to the value before typing");
+    assert.equal(input.value, "30");
+    viewer.redo();
+    assert.equal(w.exportParams.cam_fov_deg, 62);
+    assert.equal(input.value, "62");
+});
+
+// Two points one unit apart vertically, at a given depth along the camera axis.
+function apparentSize(camera, depthOffset, T) {
+    camera.updateMatrixWorld(true);
+    camera.updateProjectionMatrix();
+    const forward = new T.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    const up = new T.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+    const center = camera.__subject.clone().addScaledVector(forward, -depthOffset);
+    const a = center.clone().project(camera);
+    const b = center.clone().add(up).project(camera);
+    return Math.abs(b.y - a.y);
+}
+
+test("the lens is a real perspective: FOV frames, Distance with FOV changes near and far proportions", () => {
+    const scene = lensScene();
+    const { w, viewer } = scene;
+    const T = viewer.THREE;
+    const NEAR = 8;
+    const FAR = -8;
+    const measure = camera => {
+        camera.__subject = viewer.sceneCameraTarget.clone();
+        const near = apparentSize(camera, NEAR, T);
+        const mid = apparentSize(camera, 0, T);
+        const far = apparentSize(camera, FAR, T);
+        return { near, mid, far, ratio: near / far };
+    };
+    const both = () => ({ capture: measure(viewer.captureCamera), editor: measure(viewer.camera) });
+
+    const start = both();
+    close(start.capture.ratio, (45 + 8) / (45 - 8), 1e-6, "default near/far ratio");
+    close(start.editor.ratio, start.capture.ratio, 1e-6, "the viewport shows the capture perspective");
+
+    // FOV at a fixed camera position changes the framing, never the proportions.
+    const position = viewer.captureCamera.position.toArray();
+    slide(scene, "cam_fov_deg", 60);
+    const wide = both();
+    assert.deepEqual(viewer.captureCamera.position.toArray(), position, "the camera does not move");
+    assert.ok(wide.capture.mid < start.capture.mid * 0.6, "the frame shows more of the scene");
+    close(wide.capture.mid, start.capture.mid * tanHalf(30) / tanHalf(60), 1e-6, "framing follows tan(fov / 2)");
+    close(wide.capture.ratio, start.capture.ratio, 1e-6, "proportions are unchanged");
+    close(wide.editor.ratio, start.capture.ratio, 1e-6, "viewport proportions are unchanged");
+    close(wide.editor.mid, start.editor.mid * tanHalf(45) / tanHalf(viewer.camera.fov), 1e-6, "the viewport frames more of the scene too");
+
+    // Distance with a compensating FOV changes the proportions and keeps the subject size.
+    slide(scene, "cam_fov_deg", 30);
+    w.exportWidgets.cam_maintain_subject_size.checked = true;
+    w.exportWidgets.cam_maintain_subject_size.emit("change");
+    for (const fov of [15, 60, 75]) {
+        slide(scene, "cam_fov_deg", fov);
+        const distance = w.exportParams.cam_distance;
+        close(distance, 45 * tanHalf(30) / tanHalf(fov), 1e-6, `Distance at FOV ${fov}`);
+        const lens = both();
+        close(lens.capture.mid, start.capture.mid, 1e-6, `subject size in RUN at FOV ${fov}`);
+        close(lens.editor.mid, start.editor.mid, 1e-6, `subject size in the viewport at FOV ${fov}`);
+        close(lens.capture.ratio, (distance + 8) / (distance - 8), 1e-6, `near/far in RUN at FOV ${fov}`);
+        close(lens.editor.ratio, lens.capture.ratio, 1e-6, `near/far in the viewport at FOV ${fov}`);
+        assert.notEqual(Math.round(lens.capture.ratio * 100), Math.round(start.capture.ratio * 100), `perspective changes at FOV ${fov}`);
+    }
+});
+
+test("Undo and Redo restore the editor camera with the capture lens", () => {
+    const scene = lensScene();
+    const { w, viewer } = scene;
+    w.applyCameraToViewer(true);
+    const start = {
+        fov: viewer.camera.fov,
+        zoom: viewer.camera.zoom,
+        position: viewer.camera.position.toArray(),
+        capture: cameraState(viewer),
+    };
+    close(start.fov, 45, 1e-9);
+
+    slide(scene, "cam_fov_deg", 62);
+    close(tanHalf(viewer.camera.fov), tanHalf(62) * tanHalf(45) / tanHalf(30), 1e-9, "the editor lens follows FOV 62");
+    close(viewer.camera.fov, 85.77, 0.01);
+    const wide = { fov: viewer.camera.fov, capture: cameraState(viewer) };
+
+    viewer.undo();
+    assert.equal(w.exportParams.cam_fov_deg, 30);
+    assertSameCamera(cameraState(viewer), start.capture, "capture after Undo");
+    close(viewer.camera.fov, start.fov, 1e-9, "the editor FOV returns to 45");
+    close(viewer.camera.projectionMatrix.elements[5], 1 / tanHalf(45) * start.zoom, 1e-9, "the editor projection is rebuilt");
+    assert.deepEqual(viewer.camera.position.toArray(), start.position, "the editor distance returns");
+    assert.equal(String(w.exportWidgets.cam_fov_deg.value), "30", "the slider returns");
+    assert.equal(w.exportWidgets.cam_fov_deg._vnccsNumberInput.value, "30", "the number field returns");
+
+    viewer.redo();
+    assert.equal(w.exportParams.cam_fov_deg, 62);
+    close(viewer.camera.fov, wide.fov, 1e-9, "Redo restores the editor FOV");
+    assertSameCamera(cameraState(viewer), wide.capture, "capture after Redo");
+
+    // Distance: the editor camera position returns with the lens distance.
+    viewer.undo();
+    slide(scene, "cam_distance", 80);
+    close(viewer.camera.position.distanceTo(viewer.orbit.target), 80, 1e-6);
+    viewer.undo();
+    close(viewer.camera.position.distanceTo(viewer.orbit.target), 45, 1e-6, "the editor distance returns after Undo");
+
+    // A view the user moved keeps its direction and pivot through Undo.
+    const T = viewer.THREE;
+    viewer.camera.position.add(new T.Vector3(9, 4, -6));
+    viewer.orbit.target.add(new T.Vector3(1, 2, 0));
+    viewer.orbit.update();
+    const target = viewer.orbit.target.toArray();
+    const direction = () => viewer.camera.position.clone().sub(viewer.orbit.target).normalize();
+    const movedDirection = direction();
+    const movedDistance = viewer.camera.position.distanceTo(viewer.orbit.target);
+    slide(scene, "cam_fov_deg", 62);
+    slide(scene, "cam_distance", 90);
+    viewer.undo();
+    viewer.undo();
+    assert.deepEqual(viewer.orbit.target.toArray(), target, "Undo keeps the moved pivot");
+    close(direction().dot(movedDirection), 1, 1e-12, "Undo keeps the moved direction");
+    close(viewer.camera.fov, 45, 1e-9, "Undo restores the editor FOV on a moved view");
+    close(viewer.camera.position.distanceTo(viewer.orbit.target), movedDistance, 1e-6, "Undo restores the moved view distance");
+});
+
+test("the SAM standard fit keeps the lens it measured with", () => {
+    const scene = lensScene();
+    const { w, viewer } = scene;
+    viewer.sceneCameraTarget = viewer.sceneCameraTarget || new viewer.THREE.Vector3(0, 10, 0);
+    slide(scene, "cam_fov_deg", 60);
+    slide(scene, "cam_distance", 80);
+    const seen = [];
+    const record = () => seen.push({
+        fov: viewer.captureCamera.fov,
+        distance: viewer.captureLens.distance,
+        view: viewer.captureLens.view,
+    });
+    const framing = { zoom: 1.3, offset_x: 0.5, offset_y: -0.25 };
+    viewer.fitSAM3DToStandardCamera = () => { record(); return framing; };
+    viewer.computeSAM3DFrameCameraParams = () => { record(); return { zoom: 1, offset_x: 0, offset_y: 0 }; };
+
+    assert.equal(w.applySAM3DStandardCameraFit({}, {}, {}), true);
+    assert.ok(seen.length >= 2);
+    for (const lens of seen) {
+        assert.equal(lens.fov, 60, "measured through the current FOV");
+        assert.equal(lens.distance, 80, "measured at the current Distance");
+    }
+    assert.equal(w.exportParams.cam_fov_deg, 60, "the lens survives the fit");
+    assert.equal(w.exportParams.cam_distance, 80);
+    assert.equal(viewer.captureCamera.fov, 60, "the capture camera keeps the measured lens");
+    close(distanceToTarget(viewer), 80, 1e-6, "the capture camera keeps the measured distance");
+    assert.equal(w.poses[w.activeTab].cameraParams.fov_deg, 60, "the pose stores the measured lens");
+    assert.equal(w.poses[w.activeTab].cameraParams.distance, 80);
+    assert.equal(w.exportWidgets.cam_fov_deg._vnccsNumberInput.value, "60");
+
+    // An aligned view does not apply to the standard front camera.
+    w.setExportCaptureLens({
+        ...w.currentCaptureLens(),
+        view: { position: [5, 12, 60], target: [0, 10, 0], quaternion: [0, 0, 0, 1], zoom: 1.5 },
+    });
+    assert.equal(w.applySAM3DStandardCameraFit({}, {}, {}), true);
+    assert.equal(w.exportParams.cam_view, null, "the fit uses the regular camera");
+    assert.equal(seen.at(-1).view, null);
+
+    // A failed fit restores everything, including an aligned view.
+    const view = { position: [5, 12, 60], target: [0, 10, 0], quaternion: [0, 0, 0, 1], zoom: 1.5 };
+    w.setExportCaptureLens({ fov_deg: 50, distance: 70, view });
+    viewer.fitSAM3DToStandardCamera = () => null;
+    assert.equal(w.applySAM3DStandardCameraFit({}, {}, {}), false);
+    assert.equal(w.exportParams.cam_fov_deg, 50);
+    assert.equal(w.exportParams.cam_distance, 70);
+    assert.deepEqual(w.exportParams.cam_view.position, view.position, "the aligned view comes back");
+});
+
 test("Maintain Subject Size dollies the camera without accumulating error", () => {
     const scene = lensScene();
     const { w, viewer } = scene;

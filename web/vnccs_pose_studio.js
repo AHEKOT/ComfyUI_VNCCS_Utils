@@ -82,6 +82,7 @@ import {
     DEFAULT_CAPTURE_DISTANCE,
     MIN_CAPTURE_DISTANCE,
     MAX_CAPTURE_DISTANCE,
+    CAPTURE_LENS_STEP,
     resolveDebugLightingMode,
     retimeAnimationTiming,
     restoreAnimationStateSnapshot,
@@ -90,7 +91,7 @@ import {
     serializeAnimationStateSnapshot,
     setCharacterTransformKeyframe,
     setTrackKeyframeFromEuler,
-} from "./pose_studio/animation.mjs?v=1791754604000";
+} from "./pose_studio/animation.mjs?v=20261105.1";
 
 const VNCCS_POSE_MORPH_WORKER_URL = new URL("./pose_studio/morph_worker.js", import.meta.url);
 let VNCCS_SHARED_MORPH_WORKER = null;
@@ -421,6 +422,24 @@ const STYLES = `
     color: var(--ps-accent);
     margin-left: auto;
     font-family: var(--ps-font-mono);
+}
+
+.vnccs-ps-input.vnccs-ps-value-input {
+    width: 52px;
+    padding: 1px 4px;
+    margin-left: auto;
+    font-size: 9px;
+    font-family: var(--ps-font-mono);
+    color: var(--ps-accent);
+    text-align: right;
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+
+.vnccs-ps-input.vnccs-ps-value-input::-webkit-inner-spin-button,
+.vnccs-ps-input.vnccs-ps-value-input::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
 }
 
 .vnccs-ps-label-row {
@@ -8113,7 +8132,7 @@ class PoseStudioWidget {
         else if (this.viewer.updateCaptureCamera) this.viewer.updateCaptureCamera(...args);
     }
 
-    syncCameraWidgets() {
+    syncCameraWidgets({ replaceFocusedNumber = false } = {}) {
         for (const key of ['cam_zoom', 'cam_offset_x', 'cam_offset_y', 'cam_yaw_deg', 'cam_pitch_deg', 'cam_fov_deg', 'cam_distance']) {
             const widget = this.exportWidgets[key];
             if (widget) {
@@ -8122,7 +8141,7 @@ class PoseStudioWidget {
                     widget._vnccsValueSpan.innerText = Number(this.exportParams[key] || 0).toFixed(2);
                 }
                 const numberInput = widget._vnccsNumberInput;
-                if (numberInput && document.activeElement !== numberInput) {
+                if (numberInput && (replaceFocusedNumber || document.activeElement !== numberInput)) {
                     numberInput.value = String(Number(Number(this.exportParams[key] || 0).toFixed(2)));
                 }
             }
@@ -8206,23 +8225,35 @@ class PoseStudioWidget {
     }
 
     createCaptureLensControls(section) {
-        const fovField = this.createSliderField("FOV", "cam_fov_deg", MIN_CAPTURE_FOV_DEG, MAX_CAPTURE_FOV_DEG, 1, DEFAULT_CAPTURE_FOV_DEG, this.exportParams, true);
-        const distanceField = this.createSliderField("Distance", "cam_distance", MIN_CAPTURE_DISTANCE, MAX_CAPTURE_DISTANCE, 0.5, DEFAULT_CAPTURE_DISTANCE, this.exportParams, true);
-        for (const [field, key, min, max, step] of [
-            [fovField, "cam_fov_deg", MIN_CAPTURE_FOV_DEG, MAX_CAPTURE_FOV_DEG, 1],
-            [distanceField, "cam_distance", MIN_CAPTURE_DISTANCE, MAX_CAPTURE_DISTANCE, 0.1],
-        ]) {
+        const fields = [
+            ["FOV", "cam_fov_deg", MIN_CAPTURE_FOV_DEG, MAX_CAPTURE_FOV_DEG, DEFAULT_CAPTURE_FOV_DEG],
+            ["Distance", "cam_distance", MIN_CAPTURE_DISTANCE, MAX_CAPTURE_DISTANCE, DEFAULT_CAPTURE_DISTANCE],
+        ];
+        // Slider and number field share one step, so both accept the same values.
+        const step = CAPTURE_LENS_STEP;
+        const formatLensValue = key => String(Number(Number(this.exportParams[key] || 0).toFixed(2)));
+        const syncLensValues = () => {
+            // Maintain Subject Size edits Distance while FOV moves, so both pairs follow.
+            for (const [, key] of fields) {
+                const slider = this.exportWidgets[key];
+                slider.value = String(this.exportParams[key]);
+                const input = slider._vnccsNumberInput;
+                if (input && document.activeElement !== input) input.value = formatLensValue(key);
+            }
+        };
+        for (const [label, key, min, max, defaultValue] of fields) {
+            const field = this.createSliderField(label, key, min, max, step, defaultValue, this.exportParams, true);
             // Exact numeric entry drives the paired slider, so both share one update path.
             const slider = this.exportWidgets[key];
             const input = document.createElement("input");
             input.type = "number";
-            input.className = "vnccs-ps-input";
+            input.className = "vnccs-ps-input vnccs-ps-value-input";
             input.min = min;
             input.max = max;
             input.step = step;
-            input.value = String(this.exportParams[key]);
+            input.value = formatLensValue(key);
             input.title = key === "cam_fov_deg" ? "Vertical field of view in degrees" : "Capture camera distance";
-            this.trackPoseGesture(input, { recordPose: true });
+            // The slider's gesture tracking records one undo step for the whole numeric edit.
             input.addEventListener("input", () => {
                 if (input.value === "" || !Number.isFinite(Number(input.value))) return;
                 slider.value = String(Math.max(min, Math.min(max, Number(input.value))));
@@ -8230,10 +8261,13 @@ class PoseStudioWidget {
             });
             input.addEventListener("change", () => {
                 slider.dispatchEvent(new Event("change"));
-                input.value = String(Number(Number(this.exportParams[key]).toFixed(2)));
+                input.value = formatLensValue(key);
             });
             slider._vnccsNumberInput = input;
-            field.appendChild(input);
+            // The number field replaces the read-only value beside the label.
+            slider._vnccsValueSpan.replaceWith(input);
+            slider._vnccsValueSpan = null;
+            slider.addEventListener("input", syncLensValues);
             section.content.appendChild(field);
         }
 
@@ -9742,6 +9776,9 @@ class PoseStudioWidget {
             if (character && context?.transform) character.transform = { ...context.transform };
             this.persistActivePoseCameraParams();
             this.applyCameraToViewer(false);
+            this.viewer.restoreEditorLens?.();
+            // Undo ends a numeric edit, so a field that kept the focus shows the restored value too.
+            this.syncCameraWidgets({ replaceFocusedNumber: true });
         }
         if (context?.prompt !== undefined) this.setPosePrompt(this.activeTab, context.prompt);
         this.syncCharacterEditorControls();
@@ -10673,6 +10710,10 @@ class PoseStudioWidget {
             yaw_deg: Number(this.exportParams.cam_yaw_deg) || 0,
             pitch_deg: Number(this.exportParams.cam_pitch_deg) || 0,
         };
+        // The fit measures through the regular front camera with the current FOV and
+        // Distance, and the result only holds for that same lens.
+        const previousLens = this.currentCaptureLens();
+        const fitLens = { ...previousLens, view: null };
         const neutralTransform = { x: 0, y: 0, z: 0, zoom: 1 };
         this.viewer.setActiveCharacterAppearance({
             color: character.color,
@@ -10680,6 +10721,7 @@ class PoseStudioWidget {
         });
         this.exportParams.cam_yaw_deg = 0;
         this.exportParams.cam_pitch_deg = 0;
+        this.setExportCaptureLens(fitLens);
         this.applyCameraToViewer(true);
 
         const framing = this.viewer?.fitSAM3DToStandardCamera?.(
@@ -10692,6 +10734,7 @@ class PoseStudioWidget {
         if (!framing) {
             this.exportParams.cam_yaw_deg = previousAngles.yaw_deg;
             this.exportParams.cam_pitch_deg = previousAngles.pitch_deg;
+            this.setExportCaptureLens(previousLens);
             this.viewer.setActiveCharacterAppearance({
                 color: character.color,
                 transform: previousTransform,
@@ -10733,6 +10776,7 @@ class PoseStudioWidget {
         this.applyLibraryPoseTransform(transform, {
             yaw_deg: 0,
             pitch_deg: 0,
+            ...fitLens,
         });
         this.updateRotationSliders();
         return true;
