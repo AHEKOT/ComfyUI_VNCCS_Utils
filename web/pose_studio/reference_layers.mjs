@@ -11,11 +11,15 @@
  * `rotation` is in degrees, clockwise on screen (image-editor convention).
  * `scale` is the layer height in frame heights (1 = as tall as the frame).
  * Layers are stored bottom to top: index 0 is drawn first.
+ *
+ * Image bytes live in durable server storage (nodes/posestudio/reference_assets.py).
+ * A layer holds only the compact `asset` name, so workflows and undo snapshots stay
+ * small. `src` (an inline data URL) exists only on layers from older workflows that
+ * have not been moved to that storage yet.
  */
 
 export const REFERENCE_LAYER_LIMIT = 8;
-// Images are downscaled on import so the workflow stays small (the existing
-// background image is stored inline in pose_data the same way).
+// Images are downscaled once on import, before they are uploaded.
 export const REFERENCE_LAYER_MAX_EDGE = 1024;
 export const REFERENCE_LAYER_MAX_FILE_BYTES = 40 * 1024 * 1024;
 export const REFERENCE_LAYER_MAX_SRC_LENGTH = 6 * 1024 * 1024;
@@ -24,6 +28,8 @@ export const REFERENCE_LAYER_SCALE_MAX = 20;
 const POSITION_LIMIT = 50;
 const NAME_LIMIT = 80;
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const ASSET_PATTERN = /^[0-9a-f]{64}\.(?:webp|png|jpg)$/;
+const ASSET_ROUTE = "/vnccs/pose_reference_asset";
 
 const finite = (value, fallback) => {
     const number = Number(value);
@@ -87,12 +93,44 @@ export function isReferenceLayerSource(src) {
         && /^data:image\/[a-z0-9.+-]+;base64,/i.test(src);
 }
 
+export function isReferenceAssetName(asset) {
+    return typeof asset === "string" && ASSET_PATTERN.test(asset);
+}
+
+/** Route path of a stored image; the caller applies the ComfyUI API prefix. */
+export function referenceAssetPath(asset) {
+    return `${ASSET_ROUTE}/${asset}`;
+}
+
+/** Decodes an inline data URL (older workflows) back to its bytes. */
+export function referenceDataUrlToBlob(src) {
+    const comma = src.indexOf(",");
+    const bytes = Uint8Array.from(atob(src.slice(comma + 1)), char => char.charCodeAt(0));
+    return new Blob([bytes], { type: src.slice(5, comma).split(";")[0] });
+}
+
+/** Stores image bytes on the server and returns the asset name; throws a readable reason. */
+export async function uploadReferenceAsset(blob, fetchApi) {
+    const response = await fetchApi(ASSET_ROUTE, {
+        method: "POST",
+        headers: { "Content-Type": blob.type || "application/octet-stream" },
+        body: blob,
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(data?.error || `the server answered ${response.status}`);
+    if (!isReferenceAssetName(data?.asset)) throw new Error("the server returned an invalid asset name");
+    return data.asset;
+}
+
 /** Validates one stored layer. Invalid entries return null and are dropped. */
 export function normalizeReferenceLayer(raw, index = 0) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw) || !isReferenceLayerSource(raw.src)) return null;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const image = isReferenceAssetName(raw.asset) ? { asset: raw.asset }
+        : isReferenceLayerSource(raw.src) ? { src: raw.src } : null;
+    if (!image) return null;
     const meta = normalizeMeta(raw, index);
     if (!meta) return null;
-    return { ...meta, src: raw.src, ...normalizeTransform(raw, DEFAULT_TRANSFORM) };
+    return { ...meta, ...image, ...normalizeTransform(raw, DEFAULT_TRANSFORM) };
 }
 
 function uniqueIds(layers) {
@@ -115,30 +153,25 @@ export function normalizeReferenceLayers(raw) {
     return uniqueIds(layers.slice(-REFERENCE_LAYER_LIMIT));
 }
 
-const STORED_KEYS = ["id", "name", "src", "width", "height", "visible", "locked", "flipX", "opacity", "x", "y", "scale", "rotation"];
-const HISTORY_KEYS = STORED_KEYS.filter(key => key !== "src");
-const pick = (layer, keys) => Object.fromEntries(keys.map(key => [key, layer[key]]));
+const STORED_KEYS = ["id", "name", "width", "height", "visible", "locked", "flipX", "opacity", "x", "y", "scale", "rotation"];
+const storedForm = layer => ({
+    ...Object.fromEntries(STORED_KEYS.map(key => [key, layer[key]])),
+    ...(layer.asset ? { asset: layer.asset } : { src: layer.src }),
+});
 
 /** Workflow form; undefined when empty so workflows without layers stay unchanged. */
 export function serializeReferenceLayers(layers) {
     if (!Array.isArray(layers) || !layers.length) return undefined;
-    return layers.map(layer => pick(layer, STORED_KEYS));
+    return layers.map(storedForm);
 }
 
-/** Undo form: everything except the image data, which stays in `images`. */
+/** Undo form: the same compact form, so a snapshot never depends on a separate image store. */
 export function referenceLayerHistorySnapshot(layers) {
-    return (Array.isArray(layers) ? layers : []).map(layer => pick(layer, HISTORY_KEYS));
+    return (Array.isArray(layers) ? layers : []).map(storedForm);
 }
 
-export function restoreReferenceLayerHistory(snapshot, images) {
-    if (!Array.isArray(snapshot)) return [];
-    const layers = [];
-    snapshot.forEach((entry, index) => {
-        const src = entry && images?.get?.(entry.id);
-        const layer = src ? normalizeReferenceLayer({ ...entry, src }, index) : null;
-        if (layer) layers.push(layer);
-    });
-    return uniqueIds(layers.slice(-REFERENCE_LAYER_LIMIT));
+export function restoreReferenceLayerHistory(snapshot) {
+    return normalizeReferenceLayers(snapshot);
 }
 
 /** Initial height so the whole image fits inside the frame. */
@@ -148,10 +181,11 @@ export function fitReferenceLayerScale(imageWidth, imageHeight, frameAspect) {
     return clamp(Math.min(1, aspect / imageAspect), REFERENCE_LAYER_SCALE_MIN, REFERENCE_LAYER_SCALE_MAX);
 }
 
-export function createReferenceLayer({ id, name, src, width, height }, frameAspect = 1, existingIds = []) {
+export function createReferenceLayer({ id, name, asset, src, width, height }, frameAspect = 1, existingIds = []) {
     return normalizeReferenceLayer({
         id: id || createReferenceLayerId(existingIds),
         name,
+        asset,
         src,
         width,
         height,

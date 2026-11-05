@@ -20,13 +20,16 @@ import {
     ndcToCssPixels,
     normalizeReferenceLayers,
     patchReferenceLayer,
+    referenceAssetPath,
+    referenceDataUrlToBlob,
     referenceLayerCorners,
     referenceLayerHalfSize,
     referenceLayerHistorySnapshot,
     reorderReferenceLayers,
     restoreReferenceLayerHistory,
     serializeReferenceLayers,
-} from "./reference_layers.mjs";
+    uploadReferenceAsset,
+} from "./reference_layers.mjs?v=20261105.1";
 
 const STYLE_ID = "vnccs-ps-reflayer-style";
 // Circular arrow with a dark outline, readable on light and dark images.
@@ -46,27 +49,42 @@ export function referenceLayerResizeCursor(center, corner) {
 }
 const HANDLE_RADIUS = 9;
 const ROTATE_HANDLE_OFFSET = 24;
-const ACCENT = "#4fc3f7";
+// --ps-accent: the overlay is drawn on a canvas, which cannot read CSS variables.
+const ACCENT = "#ff8fa3";
+// A locked layer keeps its transform; these stay editable.
+const UNLOCKED_FIELDS = new Set(["visible", "locked", "name"]);
 
 const STYLE = `
-.vnccs-ps-reflayer-tools { display: flex; gap: 4px; margin-bottom: 6px; }
-.vnccs-ps-reflayer-tools .vnccs-ps-btn { flex: 1; padding: 4px 6px; font-size: 10px; }
-.vnccs-ps-reflayer-tools .vnccs-ps-btn.active { border-color: ${ACCENT}; color: ${ACCENT}; }
-.vnccs-ps-reflayer-hint { font-size: 9px; color: var(--ps-text-muted); margin-bottom: 6px; line-height: 1.35; }
-.vnccs-ps-reflayer-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
-.vnccs-ps-reflayer-row { display: flex; align-items: center; gap: 2px; padding: 3px; border: 1px solid var(--ps-border); border-radius: 5px; cursor: pointer; }
-.vnccs-ps-reflayer-row.selected { border-color: ${ACCENT}; background: rgba(79, 195, 247, 0.08); }
-.vnccs-ps-reflayer-row.hidden-layer { opacity: 0.5; }
-.vnccs-ps-reflayer-thumb { width: 22px; height: 22px; object-fit: contain; flex-shrink: 0; background: #0006; border-radius: 3px; margin-right: 2px; }
-.vnccs-ps-reflayer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
-input.vnccs-ps-reflayer-name { padding: 1px 3px; border: 1px solid ${ACCENT}; border-radius: 3px; background: #0008; color: var(--ps-text); font-family: inherit; }
-.vnccs-ps-reflayer-icon { width: 14px; height: 18px; padding: 0; font-size: 10px; line-height: 1; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--ps-text-muted); cursor: pointer; flex-shrink: 0; }
-.vnccs-ps-reflayer-icon:hover { border-color: var(--ps-border); color: var(--ps-text); }
-.vnccs-ps-reflayer-icon.on { color: ${ACCENT}; }
-.vnccs-ps-reflayer-props .vnccs-ps-field { margin-bottom: 5px; }
-.vnccs-ps-reflayer-num { width: 58px !important; padding: 2px 4px !important; text-align: right; }
-.vnccs-ps-reflayer-pair { display: flex; gap: 4px; align-items: center; }
-.vnccs-ps-reflayer-pair label { font-size: 9px; color: var(--ps-text-muted); }
+.vnccs-ps-reflayer-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.vnccs-ps-reflayer-tools .vnccs-ps-btn { min-width: 0; padding-left: 4px; padding-right: 4px; white-space: nowrap; }
+.vnccs-ps-reflayer-tools .vnccs-ps-btn.active,
+.vnccs-ps-reflayer-props .vnccs-ps-btn.active { border-color: var(--ps-accent); color: var(--ps-accent); background: var(--ps-accent-subtle); }
+.vnccs-ps-reflayer-hint { font-size: 9px; color: var(--ps-text-muted); line-height: 1.35; }
+.vnccs-ps-reflayer-list { display: flex; flex-direction: column; gap: 4px; }
+.vnccs-ps-reflayer-row { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 3px 6px; padding: 5px 6px; background: rgba(20, 16, 30, 0.7); border: 1px solid var(--ps-border); border-radius: var(--ps-radius-sm); cursor: pointer; transition: border-color var(--ps-transition), background var(--ps-transition); }
+.vnccs-ps-reflayer-row:hover { border-color: var(--ps-border-hover); }
+.vnccs-ps-reflayer-row.selected { border-color: var(--ps-accent); background: var(--ps-accent-subtle); }
+.vnccs-ps-reflayer-row.hidden-layer .vnccs-ps-reflayer-thumb,
+.vnccs-ps-reflayer-row.hidden-layer .vnccs-ps-reflayer-name { opacity: 0.5; }
+.vnccs-ps-reflayer-thumb { grid-row: span 2; width: 40px; height: 41px; object-fit: contain; background: rgba(0, 0, 0, 0.4); border: 1px solid var(--ps-border); border-radius: 5px; box-sizing: border-box; }
+.vnccs-ps-reflayer-thumb.missing { border: 1px dashed var(--ps-danger); }
+.vnccs-ps-reflayer-name { display: block; min-width: 0; height: 18px; line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--ps-font); font-size: 10px; font-weight: 600; color: var(--ps-text); }
+input.vnccs-ps-reflayer-name { width: 100%; box-sizing: border-box; padding: 0 4px; border: 1px solid var(--ps-accent-border); border-radius: 5px; background: var(--ps-input-bg); outline: none; }
+.vnccs-ps-reflayer-actions { display: flex; align-items: center; gap: 3px; min-width: 0; }
+.vnccs-ps-reflayer-icon { flex: 0 0 20px; }
+.vnccs-ps-reflayer-icon.on { color: var(--ps-accent); border-color: var(--ps-accent-border); background: var(--ps-accent-subtle); }
+.vnccs-ps-reflayer-icon.delete { margin-left: auto; }
+.vnccs-ps-reflayer-icon.delete:hover { background: rgba(255, 71, 87, 0.12); color: var(--ps-danger); border-color: rgba(255, 71, 87, 0.3); }
+.vnccs-ps-reflayer-props { display: flex; flex-direction: column; gap: 6px; }
+.vnccs-ps-reflayer-value-row { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.vnccs-ps-reflayer-value { width: 44px; height: 20px; box-sizing: border-box; padding: 0 4px; text-align: right; font-family: var(--ps-font-mono); font-size: 9px; color: var(--ps-accent); background: var(--ps-input-bg); border: 1px solid var(--ps-border); border-radius: 5px; outline: none; -moz-appearance: textfield; appearance: textfield; transition: border-color var(--ps-transition); }
+.vnccs-ps-reflayer-value:focus { border-color: var(--ps-accent-border); }
+.vnccs-ps-reflayer-value::-webkit-inner-spin-button, .vnccs-ps-reflayer-value::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.vnccs-ps-reflayer-axes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.vnccs-ps-reflayer-axis { display: flex; align-items: center; gap: 4px; min-width: 0; font-size: 9px; font-weight: 700; color: var(--ps-text-muted); }
+.vnccs-ps-reflayer-axis .vnccs-ps-reflayer-value { flex: 1 1 0; min-width: 0; width: auto; }
+.vnccs-ps-reflayer-props button:disabled, .vnccs-ps-reflayer-props input:disabled { opacity: 0.4; cursor: default; pointer-events: none; }
+.vnccs-ps-reflayer-actions button:disabled { opacity: 0.4; cursor: default; pointer-events: none; }
 .vnccs-ps-reflayer-overlay { position: absolute; pointer-events: none; z-index: 1; left: 0; top: 0; }
 `;
 
@@ -78,35 +96,32 @@ function ensureStyle(doc) {
     doc.head.appendChild(style);
 }
 
-function readFileAsDataURL(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(reader.error || new Error("Failed to read the image."));
-        reader.readAsDataURL(file);
-    });
-}
-
-/** Decodes an image file once and stores it downscaled (WebP keeps alpha). */
+/** Decodes an image file once and encodes it downscaled (WebP keeps alpha). */
 export async function decodeReferenceImageFile(file, maxEdge = REFERENCE_LAYER_MAX_EDGE) {
-    const source = await readFileAsDataURL(file);
-    const image = new Image();
-    image.decoding = "async";
-    image.src = source;
-    await image.decode();
-    const naturalWidth = image.naturalWidth || image.width;
-    const naturalHeight = image.naturalHeight || image.height;
-    if (!naturalWidth || !naturalHeight) throw new Error("The image has no pixels.");
-    const factor = Math.min(1, maxEdge / Math.max(naturalWidth, naturalHeight));
-    const width = Math.max(1, Math.round(naturalWidth * factor));
-    const height = Math.max(1, Math.round(naturalHeight * factor));
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    canvas.getContext("2d").drawImage(image, 0, 0, width, height);
-    let src = canvas.toDataURL("image/webp", 0.9);
-    if (!src.startsWith("data:image/webp")) src = canvas.toDataURL("image/png");
-    return { src, width, height };
+    const source = URL.createObjectURL(file);
+    try {
+        const image = new Image();
+        image.decoding = "async";
+        image.src = source;
+        await image.decode();
+        const naturalWidth = image.naturalWidth || image.width;
+        const naturalHeight = image.naturalHeight || image.height;
+        if (!naturalWidth || !naturalHeight) throw new Error("The image has no pixels.");
+        const factor = Math.min(1, maxEdge / Math.max(naturalWidth, naturalHeight));
+        const width = Math.max(1, Math.round(naturalWidth * factor));
+        const height = Math.max(1, Math.round(naturalHeight * factor));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(image, 0, 0, width, height);
+        const encode = (type, quality) => new Promise(resolve => canvas.toBlob(resolve, type, quality));
+        let blob = await encode("image/webp", 0.9);
+        if (blob?.type !== "image/webp") blob = await encode("image/png");
+        if (!blob) throw new Error("The image could not be encoded.");
+        return { blob, width, height };
+    } finally {
+        URL.revokeObjectURL(source);
+    }
 }
 
 export class PoseReferenceLayerController {
@@ -117,15 +132,18 @@ export class PoseReferenceLayerController {
         // never loads core.js under a second URL.
         editorOnlyLayer = 1,
         loadTexture = null,
+        // ComfyUI's api object, passed in so this module stays free of ComfyUI imports.
+        api = null,
+        uploadAsset = blob => uploadReferenceAsset(blob, (...args) => api.fetchApi(...args)),
     } = {}) {
         this.host = host;
         this.editorOnlyLayer = editorOnlyLayer;
         this.loadTexture = loadTexture;
         this.doc = doc;
         this.decodeImageFile = decodeImageFile;
+        this.api = api;
+        this.uploadAsset = uploadAsset;
         this.layers = [];
-        // Image data by layer id. Undo snapshots refer to it, so it outlives deletes.
-        this.images = new Map();
         this.selectedId = null;
         this.editMode = false;
         this.viewer = null;
@@ -162,9 +180,8 @@ export class PoseReferenceLayerController {
     load(raw) {
         this.loadToken++;
         this.cancelDrag();
-        this.images.clear();
+        this.missingImageReported = false;
         this.layers = this.enabled ? normalizeReferenceLayers(raw) : [];
-        for (const layer of this.layers) this.images.set(layer.id, layer.src);
         this.selectedId = this.layers.at(-1)?.id || null;
         this.refresh();
     }
@@ -176,9 +193,60 @@ export class PoseReferenceLayerController {
     restoreHistory(snapshot) {
         if (!this.enabled || !Array.isArray(snapshot)) return;
         this.cancelDrag();
-        this.layers = restoreReferenceLayerHistory(snapshot, this.images);
+        this.layers = restoreReferenceLayerHistory(snapshot);
         if (!this.selectedLayer()) this.selectedId = this.layers.at(-1)?.id || null;
         this.refresh();
+        if (this.layers.some(layer => layer.src)) void this.migrateInlineLayers();
+    }
+
+    /**
+     * Moves inline images from older workflows to durable storage. A failed upload
+     * leaves the layer inline, so the workflow keeps its only copy of the image.
+     */
+    async migrateInlineLayers() {
+        const token = this.loadToken;
+        if (!this.enabled || this.migratingToken === token) return;
+        this.migratingToken = token;
+        let moved = 0;
+        const failed = [];
+        try {
+            for (const layer of this.layers.filter(item => item.src)) {
+                try {
+                    const asset = await this.uploadAsset(referenceDataUrlToBlob(layer.src));
+                    if (token !== this.loadToken || this._disposed) return;
+                    if (this.adoptAsset(layer, asset)) moved++;
+                } catch (error) {
+                    failed.push(`${layer.name}: ${error?.message || error}`);
+                }
+            }
+        } finally {
+            if (this.migratingToken === token) this.migratingToken = null;
+        }
+        if (moved) {
+            this.refresh();
+            this.commit();
+        }
+        if (failed.length) {
+            this.host?.showMessage?.(`Could not move reference images to storage; they stay embedded in the workflow. ${failed.join("; ")}`, true);
+        }
+    }
+
+    /** Swaps an inline image for its stored copy; the pixels are the same, so the texture stays. */
+    adoptAsset({ id, src }, asset) {
+        const index = this.layers.findIndex(item => item.id === id && item.src === src);
+        if (index < 0) return false;
+        const { src: _inline, ...rest } = this.layers[index];
+        const next = { ...rest, asset };
+        this.layers = this.layers.map((item, i) => (i === index ? next : item));
+        const entry = this.entries.get(id);
+        if (entry) entry.src = this.layerSource(next);
+        return true;
+    }
+
+    layerSource(layer) {
+        if (!layer.asset) return layer.src;
+        const path = referenceAssetPath(layer.asset);
+        return this.api?.apiURL?.(path) ?? path;
     }
 
     /** Records one undo step before an edit; the edit is saved by commit(). */
@@ -205,31 +273,37 @@ export class PoseReferenceLayerController {
             this.host?.showMessage?.(`Only ${room} more reference layer(s) can be added.`, true);
         }
         const token = this.loadToken;
-        const decoded = [];
+        const stored = [];
         for (const file of images.slice(0, room)) {
             if (file.size > REFERENCE_LAYER_MAX_FILE_BYTES) {
                 this.host?.showMessage?.(`${file.name} is too large for a reference layer.`, true);
                 continue;
             }
+            // A layer exists only once its image is stored, so a failure changes nothing.
+            let step = "load";
             try {
-                decoded.push({ name: file.name, ...(await this.decodeImageFile(file)) });
+                const { blob, width, height } = await this.decodeImageFile(file);
+                if (token !== this.loadToken || this._disposed) return [];
+                step = "store";
+                stored.push({ name: file.name, asset: await this.uploadAsset(blob), width, height });
             } catch (error) {
-                this.host?.showMessage?.(`Failed to load ${file.name || "the image"} as a reference layer.`, true);
+                this.host?.showMessage?.(step === "load"
+                    ? `Failed to load ${file.name || "the image"} as a reference layer.`
+                    : `Could not store ${file.name || "the image"} as a reference layer: ${error?.message || error}. The layers were not changed.`, true);
             }
             if (token !== this.loadToken || this._disposed) return [];
         }
-        if (!decoded.length) return [];
+        if (!stored.length) return [];
         const { width, height } = this.frameSize();
         const added = [];
-        // Another import may have finished while this one was decoding.
-        for (const image of decoded.slice(0, Math.max(0, REFERENCE_LAYER_LIMIT - this.layers.length))) {
+        // Another import may have finished while this one was uploading.
+        for (const image of stored.slice(0, Math.max(0, REFERENCE_LAYER_LIMIT - this.layers.length))) {
             const ids = [...this.layers, ...added].map(item => item.id);
             const layer = createReferenceLayer(image, width / height, ids);
             if (layer) added.push(layer);
         }
         if (!added.length) return [];
         this.recordHistory();
-        for (const layer of added) this.images.set(layer.id, layer.src);
         this.layers = [...this.layers, ...added];
         this.selectedId = added.at(-1).id;
         this.editMode = true;
@@ -241,7 +315,7 @@ export class PoseReferenceLayerController {
     /** One complete edit (button, reset): undo step, change, save. */
     edit(id, patch) {
         const layer = this.layers.find(item => item.id === id);
-        if (!layer) return;
+        if (!layer || this.lockForbids(layer, patch)) return;
         this.recordHistory();
         this.updateLayer(id, patch);
         // Row buttons capture the layer state, so rebuild them after Show/Hide and Lock.
@@ -249,10 +323,14 @@ export class PoseReferenceLayerController {
         this.commit();
     }
 
+    lockForbids(layer, patch) {
+        return layer.locked && Object.keys(patch).some(key => !UNLOCKED_FIELDS.has(key));
+    }
+
     /** Live update during a gesture; history and saving belong to the gesture. */
     updateLayer(id, patch, { source = null } = {}) {
         const index = this.layers.findIndex(item => item.id === id);
-        if (index < 0) return null;
+        if (index < 0 || this.lockForbids(this.layers[index], patch)) return null;
         const next = patchReferenceLayer(this.layers[index], patch);
         this.layers = this.layers.map((item, i) => (i === index ? next : item));
         this.applyLayerToMesh(next, index);
@@ -316,7 +394,7 @@ export class PoseReferenceLayerController {
 
     resetTransform(kind) {
         const layer = this.selectedLayer();
-        if (!layer) return;
+        if (!layer || layer.locked) return;
         const { width, height } = this.frameSize();
         const patch = {
             position: { x: 0, y: 0 },
@@ -437,12 +515,13 @@ export class PoseReferenceLayerController {
         mesh.name = `VNCCSReferenceLayer:${layer.id}`;
         mesh.layers.set(this.editorOnlyLayer);
         mesh.visible = false;
-        const entry = { mesh, src: layer.src, texture: null, ready: false };
+        const src = this.layerSource(layer);
+        const entry = { mesh, src, texture: null, ready: false };
         this.entries.set(layer.id, entry);
         this.group.add(mesh);
         // Decoded and uploaded once; later transforms only touch the matrix.
         const load = this.loadTexture || ((src, onLoad, onError) => new THREE.TextureLoader().load(src, onLoad, undefined, onError));
-        load(layer.src, texture => {
+        load(src, texture => {
             if (this.entries.get(layer.id) !== entry) {
                 texture.dispose();
                 return;
@@ -456,7 +535,10 @@ export class PoseReferenceLayerController {
             if (current >= 0) this.applyLayerToMesh(this.layers[current], current);
             this.requestRender();
         }, () => {
-            if (this.entries.get(layer.id) === entry) this.host?.showMessage?.(`Failed to display reference layer ${layer.name}.`, true);
+            // The layer stays in the workflow: the image may exist on another machine.
+            if (this.entries.get(layer.id) !== entry || this.missingImageReported) return;
+            this.missingImageReported = true;
+            this.host?.showMessage?.(`Could not load the image of reference layer ${layer.name}. It is missing on this server or unreadable; the layer is kept.`, true);
         });
         return entry;
     }
@@ -472,7 +554,8 @@ export class PoseReferenceLayerController {
         if (!this.group) return;
         const ids = new Set(this.layers.map(layer => layer.id));
         for (const [id, entry] of this.entries) {
-            if (!ids.has(id) || entry.src !== this.layers.find(layer => layer.id === id)?.src) {
+            const layer = this.layers.find(item => item.id === id);
+            if (!ids.has(id) || !layer || entry.src !== this.layerSource(layer)) {
                 this.disposeEntry(entry);
                 this.entries.delete(id);
             }
@@ -695,16 +778,10 @@ export class PoseReferenceLayerController {
         this.section = section;
         const tools = this.doc.createElement("div");
         tools.className = "vnccs-ps-reflayer-tools";
-        const addBtn = this.doc.createElement("button");
-        addBtn.className = "vnccs-ps-btn";
-        addBtn.type = "button";
-        addBtn.textContent = "+ Add Image";
+        const addBtn = this.actionButton("+", "Add Image");
         addBtn.title = "Add reference images (or drop image files on the viewport)";
         addBtn.addEventListener("click", () => this.ui.fileInput?.click());
-        const editBtn = this.doc.createElement("button");
-        editBtn.className = "vnccs-ps-btn";
-        editBtn.type = "button";
-        editBtn.textContent = "✥ Edit in View";
+        const editBtn = this.actionButton("✥", "Edit in View");
         editBtn.title = "Drag the selected layer in the viewport: inside moves, corners (or Alt+drag) scale, "
             + "the round handle (or Ctrl+drag) rotates; Shift snaps rotation to 15°";
         editBtn.addEventListener("click", () => this.setEditMode(!this.editMode));
@@ -738,44 +815,69 @@ export class PoseReferenceLayerController {
         return section;
     }
 
-    numberField(label, { min, max, step, slider = false, reset, title }) {
-        const field = this.doc.createElement("div");
-        field.className = "vnccs-ps-field";
-        const labelRow = this.doc.createElement("div");
-        labelRow.className = "vnccs-ps-label-row";
+    /** Shared action button: icon and label, as in the Pose Studio action bar. */
+    actionButton(icon, text) {
+        const button = this.doc.createElement("button");
+        button.className = "vnccs-ps-btn";
+        button.type = "button";
+        const iconEl = this.doc.createElement("span");
+        iconEl.className = "vnccs-ps-btn-icon";
+        iconEl.textContent = icon;
+        const label = this.doc.createElement("span");
+        label.textContent = text;
+        button.append(iconEl, label);
+        return button;
+    }
+
+    resetButton(title, reset) {
+        const button = this.doc.createElement("button");
+        button.className = "vnccs-ps-reset-btn";
+        button.type = "button";
+        button.textContent = "↺";
+        button.title = title;
+        button.addEventListener("click", event => {
+            event.stopPropagation();
+            reset();
+        });
+        return button;
+    }
+
+    valueInput({ min, max, step }) {
+        const input = this.doc.createElement("input");
+        input.type = "number";
+        input.className = "vnccs-ps-reflayer-value";
+        Object.assign(input, { min, max, step });
+        return input;
+    }
+
+    labelRow(label, title, ...controls) {
+        const row = this.doc.createElement("div");
+        row.className = "vnccs-ps-label-row";
         const labelEl = this.doc.createElement("span");
         labelEl.className = "vnccs-ps-label";
         labelEl.textContent = label;
         if (title) labelEl.title = title;
-        const valueRow = this.doc.createElement("div");
-        valueRow.className = "vnccs-ps-reflayer-pair";
-        const input = this.doc.createElement("input");
-        input.type = "number";
-        input.className = "vnccs-ps-input vnccs-ps-reflayer-num";
-        Object.assign(input, { min, max, step });
-        const resetBtn = this.doc.createElement("button");
-        resetBtn.className = "vnccs-ps-reset-btn";
-        resetBtn.type = "button";
-        resetBtn.textContent = "↺";
-        resetBtn.title = `Reset ${label.toLowerCase()}`;
-        resetBtn.addEventListener("click", event => {
-            event.stopPropagation();
-            reset();
-        });
-        valueRow.append(input, resetBtn);
-        labelRow.append(labelEl, valueRow);
-        field.appendChild(labelRow);
-        let range = null;
-        if (slider) {
-            const wrap = this.doc.createElement("div");
-            wrap.className = "vnccs-ps-slider-wrap";
-            range = this.doc.createElement("input");
-            range.type = "range";
-            range.className = "vnccs-ps-slider";
-            Object.assign(range, { min, max, step });
-            wrap.appendChild(range);
-            field.appendChild(wrap);
-        }
+        const values = this.doc.createElement("div");
+        values.className = "vnccs-ps-reflayer-value-row";
+        values.append(...controls);
+        row.append(labelEl, values);
+        return row;
+    }
+
+    /** Label, exact value and reset on one line with a slider below, like the other sections. */
+    numberField(label, { min, max, step, reset, title }) {
+        const field = this.doc.createElement("div");
+        field.className = "vnccs-ps-field";
+        const input = this.valueInput({ min, max, step });
+        const resetBtn = this.resetButton(`Reset ${label.toLowerCase()}`, reset);
+        const wrap = this.doc.createElement("div");
+        wrap.className = "vnccs-ps-slider-wrap";
+        const range = this.doc.createElement("input");
+        range.type = "range";
+        range.className = "vnccs-ps-slider";
+        Object.assign(range, { min, max, step });
+        wrap.appendChild(range);
+        field.append(this.labelRow(label, title, input, resetBtn), wrap);
         return { field, input, range, resetBtn };
     }
 
@@ -792,54 +894,35 @@ export class PoseReferenceLayerController {
 
     buildFields(props) {
         const opacity = this.numberField("Opacity %", {
-            min: 0, max: 100, step: 1, slider: true, reset: () => this.resetTransform("opacity"),
+            min: 0, max: 100, step: 1, reset: () => this.resetTransform("opacity"),
         });
-        const position = this.doc.createElement("div");
-        position.className = "vnccs-ps-field";
-        const positionRow = this.doc.createElement("div");
-        positionRow.className = "vnccs-ps-label-row";
-        const positionLabel = this.doc.createElement("span");
-        positionLabel.className = "vnccs-ps-label";
-        positionLabel.textContent = "Position px";
-        positionLabel.title = "Offset of the layer centre from the frame centre, in output pixels (Y down)";
-        const pair = this.doc.createElement("div");
-        pair.className = "vnccs-ps-reflayer-pair";
+        const posReset = this.resetButton("Reset position to the frame centre", () => this.resetTransform("position"));
+        const axes = this.doc.createElement("div");
+        axes.className = "vnccs-ps-reflayer-axes";
         const makeAxis = axis => {
             const label = this.doc.createElement("label");
-            label.textContent = axis.toUpperCase();
-            const input = this.doc.createElement("input");
-            input.type = "number";
-            input.className = "vnccs-ps-input vnccs-ps-reflayer-num";
-            Object.assign(input, { min: -16384, max: 16384, step: 1 });
-            pair.append(label, input);
+            label.className = "vnccs-ps-reflayer-axis";
+            const name = this.doc.createElement("span");
+            name.textContent = axis.toUpperCase();
+            const input = this.valueInput({ min: -16384, max: 16384, step: 1 });
+            label.append(name, input);
+            axes.appendChild(label);
             return input;
         };
         const posX = makeAxis("x"), posY = makeAxis("y");
-        const posReset = this.doc.createElement("button");
-        posReset.className = "vnccs-ps-reset-btn";
-        posReset.type = "button";
-        posReset.textContent = "↺";
-        posReset.title = "Reset position to the frame centre";
-        posReset.addEventListener("click", event => {
-            event.stopPropagation();
-            this.resetTransform("position");
-        });
-        pair.appendChild(posReset);
-        positionRow.append(positionLabel);
-        position.append(positionRow, pair);
+        const position = this.doc.createElement("div");
+        position.className = "vnccs-ps-field";
+        position.append(this.labelRow("Position px", "Offset of the layer centre from the frame centre, in output pixels (Y down)", posReset), axes);
 
         const scale = this.numberField("Scale %", {
-            min: 1, max: 400, step: 1, slider: true, reset: () => this.resetTransform("scale"),
+            min: 1, max: 400, step: 1, reset: () => this.resetTransform("scale"),
             title: "Layer height relative to the frame height",
         });
         const rotation = this.numberField("Rotation °", {
-            min: -180, max: 180, step: 1, slider: true, reset: () => this.resetTransform("rotation"),
+            min: -180, max: 180, step: 1, reset: () => this.resetTransform("rotation"),
         });
 
-        const flip = this.doc.createElement("button");
-        flip.className = "vnccs-ps-btn";
-        flip.type = "button";
-        flip.textContent = "⇋ Flip Horizontal";
+        const flip = this.actionButton("⇋", "Flip Horizontal");
         flip.addEventListener("click", () => {
             const layer = this.selectedLayer();
             if (layer) this.edit(layer.id, { flipX: !layer.flipX });
@@ -852,7 +935,7 @@ export class PoseReferenceLayerController {
         this.bindValue(posY, value => ({ y: -value / this.frameSize().height }));
 
         props.append(opacity.field, position, scale.field, rotation.field, flip);
-        Object.assign(this.ui, { opacity, posX, posY, scale, rotation, flip });
+        Object.assign(this.ui, { opacity, posX, posY, posReset, scale, rotation, flip });
     }
 
     syncFields(source = null) {
@@ -875,8 +958,9 @@ export class PoseReferenceLayerController {
         set(ui.rotation.input, rotation); set(ui.rotation.range, rotation);
         ui.flip.classList?.toggle?.("active", layer.flipX);
         const disabled = layer.locked;
-        for (const control of [ui.opacity.input, ui.opacity.range, ui.posX, ui.posY, ui.scale.input, ui.scale.range,
-            ui.rotation.input, ui.rotation.range, ui.flip]) control.disabled = disabled;
+        for (const control of [ui.opacity.input, ui.opacity.range, ui.opacity.resetBtn, ui.posX, ui.posY, ui.posReset,
+            ui.scale.input, ui.scale.range, ui.scale.resetBtn, ui.rotation.input, ui.rotation.range, ui.rotation.resetBtn,
+            ui.flip]) control.disabled = disabled;
     }
 
     syncToolbar() {
@@ -896,8 +980,12 @@ export class PoseReferenceLayerController {
             row.addEventListener("click", () => this.select(layer.id));
             const thumb = this.doc.createElement("img");
             thumb.className = "vnccs-ps-reflayer-thumb";
-            thumb.src = layer.src;
+            thumb.src = this.layerSource(layer);
             thumb.alt = "";
+            thumb.addEventListener("error", () => {
+                thumb.classList.add("missing");
+                thumb.title = "Image missing on this server";
+            });
             const name = layer.id === this.renamingId ? this.renameInput(layer) : this.doc.createElement("span");
             name.className = "vnccs-ps-reflayer-name";
             if (layer.id !== this.renamingId) {
@@ -908,10 +996,10 @@ export class PoseReferenceLayerController {
                     this.startRename(layer.id);
                 });
             }
-            const button = (text, title, action, on = false) => {
+            const button = (text, title, action, modifier = "") => {
                 const element = this.doc.createElement("button");
                 element.type = "button";
-                element.className = "vnccs-ps-reflayer-icon" + (on ? " on" : "");
+                element.className = `vnccs-ps-reset-btn vnccs-ps-reflayer-icon ${modifier}`.trim();
                 element.textContent = text;
                 element.title = title;
                 element.dataset.action = title;
@@ -926,17 +1014,18 @@ export class PoseReferenceLayerController {
             const down = button("▼", "Move down", () => this.moveLayer(layer.id, -1));
             up.disabled = top;
             down.disabled = bottom;
-            row.append(
-                thumb,
-                name,
-                button(layer.visible ? "◉" : "○", layer.visible ? "Hide" : "Show",
-                    () => this.edit(layer.id, { visible: !layer.visible }), layer.visible),
+            const actions = this.doc.createElement("div");
+            actions.className = "vnccs-ps-reflayer-actions";
+            actions.append(
+                button(layer.visible ? "👁" : "—", layer.visible ? "Hide" : "Show",
+                    () => this.edit(layer.id, { visible: !layer.visible }), layer.visible ? "on" : ""),
                 button(layer.locked ? "🔒" : "🔓", layer.locked ? "Unlock" : "Lock",
-                    () => this.edit(layer.id, { locked: !layer.locked }), layer.locked),
+                    () => this.edit(layer.id, { locked: !layer.locked }), layer.locked ? "on" : ""),
                 up,
                 down,
-                button("✕", "Delete", () => this.removeLayer(layer.id)),
+                button("✕", "Delete", () => this.removeLayer(layer.id), "delete"),
             );
+            row.append(thumb, name, actions);
             return row;
         });
         list.replaceChildren(...rows);

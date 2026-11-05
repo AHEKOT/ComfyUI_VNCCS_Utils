@@ -5,6 +5,7 @@ import * as THREE from "../web/vendor/three/three.module.js";
 import { POSE_STUDIO_EDITOR_ONLY_LAYER, PoseViewerCore } from "../web/pose_studio/core.js";
 import {
     REFERENCE_LAYER_LIMIT,
+    REFERENCE_LAYER_MAX_SRC_LENGTH,
     clientToNdc,
     createReferenceLayer,
     dragReferenceLayer,
@@ -12,24 +13,30 @@ import {
     frameToLayerLocal,
     frameToOutputPixels,
     hitTestReferenceLayer,
+    isReferenceAssetName,
     layerLocalToFrame,
     ndcToCssPixels,
     normalizeReferenceLayers,
     normalizeRotation,
     outputPixelsToFrame,
+    referenceAssetPath,
+    referenceDataUrlToBlob,
     referenceLayerCorners,
     referenceLayerHistorySnapshot,
     reorderReferenceLayers,
     restoreReferenceLayerHistory,
     serializeReferenceLayers,
+    uploadReferenceAsset,
 } from "../web/pose_studio/reference_layers.mjs";
 import { PoseReferenceLayerController, referenceLayerResizeCursor } from "../web/pose_studio/reference_layers_controller.mjs";
 import { createScene } from "./helpers/pose_studio_scene.mjs";
 
 const PNG = "data:image/png;base64,iVBORw0KGgo=";
 const near = (a, b, eps = 1e-6, message = "") => assert.ok(Math.abs(a - b) <= eps, `${message} ${a} vs ${b}`);
+const assetName = (seed = "a", extension = "webp") => `${seed.repeat(64).slice(0, 64)}.${extension}`;
+const ASSET = assetName();
 const layer = (patch = {}) => ({
-    id: "a", name: "A", src: PNG, width: 200, height: 100, visible: true, locked: false, flipX: false,
+    id: "a", name: "A", asset: ASSET, width: 200, height: 100, visible: true, locked: false, flipX: false,
     opacity: 0.5, x: 0, y: 0, scale: 0.5, rotation: 0, ...patch,
 });
 
@@ -38,7 +45,9 @@ const layer = (patch = {}) => ({
 test("old workflows and invalid data load with no reference layers", () => {
     for (const raw of [undefined, null, {}, "x", 3]) assert.deepEqual(normalizeReferenceLayers(raw), []);
     assert.deepEqual(normalizeReferenceLayers([null, 1, {}, { src: "https://x/y.png", width: 1, height: 1 },
-        { src: PNG, width: 0, height: 4 }, { src: "data:text/html;base64,AA==", width: 1, height: 1 }]), []);
+        { src: PNG, width: 0, height: 4 }, { src: "data:text/html;base64,AA==", width: 1, height: 1 },
+        ...["../../secret.webp", `${"a".repeat(63)}.webp`, `${"A".repeat(64)}.webp`, `${"a".repeat(64)}.svg`, `${"a".repeat(64)}.webp/x`, 7]
+            .map(asset => ({ asset, width: 1, height: 1 }))]), []);
     assert.equal(serializeReferenceLayers([]), undefined);
 });
 
@@ -67,14 +76,41 @@ test("persistence round trip keeps every field exactly", () => {
     assert.deepEqual(saved.map(item => item.id), ["bottom", "top"]);
 });
 
-test("history snapshots exclude image data and restore through the image store", () => {
+test("history snapshots hold compact references and restore on their own", () => {
     const layers = normalizeReferenceLayers([layer({ id: "a" }), layer({ id: "b", x: 0.2 })]);
     const snapshot = referenceLayerHistorySnapshot(layers);
-    assert.ok(snapshot.every(item => !("src" in item)));
-    const images = new Map(layers.map(item => [item.id, item.src]));
-    assert.deepEqual(restoreReferenceLayerHistory(snapshot, images), layers);
-    images.delete("a");
-    assert.deepEqual(restoreReferenceLayerHistory(snapshot, images).map(item => item.id), ["b"]);
+    assert.ok(snapshot.every(item => !("src" in item) && item.asset === ASSET));
+    assert.deepEqual(restoreReferenceLayerHistory(JSON.parse(JSON.stringify(snapshot))), layers);
+});
+
+test("a layer holds either a stored asset or a legacy inline image, never both", () => {
+    const [stored, inline] = normalizeReferenceLayers([
+        layer({ id: "s", src: PNG }),
+        { ...layer({ id: "i", src: PNG }), asset: undefined },
+    ]);
+    assert.equal(stored.asset, ASSET);
+    assert.equal("src" in stored, false);
+    assert.equal(inline.src, PNG);
+    assert.equal("asset" in inline, false);
+    assert.deepEqual(serializeReferenceLayers([stored, inline]).map(item => [item.asset, item.src]), [[ASSET, undefined], [undefined, PNG]]);
+    assert.ok(isReferenceAssetName(assetName("0", "jpg")));
+    assert.equal(referenceAssetPath(ASSET), `/vnccs/pose_reference_asset/${ASSET}`);
+    assert.equal(normalizeReferenceLayers([{ ...layer(), asset: undefined, src: `data:image/png;base64,${"A".repeat(REFERENCE_LAYER_MAX_SRC_LENGTH)}` }]).length, 0);
+});
+
+test("the upload helper posts raw bytes and reports the server's reason", async () => {
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: "image/webp" });
+    const calls = [];
+    const answer = (ok, status, body) => async (...args) => { calls.push(args); return { ok, status, json: async () => body }; };
+    assert.equal(await uploadReferenceAsset(blob, answer(true, 200, { asset: ASSET })), ASSET);
+    assert.equal(calls[0][0], "/vnccs/pose_reference_asset");
+    assert.equal(calls[0][1].method, "POST");
+    assert.equal(calls[0][1].body, blob);
+    await assert.rejects(uploadReferenceAsset(blob, answer(false, 500, { error: "disk full" })), /disk full/);
+    await assert.rejects(uploadReferenceAsset(blob, answer(true, 200, { asset: "../x" })), /invalid asset name/);
+    const decoded = referenceDataUrlToBlob(PNG);
+    assert.equal(decoded.type, "image/png");
+    assert.equal(decoded.size, 8);
 });
 
 test("new layers fit inside the frame for square and non-square outputs", () => {
@@ -226,7 +262,7 @@ const fakeDocument = { createElement: tag => new FakeElement(tag), head: null, g
 // Synchronous stand-in for THREE.TextureLoader (no DOM image decoding in Node).
 const loadTexture = (src, onLoad) => onLoad(new THREE.Texture());
 
-function createRig({ zoom = 1, width = 1024, height = 1024 } = {}) {
+function createRig({ zoom = 1, width = 1024, height = 1024, ...overrides } = {}) {
     const canvas = new FakeElement("canvas");
     canvas.rect = { left: 120, top: 80, width: 400 * zoom, height: 300 * zoom };
     const viewer = new PoseViewerCore(canvas);
@@ -257,9 +293,12 @@ function createRig({ zoom = 1, width = 1024, height = 1024 } = {}) {
         showMessage: message => calls.messages.push(message),
     };
     const container = new FakeElement();
+    let uploads = 0;
     const controller = new PoseReferenceLayerController(host, {
         document: fakeDocument, editorOnlyLayer: POSE_STUDIO_EDITOR_ONLY_LAYER, loadTexture,
-        decodeImageFile: async file => ({ src: PNG, width: file.width || 300, height: file.height || 150 }),
+        decodeImageFile: async file => ({ blob: new Blob(["x"]), width: file.width || 300, height: file.height || 150 }),
+        uploadAsset: async () => assetName((++uploads % 16).toString(16)),
+        ...overrides,
     });
     controller.attachViewer(viewer, container);
     // Bone picking / orbit stand-in registered like the viewer's own listeners.
@@ -517,7 +556,12 @@ function sceneWithLayers() {
     const { w, viewer } = scene;
     w.hydrateCharacterSceneModels = async () => {};
     viewer.setSkinMode = () => {};
-    w.referenceLayers = new PoseReferenceLayerController(w, { document: fakeDocument, editorOnlyLayer: POSE_STUDIO_EDITOR_ONLY_LAYER, loadTexture });
+    let uploads = 0;
+    w.referenceLayers = new PoseReferenceLayerController(w, {
+        document: fakeDocument, editorOnlyLayer: POSE_STUDIO_EDITOR_ONLY_LAYER, loadTexture,
+        decodeImageFile: async () => ({ blob: new Blob(["x"]), width: 1024, height: 1024 }),
+        uploadAsset: async () => assetName((++uploads).toString(16).padStart(4, "0")),
+    });
     w.referenceLayers.installHistoryContext(viewer);
     return scene;
 }
@@ -588,6 +632,8 @@ test("the widget wires layers into history, rendering, persistence and the UniCa
         /this\.referenceLayers\?\.load\(data\.reference_layers\)/,
         /this\.hideSectionInUniCanvas\(referenceSection\)/,
         /"background_url", "reference_layers",/,
+        /new PoseReferenceLayerController\(this, \{ editorOnlyLayer: POSE_STUDIO_EDITOR_ONLY_LAYER, api \}\)/,
+        /this\._poseDataRestorePending = false;\s+if \(this\.container\) this\.container\.inert = false;\s+void this\.referenceLayers\?\.migrateInlineLayers\(\);/,
     ]) assert.match(source, pattern);
 });
 
@@ -599,7 +645,7 @@ test("panel list, sliders, numeric fields and resets edit the selected layer wit
     panel.load([layer({ id: "bottom", name: "Bottom" }), layer({ id: "top", name: "Top" })]);
     const rows = panel.ui.list.children;
     assert.deepEqual(rows.map(row => row.dataset.layerId), ["top", "bottom"], "topmost layer first");
-    const button = (row, action) => row.children.find(child => child.dataset?.action === action);
+    const button = (row, action) => row.children.at(-1).children.find(child => child.dataset?.action === action);
 
     // Slider gesture: live on every input, one history entry, saved at the end.
     const history = viewer.history.length;
@@ -692,4 +738,215 @@ test("image drops on the viewport add layers; other drops still reach ComfyUI", 
     assert.equal(drop.defaultPrevented, true);
     await new Promise(resolve => setTimeout(resolve, 0));
     assert.equal(rig.controller.layers.length, 1);
+});
+
+// --- Durable storage, lock enforcement and retained sources ----------------
+
+const file = (name = "a.png") => ({ name, type: "image/png", size: 10, width: 1024, height: 1024 });
+
+test("workflow payload stays compact: 8 references add only references and transforms", async () => {
+    const scene = sceneWithLayers();
+    const { w, node } = scene;
+    w.syncToNode(false);
+    const before = node.widgets[0].value.length;
+    await w.referenceLayers.addFiles(Array.from({ length: REFERENCE_LAYER_LIMIT }, (_, index) => file(`${index}.png`)));
+    assert.equal(w.referenceLayers.layers.length, REFERENCE_LAYER_LIMIT);
+    const saved = node.widgets[0].value;
+    assert.equal(saved.includes("data:image"), false, "no image bytes in pose_data");
+    const perLayer = (saved.length - before) / REFERENCE_LAYER_LIMIT;
+    assert.ok(perLayer < 350, `${perLayer} chars per layer`);
+    const stored = JSON.parse(saved).reference_layers;
+    assert.ok(stored.every(item => isReferenceAssetName(item.asset) && !("src" in item)));
+    // Undo snapshots stay compact too.
+    w.referenceLayers.edit(w.referenceLayers.selectedId, { x: 0.1 });
+    assert.equal(scene.viewer.history.at(-1).includes("data:image"), false);
+});
+
+test("durable restore: a reloaded workflow loads images from storage without uploading", () => {
+    const requested = [];
+    const uploads = [];
+    const rig = createRig({
+        loadTexture: (src, onLoad) => { requested.push(src); onLoad(new THREE.Texture()); },
+        uploadAsset: async blob => { uploads.push(blob); return ASSET; },
+        api: { apiURL: path => `/api${path}` },
+    });
+    const saved = JSON.parse(JSON.stringify(serializeReferenceLayers(normalizeReferenceLayers([
+        layer({ id: "a", x: 0.25, rotation: 30, flipX: true, locked: true, name: "Line art" }),
+        layer({ id: "b", asset: assetName("b", "png"), opacity: 0.2 }),
+    ]))));
+    rig.controller.load(saved);
+    rig.controller.syncFrame();
+    assert.deepEqual(requested, [`/api/vnccs/pose_reference_asset/${ASSET}`, `/api/vnccs/pose_reference_asset/${assetName("b", "png")}`]);
+    assert.deepEqual(JSON.parse(JSON.stringify(rig.controller.serialize())), saved);
+    assert.deepEqual(uploads, []);
+    assert.equal(rig.controller.entries.get("a").ready, true);
+});
+
+test("an unavailable stored image keeps the layer and reports it once", () => {
+    const rig = createRig({ loadTexture: (src, onLoad, onError) => onError(new Error("404")) });
+    const saved = serializeReferenceLayers(normalizeReferenceLayers([layer({ id: "a", name: "Front" }), layer({ id: "b" })]));
+    rig.controller.load(saved);
+    rig.controller.syncFrame();
+    assert.equal(rig.controller.entries.get("a").ready, false);
+    assert.deepEqual(rig.controller.serialize(), saved);
+    assert.equal(rig.calls.messages.length, 1);
+    assert.match(rig.calls.messages[0], /Front.*missing on this server/);
+});
+
+test("failed storage keeps the previous state, adds no undo step and shows the reason", async () => {
+    let fail = false;
+    const rig = createRig({ uploadAsset: async () => { if (fail) throw new Error("disk full"); return ASSET; } });
+    await rig.controller.addFiles([file()]);
+    const { layers, selectedId } = rig.controller;
+    const { record, sync } = rig.calls;
+    fail = true;
+    assert.deepEqual(await rig.controller.addFiles([file("b.png")]), []);
+    assert.equal(rig.controller.layers, layers);
+    assert.equal(rig.controller.selectedId, selectedId);
+    assert.equal(rig.calls.record, record);
+    assert.equal(rig.calls.sync, sync);
+    assert.match(rig.calls.messages.at(-1), /Could not store b\.png.*disk full.*not changed/);
+    // One bad file of a batch does not lose the good one.
+    let count = 0;
+    rig.controller.uploadAsset = async () => { if (++count === 1) throw new Error("disk full"); return assetName("c"); };
+    const added = await rig.controller.addFiles([file("c.png"), file("d.png")]);
+    assert.deepEqual(added.map(item => item.name), ["d.png"]);
+    assert.equal(rig.calls.record, record + 1);
+});
+
+test("older workflows with inline images move to storage and keep every setting", async () => {
+    const uploads = [];
+    const rig = createRig({ uploadAsset: async blob => { uploads.push(blob); return ASSET; } });
+    const legacy = { ...layer({ id: "old", x: 0.3, rotation: 20, name: "Old" }), asset: undefined, src: PNG };
+    rig.controller.load([legacy, layer({ id: "new", asset: assetName("b") })]);
+    rig.controller.syncFrame();
+    const entry = rig.controller.entries.get("old");
+    const pending = rig.controller.migrateInlineLayers();
+    // An edit made during the upload survives.
+    rig.controller.updateLayer("old", { y: 0.4 });
+    await pending;
+    const moved = rig.controller.layers[0];
+    assert.equal(moved.asset, ASSET);
+    assert.equal("src" in moved, false);
+    assert.deepEqual([moved.x, moved.y, moved.rotation, moved.name], [0.3, 0.4, 20, "Old"]);
+    assert.equal(uploads.length, 1, "already stored layers are not uploaded");
+    assert.equal(uploads[0].type, "image/png");
+    assert.equal(rig.calls.sync, 1, "the workflow is rewritten once");
+    assert.equal(JSON.stringify(rig.controller.serialize()).includes("data:image"), false);
+    assert.equal(rig.controller.entries.get("old"), entry, "the displayed texture is kept");
+    assert.equal(rig.calls.record, 0, "moving storage is not an undo step");
+});
+
+test("an inline image stays in the workflow when moving it to storage fails", async () => {
+    const rig = createRig({ uploadAsset: async () => { throw new Error("disk full"); } });
+    const legacy = { ...layer({ id: "old" }), asset: undefined, src: PNG };
+    rig.controller.load([legacy]);
+    await rig.controller.migrateInlineLayers();
+    assert.equal(rig.controller.layers[0].src, PNG);
+    assert.equal(rig.controller.serialize()[0].src, PNG);
+    assert.equal(rig.calls.sync, 0);
+    assert.match(rig.calls.messages[0], /stay embedded.*disk full/);
+    // A workflow that was loaded in the meantime is not touched by a late upload.
+    let release;
+    rig.controller.uploadAsset = () => new Promise(resolve => { release = resolve; });
+    const pending = rig.controller.migrateInlineLayers();
+    rig.controller.load([layer({ id: "other" })]);
+    release(ASSET);
+    await pending;
+    assert.deepEqual(rig.controller.layers.map(item => item.id), ["other"]);
+    assert.equal(rig.calls.sync, 0);
+});
+
+test("locked layers ignore every transform reset and mutation", () => {
+    const scene = sceneWithLayers();
+    const { w, viewer, node } = scene;
+    const panel = w.referenceLayers;
+    panel.createSection();
+    panel.load([layer({ id: "a", x: 0.2, y: -0.1, scale: 0.7, rotation: 25, opacity: 0.8 })]);
+    const resets = [panel.ui.opacity.resetBtn, panel.ui.posReset, panel.ui.scale.resetBtn, panel.ui.rotation.resetBtn];
+    assert.ok(resets.every(button => !button.disabled), "enabled while unlocked");
+    panel.edit("a", { locked: true });
+    assert.ok(resets.every(button => button.disabled), "every reset button is disabled");
+    assert.ok(panel.ui.flip.disabled && panel.ui.posX.disabled && panel.ui.opacity.range.disabled);
+    const before = JSON.stringify(panel.layers);
+    const history = viewer.history.length;
+    const saved = node.widgets[0].value;
+    // The handlers also enforce the lock, whatever calls them.
+    for (const kind of ["position", "scale", "rotation", "opacity"]) panel.resetTransform(kind);
+    for (const button of resets) button.click();
+    panel.edit("a", { x: 0 });
+    panel.edit("a", { flipX: true });
+    assert.equal(panel.updateLayer("a", { rotation: 90 }), null);
+    assert.equal(JSON.stringify(panel.layers), before);
+    assert.equal(viewer.history.length, history, "no undo step for a refused edit");
+    assert.equal(node.widgets[0].value, saved);
+    // Visibility, name and the lock itself stay available.
+    panel.edit("a", { visible: false });
+    panel.edit("a", { name: "Renamed" });
+    assert.deepEqual([panel.layers[0].visible, panel.layers[0].name], [false, "Renamed"]);
+    panel.edit("a", { locked: false });
+    assert.ok(resets.every(button => !button.disabled));
+    panel.resetTransform("position");
+    assert.deepEqual([panel.layers[0].x, panel.layers[0].y], [0, 0]);
+});
+
+/** Image references the controller itself holds, outside the bounded host history. */
+function retainedSources(controller) {
+    const seen = new Set();
+    let count = 0;
+    const walk = value => {
+        if (typeof value === "string") {
+            if (value.startsWith("data:image") || isReferenceAssetName(value.split("/").at(-1))) count++;
+            return;
+        }
+        if (!value || typeof value !== "object" || seen.has(value)) return;
+        seen.add(value);
+        if (value instanceof Map || value instanceof Set) value.forEach((item, key) => { walk(key); walk(item); });
+        else Object.values(value).forEach(walk);
+    };
+    for (const [key, value] of Object.entries(controller)) {
+        if (!["host", "viewer", "doc", "container", "ui", "section", "overlay", "group", "api"].includes(key)) walk(value);
+    }
+    return count;
+}
+
+test("55 import and delete cycles retain no image sources beyond the bounded undo history", async () => {
+    const scene = sceneWithLayers();
+    const { w, viewer } = scene;
+    const panel = w.referenceLayers;
+    panel.createSection();
+    for (let cycle = 0; cycle < 55; cycle++) {
+        const [added] = await panel.addFiles([file(`${cycle}.png`)]);
+        assert.equal(retainedSources(panel) >= 1, true, "the live layer holds its source");
+        panel.removeLayer(added.id);
+    }
+    assert.equal(panel.layers.length, 0);
+    assert.equal(panel.entries.size, 0);
+    assert.equal(panel.group?.children.length ?? 0, 0);
+    assert.equal(retainedSources(panel), 0, "nothing outside live layers and history");
+    assert.ok(viewer.history.length <= viewer.maxHistory);
+    const historyChars = viewer.history.join("").length;
+    assert.ok(viewer.history.every(entry => !entry.includes("data:image")));
+    // Only reachable snapshots mention sources; each is a compact name.
+    const mentioned = new Set(viewer.history.flatMap(entry => JSON.parse(entry).editorState?.referenceLayers?.map(item => item.asset) || []));
+    assert.ok(mentioned.size <= viewer.maxHistory, `${mentioned.size} of 55 sources reachable`);
+    assert.ok(mentioned.size > 0 && historyChars > 0);
+    // Undo inside the window restores from the snapshot alone.
+    viewer.undo();
+    assert.equal(panel.layers.length, 1);
+    assert.ok(isReferenceAssetName(panel.layers[0].asset));
+    viewer.undo();
+    assert.equal(panel.layers.length, 0);
+    // Discarding history leaves nothing behind.
+    w.clearPoseHistory();
+    assert.equal(viewer.history.length + viewer.future.length, 0);
+    assert.equal(retainedSources(panel), 0);
+    assert.equal(panel.images, undefined, "there is no separate image store to leak");
+});
+
+test("changed Pose Studio modules are imported with a bumped cache query", async () => {
+    const widget = await fs.readFile(new URL("../web/vnccs_pose_studio.js", import.meta.url), "utf8");
+    const controller = await fs.readFile(new URL("../web/pose_studio/reference_layers_controller.mjs", import.meta.url), "utf8");
+    assert.match(widget, /reference_layers_controller\.mjs\?v=20261105\.1"/);
+    assert.match(controller, /reference_layers\.mjs\?v=20261105\.1"/);
 });

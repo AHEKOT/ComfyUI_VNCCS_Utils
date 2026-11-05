@@ -184,7 +184,7 @@ test("reference layers: realtime viewport gestures at three canvas zooms, editor
   const baseline = await runOutputPixels(page);
   await addLayers(page);
   const stored = await page.evaluate(() => window.__node.studioWidget.referenceLayers.layers
-    .map(item => ({ name: item.name, width: item.width, height: item.height, webp: item.src.startsWith("data:image/webp") })));
+    .map(item => ({ name: item.name, width: item.width, height: item.height, webp: /^[0-9a-f]{64}\.webp$/.test(item.asset) })));
   // Downscaled to the 1024 px storage limit once, at import.
   expect(stored[0]).toEqual({ name: "checker.png", width: 1024, height: 640, webp: true });
   expect(await page.evaluate(() => window.__node.studioWidget.referenceLayers.editMode)).toBe(true);
@@ -346,4 +346,203 @@ test("reference layers: realtime viewport gestures at three canvas zooms, editor
   }
   expect(await reload(old)).toEqual([]);
   expect(errors).toEqual([]);
+});
+
+const workflowText = page => page.evaluate(() => {
+  const app = window.comfyAPI?.app?.app ?? window.app;
+  return JSON.stringify((app.rootGraph || app.graph).serialize());
+});
+
+async function loadWorkflow(page, data) {
+  await page.evaluate(async wf => {
+    const app = window.comfyAPI?.app?.app ?? window.app;
+    await app.loadGraphData(wf);
+    window.__node = app.graph._nodes.find(node => node.type === "VNCCS_PoseStudio");
+  }, data);
+  await page.waitForFunction(() => window.__node?.studioWidget?.viewer?.skinnedMesh, null, { timeout: 120_000 });
+  await page.waitForFunction(() => {
+    const w = window.__node.studioWidget, c = w.referenceLayers;
+    return !w._poseDataRestorePending && c.group && [...c.entries.values()].every(entry => entry.ready) && c.entries.size === c.layers.length;
+  }, null, { timeout: 60_000 });
+}
+
+test("reference layers: compact workflow, durable reload, inline migration and failed storage", async ({ page }) => {
+  test.setTimeout(300_000);
+  await openPoseStudio(page);
+  await addLayers(page);
+  const saved = await workflowText(page);
+  const referenceChars = await page.evaluate(() => JSON.stringify(JSON.parse(window.__node.widgets[0].value).reference_layers).length);
+  expect(referenceChars).toBeLessThan(3 * 450);
+  // ComfyUI serializes pose_data twice; an empty Pose Studio workflow is about 11,000 characters.
+  expect(saved.length).toBeLessThan(11_000 + 2 * 3 * 600);
+  expect(saved).not.toContain("data:image");
+  const layers = await page.evaluate(() => window.__node.studioWidget.referenceLayers.layers.map(item => ({ ...item })));
+
+  // Reload from the workflow: same layers, images come from storage without a new upload.
+  let uploads = 0;
+  const countUploads = request => { if (request.method() === "POST" && request.url().includes("pose_reference_asset")) uploads += 1; };
+  page.on("request", countUploads);
+  await loadWorkflow(page, JSON.parse(saved));
+  expect(await page.evaluate(() => window.__node.studioWidget.referenceLayers.layers.map(item => ({ ...item })))).toEqual(layers);
+  expect(uploads).toBe(0);
+  page.off("request", countUploads);
+
+  // Failed storage: useful message, previous state and workflow untouched.
+  await page.route("**/vnccs/pose_reference_asset", route => route.request().method() === "POST"
+    ? route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "No space left on device" }) })
+    : route.continue());
+  const stateBefore = await workflowText(page);
+  await page.setInputFiles(".vnccs-ps-reflayer-file", (await makeImages(page)).slice(1, 2));
+  await expect(page.locator(".vnccs-ps-modal-content").filter({ hasText: "No space left on device" })).toHaveCount(1, { timeout: 30_000 });
+  expect(await page.evaluate(() => window.__node.studioWidget.referenceLayers.layers.length)).toBe(3);
+  expect(await workflowText(page)).toBe(stateBefore);
+
+  // An inline image from an older workflow stays embedded while storage fails...
+  const dataUrl = await page.evaluate(async asset => {
+    const blob = await (await fetch(`/vnccs/pose_reference_asset/${asset}`)).blob();
+    return await new Promise(resolve => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.readAsDataURL(blob);
+    });
+  }, layers[1].asset);
+  const legacy = JSON.parse(saved);
+  for (const node of legacy.nodes.filter(item => item.type === "VNCCS_PoseStudio")) {
+    const data = JSON.parse(node.widgets_values[0]);
+    data.reference_layers[1] = { ...data.reference_layers[1], asset: undefined, src: dataUrl };
+    node.widgets_values[0] = JSON.stringify(data);
+    if (node.widgets_values_named?.pose_data) node.widgets_values_named.pose_data = node.widgets_values[0];
+  }
+  await loadWorkflow(page, legacy);
+  await expect.poll(() => page.evaluate(() => document.querySelector(".vnccs-ps-modal-content")?.textContent || ""), { timeout: 30_000 }).toContain("embedded");
+  expect(await page.evaluate(() => window.__node.studioWidget.referenceLayers.layers[1].src?.slice(0, 15))).toBe("data:image/webp");
+
+  // ...and moves to storage when it works, keeping its place and asset identity.
+  await page.unroute("**/vnccs/pose_reference_asset");
+  await loadWorkflow(page, legacy);
+  await page.waitForFunction(() => window.__node.studioWidget.referenceLayers.layers.every(item => item.asset), null, { timeout: 30_000 });
+  expect(await page.evaluate(() => window.__node.studioWidget.referenceLayers.layers.map(item => ({ ...item })))).toEqual(layers);
+  expect(await page.evaluate(() => window.__node.widgets[0].value.includes("data:image"))).toBe(false);
+});
+
+test("reference layers: a locked layer ignores Reset, with real clicks", async ({ page }) => {
+  test.setTimeout(240_000);
+  await openPoseStudio(page);
+  await addLayers(page);
+  await page.evaluate(() => {
+    const c = window.__node.studioWidget.referenceLayers;
+    c.edit(c.selectedId, { x: 0.2, y: -0.1, rotation: 30, scale: 0.4, opacity: 0.7 });
+  });
+  await clickAt(page, page.locator('.vnccs-ps-reflayer-row.selected button[data-action="Lock"]'));
+  const locked = await layerState(page);
+  expect(locked.locked).toBe(true);
+  const resets = page.locator(".vnccs-ps-reflayer-props .vnccs-ps-reset-btn");
+  expect(await resets.count()).toBe(4);
+  for (let i = 0; i < 4; i += 1) {
+    await expect(resets.nth(i)).toBeDisabled();
+    await resets.nth(i).scrollIntoViewIfNeeded();
+    await clickAt(page, resets.nth(i));
+  }
+  expect(await layerState(page)).toEqual(locked);
+  // The handler refuses too, whatever calls it.
+  await page.evaluate(() => {
+    const c = window.__node.studioWidget.referenceLayers;
+    for (const kind of ["position", "scale", "rotation", "opacity"]) c.resetTransform(kind);
+    c.edit(c.selectedId, { x: 0 });
+  });
+  expect(await layerState(page)).toEqual(locked);
+  await clickAt(page, page.locator('.vnccs-ps-reflayer-row.selected button[data-action="Unlock"]'));
+  await resets.nth(1).scrollIntoViewIfNeeded();
+  await expect(resets.nth(1)).toBeEnabled();
+  await clickAt(page, resets.nth(1));
+  const reset = await layerState(page);
+  expect([reset.x, reset.y, reset.rotation]).toEqual([0, 0, 30]);
+});
+
+test("reference layers: 55 import and delete cycles release textures and sources", async ({ page }) => {
+  test.setTimeout(300_000);
+  await openPoseStudio(page);
+  await page.waitForTimeout(1000);
+  const textures = () => page.evaluate(() => window.__node.studioWidget.viewer.renderer.info.memory.textures);
+  const baseline = await textures();
+  const image = (await makeImages(page))[1];
+  for (let cycle = 0; cycle < 55; cycle += 1) {
+    await page.setInputFiles(".vnccs-ps-reflayer-file", { ...image, name: `cycle_${cycle}.png` });
+    await page.waitForFunction(() => {
+      const c = window.__node.studioWidget.referenceLayers;
+      return c.layers.length === 1 && [...c.entries.values()].every(entry => entry.ready);
+    }, null, { timeout: 30_000 });
+    await page.evaluate(() => {
+      const c = window.__node.studioWidget.referenceLayers;
+      c.removeLayer(c.layers[0].id);
+    });
+  }
+  await page.waitForTimeout(500);
+  const state = await page.evaluate(() => {
+    const w = window.__node.studioWidget, c = w.referenceLayers;
+    return {
+      layers: c.layers.length, entries: c.entries.size, meshes: c.group.children.length, images: c.images === undefined,
+      history: w.viewer.history.length, historyChars: w.viewer.history.join("").length,
+      inline: w.viewer.history.some(entry => entry.includes("data:image")),
+      rows: c.ui.list.children.length,
+    };
+  });
+  expect(state).toMatchObject({ layers: 0, entries: 0, meshes: 0, images: true, history: 10, inline: false, rows: 0 });
+  expect(await textures()).toBe(baseline);
+  // Undo inside the available window still restores the image from durable storage.
+  await page.evaluate(() => window.__node.studioWidget.viewer.undo());
+  await page.waitForFunction(() => {
+    const c = window.__node.studioWidget.referenceLayers;
+    return c.layers.length === 1 && [...c.entries.values()].every(entry => entry.ready);
+  }, null, { timeout: 30_000 });
+  expect(await textures()).toBe(baseline + 1);
+  await page.evaluate(() => window.__node.studioWidget.viewer.undo());
+  await page.evaluate(() => window.__node.studioWidget.clearPoseHistory());
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => window.__node.studioWidget.viewer.history.length)).toBe(0);
+  expect(await textures()).toBe(baseline);
+});
+
+test("reference layers: panel controls stay inside the section at default and narrow sizes", async ({ page }) => {
+  test.setTimeout(240_000);
+  await openPoseStudio(page);
+  await addLayers(page);
+  await page.evaluate(() => {
+    const c = window.__node.studioWidget.referenceLayers;
+    c.edit(c.selectedId, { flipX: true });
+  });
+  const audit = () => page.evaluate(() => {
+    const c = window.__node.studioWidget.referenceLayers;
+    const content = c.section.content.getBoundingClientRect();
+    const shown = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const controls = [...c.section.content.querySelectorAll("button, input:not([type=file]), img, .vnccs-ps-label, .vnccs-ps-reflayer-name")].filter(shown);
+    const problems = [];
+    const describe = el => `${el.tagName} ${el.className} ${el.title || el.textContent}`;
+    for (const el of controls) {
+      const r = el.getBoundingClientRect();
+      if (r.left < content.left - 0.5 || r.right > content.right + 0.5 || r.bottom > content.bottom + 0.5) problems.push(`outside: ${describe(el)}`);
+      if (el.tagName === "BUTTON" && el.scrollWidth > el.clientWidth + 1) problems.push(`clipped: ${describe(el)}`);
+    }
+    controls.forEach((first, i) => controls.slice(i + 1).forEach(second => {
+      if (first.contains(second) || second.contains(first)) return;
+      const a = first.getBoundingClientRect(), b = second.getBoundingClientRect();
+      if (a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5) problems.push(`overlap: ${describe(first)} / ${describe(second)}`);
+    }));
+    const right = selector => new Set([...c.section.content.querySelectorAll(selector)].map(el => el.getBoundingClientRect().right.toFixed(1))).size;
+    return { problems, resetColumns: right(".vnccs-ps-reflayer-props .vnccs-ps-reset-btn"), valueColumns: right(".vnccs-ps-label-row .vnccs-ps-reflayer-value") };
+  });
+  for (const size of [[1400, 880], [760, 880], [560, 880]]) {
+    await page.evaluate(next => window.__node.setSize(next), size);
+    await page.waitForTimeout(1000);
+    expect(await audit()).toEqual({ problems: [], resetColumns: 1, valueColumns: 1 });
+    await page.evaluate(() => {
+      const c = window.__node.studioWidget.referenceLayers;
+      c.startRename(c.selectedId);
+    });
+    await page.waitForTimeout(100);
+    expect(await audit()).toEqual({ problems: [], resetColumns: 1, valueColumns: 1 });
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(100);
+    await page.evaluate(() => window.__node.studioWidget.referenceLayers.renamingId && window.__node.studioWidget.referenceLayers.finishRename(window.__node.studioWidget.referenceLayers.renamingId, ""));
+  }
 });

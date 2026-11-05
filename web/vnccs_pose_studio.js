@@ -55,7 +55,7 @@ import {
     waitForVideoMetadata,
     zoomVideoTimelineViewport,
 } from "./pose_studio/imports/video.mjs";
-import { PoseReferenceLayerController } from "./pose_studio/reference_layers_controller.mjs?v=20261102.3";
+import { PoseReferenceLayerController } from "./pose_studio/reference_layers_controller.mjs?v=20261105.1";
 import {
     boneNameForPositionTrack,
     bonePositionTrackName,
@@ -5314,7 +5314,7 @@ class PoseStudioWidget {
         this.hideSectionInUniCanvas(exportSection);
 
         // --- REFERENCE LAYERS SECTION (editor-only tracing images) ---
-        this.referenceLayers = new PoseReferenceLayerController(this, { editorOnlyLayer: POSE_STUDIO_EDITOR_ONLY_LAYER });
+        this.referenceLayers = new PoseReferenceLayerController(this, { editorOnlyLayer: POSE_STUDIO_EDITOR_ONLY_LAYER, api });
         const referenceSection = this.referenceLayers.createSection();
         leftPanel.appendChild(referenceSection.el);
         this.hideSectionInUniCanvas(referenceSection);
@@ -16331,6 +16331,7 @@ class PoseStudioWidget {
                 if (this._disposed || restoreToken !== this._poseDataRestoreToken) return;
                 this._poseDataRestorePending = false;
                 if (this.container) this.container.inert = false;
+                void this.referenceLayers?.migrateInlineLayers();
             }).catch(error => {
                 if (this._disposed || restoreToken !== this._poseDataRestoreToken) return;
                 this._poseDataRestorePending = false;
