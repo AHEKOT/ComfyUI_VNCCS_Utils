@@ -17,21 +17,26 @@ import {
 import { HAND_PRESETS } from "./pose_studio/hand_presets.js";
 import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js?v=1791754604000";
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js?v=1791754604000";
-import { installCustomSelects } from "./shared/custom_select.mjs";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=20261104-scaled-menu";
 import {
-    ensurePoseConditioningOutputs,
     poseCaptureCameraFromSnapshot,
-    poseConditioningOutputNames,
     poseConditioningPasses,
     snapshotPoseCaptureCamera,
-} from "./pose_studio/conditioning.mjs?v=20261101.1";
+} from "./pose_studio/conditioning.mjs?v=20261105.2";
+import {
+    POSE_ADDITIONAL_OUTPUT_GROUPS,
+    POSE_BASE_OUTPUT_COUNT,
+    poseAdditionalOutputNames,
+    poseLinkedAdditionalOutputNames,
+    restorePoseAdditionalOutputs,
+    savedPoseAdditionalOutputs,
+    setPoseAdditionalOutput,
+} from "./pose_studio/additional_outputs.mjs?v=20261105.3";
 import {
     defaultCropGuide,
-    ensurePoseCropGuideOutputs,
     normalizeCropGuide,
-    poseCropGuideOutputNames,
-} from "./pose_studio/crop_guide.mjs?v=20261101.2";
-import { PoseCropGuideController } from "./pose_studio/crop_guide_overlay.mjs?v=20261101.3";
+} from "./pose_studio/crop_guide.mjs?v=20261105.1";
+import { PoseCropGuideController } from "./pose_studio/crop_guide_overlay.mjs?v=20261105.1";
 import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
@@ -96,6 +101,7 @@ import {
     DEFAULT_CAPTURE_DISTANCE,
     MIN_CAPTURE_DISTANCE,
     MAX_CAPTURE_DISTANCE,
+    CAPTURE_LENS_STEP,
     resolveDebugLightingMode,
     retimeAnimationTiming,
     restoreAnimationStateSnapshot,
@@ -104,7 +110,7 @@ import {
     serializeAnimationStateSnapshot,
     setCharacterTransformKeyframe,
     setTrackKeyframeFromEuler,
-} from "./pose_studio/animation.mjs?v=1791754604000";
+} from "./pose_studio/animation.mjs?v=20261105.1";
 
 const VNCCS_POSE_MORPH_WORKER_URL = new URL("./pose_studio/morph_worker.js", import.meta.url);
 let VNCCS_SHARED_MORPH_WORKER = null;
@@ -435,6 +441,24 @@ const STYLES = `
     color: var(--ps-accent);
     margin-left: auto;
     font-family: var(--ps-font-mono);
+}
+
+.vnccs-ps-input.vnccs-ps-value-input {
+    width: 52px;
+    padding: 1px 4px;
+    margin-left: auto;
+    font-size: 9px;
+    font-family: var(--ps-font-mono);
+    color: var(--ps-accent);
+    text-align: right;
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+
+.vnccs-ps-input.vnccs-ps-value-input::-webkit-inner-spin-button,
+.vnccs-ps-input.vnccs-ps-value-input::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
 }
 
 .vnccs-ps-label-row {
@@ -2412,6 +2436,102 @@ const STYLES = `
     background: var(--ps-accent-subtle);
     border-color: var(--ps-accent-border);
     color: var(--ps-accent-hover);
+}
+
+.vnccs-ps-publish-overlay {
+    container-type: size;
+}
+
+.vnccs-ps-publish-modal {
+    font-size: clamp(20px, min(2.25cqw, 2.8cqh), 32px);
+    width: min(36em, calc(100% - 32px));
+    max-height: calc(100% - 32px);
+    box-sizing: border-box;
+}
+
+.vnccs-ps-publish-modal .vnccs-ps-modal-title {
+    flex-shrink: 0;
+    padding: 1em 1.25em;
+    font-size: 1.2em;
+    line-height: 1.3;
+    letter-spacing: 0;
+}
+
+.vnccs-ps-publish-modal .vnccs-ps-modal-content {
+    gap: 0.9em;
+    padding: 1.2em 1.5em;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.vnccs-ps-publish-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4em;
+    min-width: 0;
+}
+
+.vnccs-ps-publish-field > span {
+    color: var(--ps-text-muted);
+    font-size: 0.8em;
+    font-weight: 600;
+}
+
+.vnccs-ps-publish-modal .vnccs-ps-input {
+    min-height: 2.5em;
+    padding: 0.6em 0.75em;
+    font-size: 1em;
+}
+
+.vnccs-ps-publish-check {
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
+}
+
+.vnccs-ps-publish-check input {
+    width: 1.1em;
+    height: 1.1em;
+    margin: 0;
+    font-size: inherit;
+    accent-color: var(--ps-accent);
+}
+
+.vnccs-ps-publish-help {
+    margin: 0;
+    color: var(--ps-text-muted);
+    font-size: 0.8em;
+    line-height: 1.5;
+}
+
+.vnccs-ps-publish-actions {
+    display: flex;
+    flex-shrink: 0;
+    gap: 0.75em;
+    padding: 0 1.5em 1.5em;
+}
+
+.vnccs-ps-publish-actions .vnccs-ps-modal-btn {
+    flex: 1;
+    min-height: 2.5em;
+    justify-content: center;
+    font-size: 1em;
+    font-weight: 600;
+}
+
+.vnccs-ps-publish-actions .primary {
+    background: var(--ps-accent);
+    color: var(--ps-bg);
+}
+
+.vnccs-ps-publish-actions .primary:hover {
+    background: var(--ps-accent-hover);
+}
+
+.vnccs-ps-publish-modal :focus-visible {
+    outline: 2px solid var(--ps-accent);
+    outline-offset: 2px;
 }
 
 .vnccs-ps-save-library-modal {
@@ -6391,6 +6511,47 @@ class PoseStudioWidget {
         if (this.host?.embedded === true && section?.el) section.el.style.display = "none";
     }
 
+    createAdditionalOutputsSection() {
+        const section = this.createSection("Additional Outputs", true);
+        const enabled = new Set(poseAdditionalOutputNames(this.node));
+        for (const group of POSE_ADDITIONAL_OUTPUT_GROUPS) {
+            const title = document.createElement("div");
+            title.style.cssText = "font-size:11px;font-weight:600;color:#aaa;margin:2px 0 8px;";
+            title.textContent = group.title;
+            section.content.appendChild(title);
+            for (const output of group.outputs) {
+                const row = document.createElement("div");
+                row.className = "vnccs-ps-field";
+                row.style.marginBottom = "8px";
+                const label = document.createElement("label");
+                label.style.cssText = "display:flex;align-items:flex-start;gap:10px;cursor:pointer;user-select:none;";
+                const checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.name = `additional_output_${output.name}`;
+                checkbox.checked = enabled.has(output.name);
+                checkbox.style.marginTop = "2px";
+                checkbox.addEventListener("change", () => this.setAdditionalOutput(output.name, checkbox.checked));
+                const text = document.createElement("span");
+                const name = document.createElement("strong");
+                name.textContent = output.name;
+                const hint = document.createElement("small");
+                hint.style.cssText = "display:block;color:#888;margin-top:3px;line-height:1.35;";
+                hint.textContent = output.hint;
+                text.append(name, hint);
+                label.append(checkbox, text);
+                row.appendChild(label);
+                section.content.appendChild(row);
+            }
+        }
+        return section;
+    }
+
+    setAdditionalOutput(name, enabled) {
+        if (!setPoseAdditionalOutput(this.node, name, enabled)) return;
+        this.node.setDirtyCanvas?.(true, true);
+        this.syncToNode(false, { skipCapture: true });
+    }
+
     createSection(title, expanded = true) {
         const section = document.createElement("div");
         section.className = "vnccs-ps-section" + (expanded ? "" : " collapsed");
@@ -8144,7 +8305,7 @@ class PoseStudioWidget {
         else if (this.viewer.updateCaptureCamera) this.viewer.updateCaptureCamera(...args);
     }
 
-    syncCameraWidgets() {
+    syncCameraWidgets({ replaceFocusedNumber = false } = {}) {
         for (const key of ['cam_zoom', 'cam_offset_x', 'cam_offset_y', 'cam_yaw_deg', 'cam_pitch_deg', 'cam_fov_deg', 'cam_distance']) {
             const widget = this.exportWidgets[key];
             if (widget) {
@@ -8153,7 +8314,7 @@ class PoseStudioWidget {
                     widget._vnccsValueSpan.innerText = Number(this.exportParams[key] || 0).toFixed(2);
                 }
                 const numberInput = widget._vnccsNumberInput;
-                if (numberInput && document.activeElement !== numberInput) {
+                if (numberInput && (replaceFocusedNumber || document.activeElement !== numberInput)) {
                     numberInput.value = String(Number(Number(this.exportParams[key] || 0).toFixed(2)));
                 }
             }
@@ -8237,23 +8398,35 @@ class PoseStudioWidget {
     }
 
     createCaptureLensControls(section) {
-        const fovField = this.createSliderField("FOV", "cam_fov_deg", MIN_CAPTURE_FOV_DEG, MAX_CAPTURE_FOV_DEG, 1, DEFAULT_CAPTURE_FOV_DEG, this.exportParams, true);
-        const distanceField = this.createSliderField("Distance", "cam_distance", MIN_CAPTURE_DISTANCE, MAX_CAPTURE_DISTANCE, 0.5, DEFAULT_CAPTURE_DISTANCE, this.exportParams, true);
-        for (const [field, key, min, max, step] of [
-            [fovField, "cam_fov_deg", MIN_CAPTURE_FOV_DEG, MAX_CAPTURE_FOV_DEG, 1],
-            [distanceField, "cam_distance", MIN_CAPTURE_DISTANCE, MAX_CAPTURE_DISTANCE, 0.1],
-        ]) {
+        const fields = [
+            ["FOV", "cam_fov_deg", MIN_CAPTURE_FOV_DEG, MAX_CAPTURE_FOV_DEG, DEFAULT_CAPTURE_FOV_DEG],
+            ["Distance", "cam_distance", MIN_CAPTURE_DISTANCE, MAX_CAPTURE_DISTANCE, DEFAULT_CAPTURE_DISTANCE],
+        ];
+        // Slider and number field share one step, so both accept the same values.
+        const step = CAPTURE_LENS_STEP;
+        const formatLensValue = key => String(Number(Number(this.exportParams[key] || 0).toFixed(2)));
+        const syncLensValues = () => {
+            // Maintain Subject Size edits Distance while FOV moves, so both pairs follow.
+            for (const [, key] of fields) {
+                const slider = this.exportWidgets[key];
+                slider.value = String(this.exportParams[key]);
+                const input = slider._vnccsNumberInput;
+                if (input && document.activeElement !== input) input.value = formatLensValue(key);
+            }
+        };
+        for (const [label, key, min, max, defaultValue] of fields) {
+            const field = this.createSliderField(label, key, min, max, step, defaultValue, this.exportParams, true);
             // Exact numeric entry drives the paired slider, so both share one update path.
             const slider = this.exportWidgets[key];
             const input = document.createElement("input");
             input.type = "number";
-            input.className = "vnccs-ps-input";
+            input.className = "vnccs-ps-input vnccs-ps-value-input";
             input.min = min;
             input.max = max;
             input.step = step;
-            input.value = String(this.exportParams[key]);
+            input.value = formatLensValue(key);
             input.title = key === "cam_fov_deg" ? "Vertical field of view in degrees" : "Capture camera distance";
-            this.trackPoseGesture(input, { recordPose: true });
+            // The slider's gesture tracking records one undo step for the whole numeric edit.
             input.addEventListener("input", () => {
                 if (input.value === "" || !Number.isFinite(Number(input.value))) return;
                 slider.value = String(Math.max(min, Math.min(max, Number(input.value))));
@@ -8261,10 +8434,13 @@ class PoseStudioWidget {
             });
             input.addEventListener("change", () => {
                 slider.dispatchEvent(new Event("change"));
-                input.value = String(Number(Number(this.exportParams[key]).toFixed(2)));
+                input.value = formatLensValue(key);
             });
             slider._vnccsNumberInput = input;
-            field.appendChild(input);
+            // The number field replaces the read-only value beside the label.
+            slider._vnccsValueSpan.replaceWith(input);
+            slider._vnccsValueSpan = null;
+            slider.addEventListener("input", syncLensValues);
             section.content.appendChild(field);
         }
 
@@ -9773,6 +9949,9 @@ class PoseStudioWidget {
             if (character && context?.transform) character.transform = { ...context.transform };
             this.persistActivePoseCameraParams();
             this.applyCameraToViewer(false);
+            this.viewer.restoreEditorLens?.();
+            // Undo ends a numeric edit, so a field that kept the focus shows the restored value too.
+            this.syncCameraWidgets({ replaceFocusedNumber: true });
         }
         if (context?.prompt !== undefined) this.setPosePrompt(this.activeTab, context.prompt);
         if (context && "cropGuide" in context) this.setCropGuide(this.activeTab, context.cropGuide, { sync: false });
@@ -10552,6 +10731,30 @@ class PoseStudioWidget {
         }
     }
 
+    async applySAM3DPoseForCapture(poseData, assertCurrent, signal = null) {
+        const fitData = await this.prepareSAM3DRenderFit(poseData, { signal });
+        assertCurrent();
+        const poseForImport = fitData?.poseData || poseData;
+
+        const ok = this.viewer.applySAM3DImport(
+            poseForImport,
+            this._shoulderYOffset || 0
+        );
+        if (!ok) {
+            throw new Error("Failed to apply SAM 3D Body pose to Pose Studio.");
+        }
+        this._lastSAM3DPoseData = poseForImport;
+        this._lastSAM3DMeshData = fitData?.meshData || null;
+        if (fitData?.meshData) {
+            this.applySAM3DMeshOverlayFit(fitData.meshData, poseForImport);
+        } else {
+            await this.refreshSAMMeshOverlay(poseForImport);
+            assertCurrent();
+        }
+        this.syncMeshProportionSlidersFromViewer();
+        this.applySAM3DFrameCameraParams(poseForImport, fitData?.meshData || null);
+    }
+
     async applySAM3DProportionsToPoseManager(poseData) {
         if (!this.viewer?.isInitialized?.()) {
             throw new Error("Pose viewer is not ready.");
@@ -10687,6 +10890,10 @@ class PoseStudioWidget {
             yaw_deg: Number(this.exportParams.cam_yaw_deg) || 0,
             pitch_deg: Number(this.exportParams.cam_pitch_deg) || 0,
         };
+        // The fit measures through the regular front camera with the current FOV and
+        // Distance, and the result only holds for that same lens.
+        const previousLens = this.currentCaptureLens();
+        const fitLens = { ...previousLens, view: null };
         const neutralTransform = { x: 0, y: 0, z: 0, zoom: 1 };
         this.viewer.setActiveCharacterAppearance({
             color: character.color,
@@ -10694,6 +10901,7 @@ class PoseStudioWidget {
         });
         this.exportParams.cam_yaw_deg = 0;
         this.exportParams.cam_pitch_deg = 0;
+        this.setExportCaptureLens(fitLens);
         this.applyCameraToViewer(true);
 
         const framing = this.viewer?.fitSAM3DToStandardCamera?.(
@@ -10706,6 +10914,7 @@ class PoseStudioWidget {
         if (!framing) {
             this.exportParams.cam_yaw_deg = previousAngles.yaw_deg;
             this.exportParams.cam_pitch_deg = previousAngles.pitch_deg;
+            this.setExportCaptureLens(previousLens);
             this.viewer.setActiveCharacterAppearance({
                 color: character.color,
                 transform: previousTransform,
@@ -10747,6 +10956,7 @@ class PoseStudioWidget {
         this.applyLibraryPoseTransform(transform, {
             yaw_deg: 0,
             pitch_deg: 0,
+            ...fitLens,
         });
         this.updateRotationSliders();
         return true;
@@ -12320,56 +12530,60 @@ class PoseStudioWidget {
     }
 
     async publishLocalPoseRepository(forceConfigure = false) {
-        this.showMessage("Remote publishing is disabled by the VNCCS security policy.", true);
-        return;
-
-        const repo = this.localPoseRepository || {};
-        if (forceConfigure || !repo.publish_repo_id || !repo.publishing_enabled) {
-            this.showPublishLocalRepositoryModal(forceConfigure);
-            return;
-        }
-        await this.runLocalPoseRepositoryPublish({
-            repo_id: repo.publish_repo_id,
-            create: false,
-        });
+        if (this._localPoseRepositoryPublishActive) return;
+        this.showPublishLocalRepositoryModal(forceConfigure);
     }
 
     showPublishLocalRepositoryModal(forceConfigure = false) {
         const current = this.localPoseRepository || {};
         const overlay = document.createElement('div');
-        overlay.className = 'vnccs-ps-modal-overlay';
+        overlay.className = 'vnccs-ps-modal-overlay vnccs-ps-publish-overlay';
 
         const modal = document.createElement('div');
-        modal.className = 'vnccs-ps-modal';
-        modal.style.maxWidth = "420px";
+        modal.className = 'vnccs-ps-modal vnccs-ps-publish-modal';
+        modal.setAttribute('role', 'dialog');
+        modal.setAttribute('aria-modal', 'true');
+        modal.setAttribute('aria-label', 'Publish Local Pose Repository');
         modal.innerHTML = `
             <div class="vnccs-ps-modal-title">Publish Local Pose Repository</div>
             <div class="vnccs-ps-modal-content">
-                <label class="vnccs-ps-library-field">
+                <label class="vnccs-ps-publish-field">
                     <span>Target</span>
                     <select class="vnccs-ps-input vnccs-ps-publish-mode">
                         <option value="create">Create new repository</option>
                         <option value="existing">Use existing repository</option>
                     </select>
                 </label>
-                <label class="vnccs-ps-library-field">
+                <label class="vnccs-ps-publish-field">
                     <span>Hugging Face repo</span>
                     <input class="vnccs-ps-input vnccs-ps-publish-repo" type="text" placeholder="owner/repository" value="${this.escapeHtml(current.publish_repo_id || "")}">
                 </label>
-                <label class="vnccs-ps-library-field vnccs-ps-publish-private-row">
+                <div class="vnccs-ps-publish-field vnccs-ps-publish-private-row">
                     <span>Visibility</span>
-                    <label style="display:flex;align-items:center;gap:8px;color:var(--ps-text-muted);font-size:12px;">
+                    <label class="vnccs-ps-publish-check">
                         <input class="vnccs-ps-publish-private" type="checkbox"> Private repository
                     </label>
+                </div>
+                <label class="vnccs-ps-publish-field">
+                    <span>Hugging Face write token</span>
+                    <input class="vnccs-ps-input vnccs-ps-publish-token" type="password" autocomplete="off" placeholder="Write access to this repository">
                 </label>
-                <p class="vnccs-ps-library-field">Remote publishing is disabled by the VNCCS security policy.</p>
+                <p class="vnccs-ps-publish-help">The token is used for this publish only and is not saved.</p>
             </div>
-            <button class="vnccs-ps-modal-btn primary" style="justify-content:center;">Publish</button>
-            <button class="vnccs-ps-modal-btn cancel">Cancel</button>
+            <div class="vnccs-ps-publish-actions">
+                <button class="vnccs-ps-modal-btn cancel">Cancel</button>
+                <button class="vnccs-ps-modal-btn primary">Publish</button>
+            </div>
         `;
 
         const modeEl = modal.querySelector('.vnccs-ps-publish-mode');
         const repoEl = modal.querySelector('.vnccs-ps-publish-repo');
+        for (const input of [repoEl, modal.querySelector('.vnccs-ps-publish-token')]) {
+            input.addEventListener('input', () => {
+                input.setCustomValidity("");
+                input.style.borderColor = "";
+            });
+        }
         const privateRow = modal.querySelector('.vnccs-ps-publish-private-row');
         let previousMode = current.publish_repo_id ? "existing" : "create";
         let existingRepoDraft = current.publish_repo_id || "";
@@ -12387,17 +12601,30 @@ class PoseStudioWidget {
         syncMode();
 
         modal.querySelector('.vnccs-ps-modal-btn.primary').onclick = async () => {
-            const repoId = modal.querySelector('.vnccs-ps-publish-repo').value.trim();
+            const repoId = this.normalizePoseRepositoryInput(repoEl.value);
+            const tokenInput = modal.querySelector('.vnccs-ps-publish-token');
+            const token = tokenInput.value.trim();
             if (!repoId) {
                 const repoInput = modal.querySelector('.vnccs-ps-publish-repo');
                 repoInput.style.borderColor = "rgba(255,71,87,0.7)";
-                repoInput.placeholder = "Repository id is required";
+                repoInput.setCustomValidity("Enter owner/repository or a Hugging Face repository URL.");
+                repoInput.reportValidity();
                 repoInput.focus();
                 return;
             }
+            repoEl.setCustomValidity("");
+            if (!token) {
+                tokenInput.setCustomValidity("A Hugging Face write token is required.");
+                tokenInput.reportValidity();
+                tokenInput.focus();
+                return;
+            }
+            tokenInput.setCustomValidity("");
+            tokenInput.value = "";
             overlay.remove();
             await this.runLocalPoseRepositoryPublish({
                 repo_id: repoId,
+                token,
                 create: modeEl.value === "create",
                 private: modal.querySelector('.vnccs-ps-publish-private').checked,
             });
@@ -12462,13 +12689,16 @@ class PoseStudioWidget {
 
     normalizePoseRepositoryInput(value) {
         const raw = String(value || "").trim();
-        if (!/^https?:\/\//i.test(raw)) return raw.replace(/^\/+|\/+$/g, "");
+        if (!/^https?:\/\//i.test(raw)) {
+            const repo = raw.replace(/^\/+|\/+$/g, "");
+            return /^[\w.-]+\/[\w.-]+$/.test(repo) ? repo : "";
+        }
         try {
             const url = new URL(raw);
             if (!['huggingface.co', 'www.huggingface.co'].includes(url.hostname.toLowerCase())) return "";
             const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
             if (parts.length < 2 || parts[0] === 'datasets' || parts[0] === 'spaces') return "";
-            return `${parts[0]}/${parts[1]}`;
+            return this.normalizePoseRepositoryInput(`${parts[0]}/${parts[1]}`);
         } catch (_err) {
             return "";
         }
@@ -12477,7 +12707,11 @@ class PoseStudioWidget {
     async addPoseRepository() {
         const input = this.librarySettingsEl?.querySelector('.vnccs-ps-library-repo-input');
         const repoId = this.normalizePoseRepositoryInput(input?.value);
-        if (!repoId) return;
+        if (!repoId) {
+            this.showRepositoryNotice("Enter owner/repository or a Hugging Face model repository URL.", true);
+            input?.focus();
+            return;
+        }
         const previousRepositories = [...(this.poseRepositories || [])];
         const taskId = this.createRepositoryTaskId("repo-add");
         const progressKey = `repo:${repoId}`;
@@ -12848,6 +13082,7 @@ class PoseStudioWidget {
         }
         if (!this.libraryGrid) return;
 
+        const scrollTop = this.libraryGrid.scrollTop;
         this.renderLibraryCategories();
         this.libraryGrid.innerHTML = '';
         const filtered = this.getFilteredLibraryPoses();
@@ -12926,6 +13161,7 @@ class PoseStudioWidget {
 
         const selected = (this.libraryPoses || []).find(pose => this.getLibraryPoseId(pose) === this.librarySelectedName) || null;
         this.renderLibraryInspector(selected);
+        this.libraryGrid.scrollTop = scrollTop;
     }
 
     selectLibraryPose(pose) {
@@ -13347,6 +13583,93 @@ class PoseStudioWidget {
         return result;
     }
 
+    buildLibraryAsset(prompt = this.getPosePrompt(this.activeTab)) {
+        const animationMode = this.isAnimationMode();
+        const savePrompt = String(prompt ?? "");
+        let assetData;
+        this.captureActiveCharacterRuntime();
+        this.syncSharedTimelineFromActive();
+        const savedSAMProjection = (
+            !animationMode
+            && this._samCameraModeActive
+            && this._samCamDisplayActive
+        )
+            ? normalizeSAMProjectionFrame(this._samCamStoredProjectionFrame)
+            : null;
+        const scenePrompts = [...this.posePrompts];
+        while (scenePrompts.length <= this.activeTab) scenePrompts.push("");
+        scenePrompts[this.activeTab] = savePrompt;
+        const sceneCharacters = this.characters.map(character => {
+            this.ensureCharacterRuntime(character);
+            const animationSnapshot = JSON.parse(serializeAnimationStateSnapshot(character.animationState));
+            if (animationSnapshot.basePose) this.stripSceneCameraFromPose(animationSnapshot.basePose);
+            if (character.id === this.activeCharacterId) {
+                animationSnapshot.basePose = animationSnapshot.basePose || {};
+                animationSnapshot.basePose.prompt = savePrompt;
+            }
+            const serialized = serializePoseStudioCharacter(character, animationSnapshot);
+            if (character.id === this.activeCharacterId) {
+                serialized.poses[this.activeTab] = serialized.poses[this.activeTab] || {};
+                serialized.poses[this.activeTab].prompt = savePrompt;
+            }
+            // A library pose is one point on the pose axis, even when the
+            // scene contains several characters. Pose sets are exported
+            // separately with the explicit `type: "pose_set"` format.
+            if (!animationMode) {
+                const selectedPose = serialized.poses[this.activeTab]
+                    || serialized.poses[0]
+                    || {};
+                if (character.id === this.activeCharacterId && savedSAMProjection) {
+                    selectedPose.sam_projection = JSON.parse(JSON.stringify(savedSAMProjection));
+                }
+                serialized.poses = [selectedPose];
+            }
+            return serialized;
+        });
+        const sceneBase = {
+            type: animationMode ? "pose_animation" : "scene_pose",
+            schema_version: 3,
+            active_character_id: this.activeCharacterId,
+            characters: sceneCharacters,
+            timeline: { ...this.sharedTimeline },
+            activeTab: animationMode ? this.activeTab : 0,
+            pose_prompts: animationMode ? scenePrompts : [savePrompt],
+            ...(animationMode
+                ? { crop_guides: this.cropGuides.map(guide => ({ ...guide })) }
+                : { crop_guide: { ...this.getCropGuide() } }),
+            camera: {
+                yaw_deg: this.exportParams.cam_yaw_deg || 0,
+                pitch_deg: this.exportParams.cam_pitch_deg || 0,
+                ...this.currentCaptureLens(),
+            },
+            prompt: savePrompt,
+        };
+        if (animationMode) {
+            this.ensureAnimationInitialized();
+            if (!this._applyingAnimationPose) this.captureAnimationEdits();
+            this.commitAnimationHistory();
+            const snapshot = JSON.parse(serializeAnimationStateSnapshot(this.animationState));
+            snapshot.basePose = snapshot.basePose || {};
+            snapshot.basePose.prompt = savePrompt;
+            this.stripSceneCameraFromPose(snapshot.basePose);
+            assetData = {
+                ...sceneBase,
+                animation: snapshot,
+                prompt: snapshot.basePose.prompt,
+            };
+        } else {
+            const pose = this.stripSceneCameraFromPose(this.viewer.getPose());
+            pose.cameraParams = this.currentCameraParams();
+            if (savedSAMProjection) {
+                pose.sam_projection = JSON.parse(JSON.stringify(savedSAMProjection));
+            }
+            pose.prompt = savePrompt;
+            assetData = { ...pose, ...sceneBase, prompt: pose.prompt };
+        }
+
+        return assetData;
+    }
+
     async saveToLibrary(name, includePreview = true, metadata = {}) {
         if (!this.viewer) return false;
 
@@ -13358,88 +13681,9 @@ class PoseStudioWidget {
             if (animationMode && (this._animationCacheRestorePending || this._deferredAnimationReference)) {
                 throw new Error("Animation tracks are not loaded. Restore the animation before saving it.");
             }
-            this.captureActiveCharacterRuntime();
-            this.syncSharedTimelineFromActive();
-            const savedSAMProjection = (
-                !animationMode
-                && this._samCameraModeActive
-                && this._samCamDisplayActive
-            )
-                ? normalizeSAMProjectionFrame(this._samCamStoredProjectionFrame)
-                : null;
-            const savePrompt = String(metadata.prompt ?? this.getPosePrompt(this.activeTab) ?? "");
-            const scenePrompts = [...this.posePrompts];
-            while (scenePrompts.length <= this.activeTab) scenePrompts.push("");
-            scenePrompts[this.activeTab] = savePrompt;
-            const sceneCharacters = this.characters.map(character => {
-                this.ensureCharacterRuntime(character);
-                const animationSnapshot = JSON.parse(serializeAnimationStateSnapshot(character.animationState));
-                if (animationSnapshot.basePose) this.stripSceneCameraFromPose(animationSnapshot.basePose);
-                if (character.id === this.activeCharacterId) {
-                    animationSnapshot.basePose = animationSnapshot.basePose || {};
-                    animationSnapshot.basePose.prompt = savePrompt;
-                }
-                const serialized = serializePoseStudioCharacter(character, animationSnapshot);
-                if (character.id === this.activeCharacterId) {
-                    serialized.poses[this.activeTab] = serialized.poses[this.activeTab] || {};
-                    serialized.poses[this.activeTab].prompt = savePrompt;
-                }
-                // A library pose is one point on the pose axis, even when the
-                // scene contains several characters. Pose sets are exported
-                // separately with the explicit `type: "pose_set"` format.
-                if (!animationMode) {
-                    const selectedPose = serialized.poses[this.activeTab]
-                        || serialized.poses[0]
-                        || {};
-                    if (character.id === this.activeCharacterId && savedSAMProjection) {
-                        selectedPose.sam_projection = JSON.parse(JSON.stringify(savedSAMProjection));
-                    }
-                    serialized.poses = [selectedPose];
-                }
-                return serialized;
-            });
-            const sceneBase = {
-                type: animationMode ? "pose_animation" : "scene_pose",
-                schema_version: 3,
-                active_character_id: this.activeCharacterId,
-                characters: sceneCharacters,
-                timeline: { ...this.sharedTimeline },
-                activeTab: animationMode ? this.activeTab : 0,
-                pose_prompts: animationMode ? scenePrompts : [savePrompt],
-                ...(animationMode
-                    ? { crop_guides: this.cropGuides.map(guide => ({ ...guide })) }
-                    : { crop_guide: { ...this.getCropGuide() } }),
-                camera: {
-                    yaw_deg: this.exportParams.cam_yaw_deg || 0,
-                    pitch_deg: this.exportParams.cam_pitch_deg || 0,
-                    ...this.currentCaptureLens(),
-                },
-                prompt: savePrompt,
-            };
-            if (animationMode) {
-                this.ensureAnimationInitialized();
-                if (!this._applyingAnimationPose) this.captureAnimationEdits();
-                this.commitAnimationHistory();
-                const snapshot = JSON.parse(serializeAnimationStateSnapshot(this.animationState));
-                snapshot.basePose = snapshot.basePose || {};
-                snapshot.basePose.prompt = savePrompt;
-                this.stripSceneCameraFromPose(snapshot.basePose);
-                assetData = {
-                    ...sceneBase,
-                    animation: snapshot,
-                    prompt: snapshot.basePose.prompt,
-                };
-                if (metadata.previewFile) {
-                    preview = await this.readLibraryFileAsDataUrl(metadata.previewFile, 40 * 1024 * 1024);
-                }
-            } else {
-                const pose = this.stripSceneCameraFromPose(this.viewer.getPose());
-                pose.cameraParams = this.currentCameraParams();
-                if (savedSAMProjection) {
-                    pose.sam_projection = JSON.parse(JSON.stringify(savedSAMProjection));
-                }
-                pose.prompt = savePrompt;
-                assetData = { ...pose, ...sceneBase, prompt: pose.prompt };
+            assetData = this.buildLibraryAsset(metadata.prompt ?? this.getPosePrompt(this.activeTab));
+            if (animationMode && metadata.previewFile) {
+                preview = await this.readLibraryFileAsDataUrl(metadata.previewFile, 40 * 1024 * 1024);
             }
 
             if (!animationMode && includePreview) {
@@ -14372,6 +14616,7 @@ class PoseStudioWidget {
         samMeshLabel.appendChild(samMeshText);
         samMeshRow.appendChild(samMeshLabel);
         debugSection.content.appendChild(samMeshRow);
+        content.appendChild(this.createAdditionalOutputsSection().el);
         content.appendChild(debugSection.el);
 
         // Skin Texture Section
@@ -14525,7 +14770,7 @@ class PoseStudioWidget {
         modal.appendChild(okBtn);
         overlay.appendChild(modal);
 
-        this.canvasContainer.appendChild(overlay);
+        (this.libraryModal ? this.container : this.canvasContainer).appendChild(overlay);
     }
 
     showDeleteConfirmModal(poseOrName) {
@@ -14582,9 +14827,14 @@ class PoseStudioWidget {
             const response = await fetch(`/vnccs/pose_library/delete/${encodeURIComponent(name)}${this.getLibraryPoseQuery(poseOrName)}`, { method: 'DELETE' });
             const result = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(result?.error || `HTTP ${response.status}`);
-            if (typeof poseOrName === 'string' && this.librarySelectedName === name) this.librarySelectedName = null;
-            if (typeof poseOrName !== 'string' && this.librarySelectedName === this.getLibraryPoseId(poseOrName)) this.librarySelectedName = null;
-            this.refreshLibrary(false);
+            const deletedId = typeof poseOrName === 'string' ? name : this.getLibraryPoseId(poseOrName);
+            if (this.librarySelectedName === deletedId) {
+                const visible = this.getFilteredLibraryPoses();
+                const index = visible.findIndex(pose => (typeof poseOrName === 'string' ? pose.name : this.getLibraryPoseId(pose)) === deletedId);
+                // Keep the inspector open so deleting a card does not reflow the gallery columns.
+                this.librarySelectedName = this.getLibraryPoseId(visible[index + 1] || visible[index - 1]) || null;
+            }
+            await this.refreshLibrary(false);
         } catch (err) {
             console.error(`Failed to delete ${itemType}:`, err);
             this.showMessage(`Failed to delete ${itemType}: ${err?.message || err}`, true);
@@ -15827,15 +16077,16 @@ class PoseStudioWidget {
         const outputCount = isDebugExecution
             ? 1
             : animationMode ? this.animationState.frameCount : this.poses.length;
-        // Auxiliary passes are rendered only for execution and only when one of
-        // their outputs is linked; ordinary editing never pays for them.
-        const linkedConditioningOutputs = poseConditioningOutputNames(this.node);
+        // Additional outputs are rendered only for execution and only when enabled
+        // and linked; ordinary editing and unused outputs never pay for them.
+        const additionalOutputs = poseAdditionalOutputNames(this.node);
+        const linkedAdditionalOutputs = poseLinkedAdditionalOutputNames(this.node);
         const conditioningPasses = fullCapture && options.executionCapture === true
-            ? poseConditioningPasses(linkedConditioningOutputs)
+            ? poseConditioningPasses(linkedAdditionalOutputs)
             : [];
         if (conditioningPasses.length && animationMode) {
             throw new Error("Pose Studio depth, normal, outline, silhouette, mask and character_id outputs "
-                + "are available in Image mode. Disconnect them or switch to Image mode.");
+                + "are available in Image mode. Turn them off in Settings > Additional Outputs or switch to Image mode.");
         }
         const conditioning = conditioningPasses.length ? [] : null;
 
@@ -16103,10 +16354,13 @@ class PoseStudioWidget {
         delete exportToSave.background_url;
         delete exportToSave.debugPortraitMode;
         delete exportToSave.conditioning_outputs;
-        if (linkedConditioningOutputs.length) exportToSave.conditioning_outputs = linkedConditioningOutputs;
         delete exportToSave.crop_outputs;
-        const linkedCropOutputs = poseCropGuideOutputNames(this.node);
-        if (linkedCropOutputs.length) exportToSave.crop_outputs = linkedCropOutputs;
+        delete exportToSave.additional_outputs;
+        delete exportToSave.linked_additional_outputs;
+        if (additionalOutputs.length) {
+            exportToSave.additional_outputs = additionalOutputs;
+            exportToSave.linked_additional_outputs = linkedAdditionalOutputs;
+        }
         this.ensureCropGuides();
 
         // captured_images are excluded from the widget to avoid inflating workflow size
@@ -16950,27 +17204,7 @@ app.registerExtension({
                     return;
                 }
 
-                const fitData = await widget.prepareSAM3DRenderFit(poseData);
-                assertCurrent();
-                const poseForImport = fitData?.poseData || poseData;
-
-                const ok = widget.viewer.applySAM3DImport(
-                    poseForImport,
-                    widget._shoulderYOffset || 0
-                );
-                if (!ok) {
-                    throw new Error("Failed to apply SAM 3D Body pose to Pose Studio.");
-                }
-                widget._lastSAM3DPoseData = poseForImport;
-                widget._lastSAM3DMeshData = fitData?.meshData || null;
-                if (fitData?.meshData) {
-                    widget.applySAM3DMeshOverlayFit(fitData.meshData, poseForImport);
-                } else {
-                    await widget.refreshSAMMeshOverlay(poseForImport);
-                    assertCurrent();
-                }
-                widget.syncMeshProportionSlidersFromViewer();
-                widget.applySAM3DFrameCameraParams(poseForImport, fitData?.meshData || null);
+                await widget.applySAM3DPoseForCapture(poseData, assertCurrent);
                 widget.setSkydomeFromCameraPrompt(cameraPrompt, { force: true });
 
                 widget.updateTabs();
@@ -17151,8 +17385,7 @@ app.registerExtension({
             hideInternalWidget(this, "pose_data");
             ensureAnimationImageBatchWidget(this);
             hideInternalWidget(this, "animation_image_batch");
-            ensurePoseConditioningOutputs(this);
-            ensurePoseCropGuideOutputs(this);
+            restorePoseAdditionalOutputs(this);
             this.setSize([900, 740]);
 
             // Create widget
@@ -17219,8 +17452,7 @@ app.registerExtension({
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (info) {
             if (onConfigure) onConfigure.apply(this, arguments);
-            ensurePoseConditioningOutputs(this);
-            ensurePoseCropGuideOutputs(this);
+            restorePoseAdditionalOutputs(this, savedPoseAdditionalOutputs(this));
 
             if (this.studioWidget) {
                 syncStudioDOMWidgetWidth(this);
@@ -17238,15 +17470,13 @@ app.registerExtension({
             }
         };
 
-        // crop_preview is only drawn while linked, so record crop output links in
-        // pose_data at once; the changed state re-executes the node on the next run.
+        // Linked additional outputs are saved in pose_data, so a new link re-executes the node.
         const onConnectionsChange = nodeType.prototype.onConnectionsChange;
         nodeType.prototype.onConnectionsChange = function (type, slot) {
             const result = onConnectionsChange?.apply(this, arguments);
-            // type 2 is LiteGraph.OUTPUT; restoring a workflow is guarded by the widget itself.
-            const name = type === 2 ? this.outputs?.[slot]?.name : null;
-            if (name && poseCropGuideOutputNames({ outputs: [{ name, links: [0] }] }).length) {
-                this.studioWidget?.syncToNode(false);
+            // type 2 is LiteGraph.OUTPUT.
+            if (type === 2 && slot >= POSE_BASE_OUTPUT_COUNT) {
+                this.studioWidget?.syncToNode(false, { skipCapture: true });
             }
             return result;
         };

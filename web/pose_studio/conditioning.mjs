@@ -14,14 +14,14 @@ import {
     renderConditioningPasses,
 } from "../shared/conditioning_render.mjs";
 
-/** Node outputs appended after `images` and `lighting_prompt`, in slot order. */
+/** The Conditioning group of Settings > Additional Outputs (additional_outputs.mjs). */
 export const POSE_CONDITIONING_OUTPUTS = Object.freeze([
-    Object.freeze({ name: "depth", type: "IMAGE" }),
-    Object.freeze({ name: "normal", type: "IMAGE" }),
-    Object.freeze({ name: "outline", type: "IMAGE" }),
-    Object.freeze({ name: "silhouette", type: "IMAGE" }),
-    Object.freeze({ name: "mask", type: "MASK" }),
-    Object.freeze({ name: "character_id", type: "IMAGE" }),
+    Object.freeze({ name: "depth", type: "IMAGE", hint: "Camera depth, nearest surface white" }),
+    Object.freeze({ name: "normal", type: "IMAGE", hint: "View-space normal map" }),
+    Object.freeze({ name: "outline", type: "IMAGE", hint: "White contour lines on black" }),
+    Object.freeze({ name: "silhouette", type: "IMAGE", hint: "White characters on black" }),
+    Object.freeze({ name: "mask", type: "MASK", hint: "Character coverage as a MASK" }),
+    Object.freeze({ name: "character_id", type: "IMAGE", hint: "One flat colour per character" }),
 ]);
 
 /**
@@ -47,26 +47,10 @@ const PASS_FOR_OUTPUT = {
     silhouette: "character_id", mask: "character_id", character_id: "character_id",
 };
 
-/** Names of the auxiliary outputs that are linked on a ComfyUI node, in slot order. */
-export function poseConditioningOutputNames(node) {
-    const linked = new Set((node?.outputs || [])
-        .filter(output => Array.isArray(output?.links) && output.links.length > 0)
-        .map(output => output.name));
-    return POSE_CONDITIONING_OUTPUTS.map(output => output.name).filter(name => linked.has(name));
-}
-
 /** Passes the browser must render and upload for the requested outputs. */
 export function poseConditioningPasses(outputNames = []) {
     const needed = new Set(outputNames.map(name => PASS_FOR_OUTPUT[name]).filter(Boolean));
     return PASS_ORDER.filter(pass => needed.has(pass));
-}
-
-/** Workflows saved before these outputs existed only append them; slots 0 and 1 and their links stay. */
-export function ensurePoseConditioningOutputs(node) {
-    if (!Array.isArray(node?.outputs) || typeof node.addOutput !== "function") return;
-    for (const output of POSE_CONDITIONING_OUTPUTS) {
-        if (!node.outputs.some(existing => existing?.name === output.name)) node.addOutput(output.name, output.type);
-    }
 }
 
 export function poseCharacterIdColor(slot) {

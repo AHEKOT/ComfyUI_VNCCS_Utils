@@ -9,16 +9,19 @@ import {
     centerCropGuide,
     cropGuidePixelRect,
     defaultCropGuide,
-    ensurePoseCropGuideOutputs,
     fitCropGuide,
     moveCropGuide,
     normalizeCropGuide,
-    poseCropGuideOutputNames,
     resizeCropGuide,
     setCropGuideAspect,
     setCropGuidePixels,
 } from "../web/pose_studio/crop_guide.mjs";
-import { ensurePoseConditioningOutputs, POSE_CONDITIONING_OUTPUTS } from "../web/pose_studio/conditioning.mjs";
+import {
+    POSE_ADDITIONAL_OUTPUT_GROUPS,
+    poseAdditionalOutputNames,
+    restorePoseAdditionalOutputs,
+} from "../web/pose_studio/additional_outputs.mjs";
+import { POSE_CONDITIONING_OUTPUTS } from "../web/pose_studio/conditioning.mjs";
 import { createScene, Element } from "./helpers/pose_studio_scene.mjs";
 import { createRasterRenderer, topDownOwners } from "./helpers/conditioning_raster.mjs";
 
@@ -179,29 +182,24 @@ test("crop_json carries the source size, the normalized and the pixel rectangle"
     assert.equal(record.enabled, true);
 });
 
-test("legacy 2- and 8-output workflows gain the crop outputs at slots 8..10 without moving links", () => {
-    const makeNode = names => ({
-        outputs: names.map((name, index) => ({ name, links: index < 2 ? [100 + index] : [] })),
-        addOutput(name, type) { this.outputs.push({ name, type, links: [] }); },
-    });
-    const legacy = makeNode(["images", "lighting_prompt"]);
-    ensurePoseConditioningOutputs(legacy);
-    ensurePoseCropGuideOutputs(legacy);
-    const conditioned = makeNode(["images", "lighting_prompt", ...POSE_CONDITIONING_OUTPUTS.map(output => output.name)]);
-    ensurePoseCropGuideOutputs(conditioned);
-    for (const node of [legacy, conditioned]) {
-        assert.deepEqual(node.outputs.map(output => output.name), [
-            "images", "lighting_prompt", "depth", "normal", "outline", "silhouette", "mask", "character_id",
-            "crop_json", "crop_image", "crop_preview",
-        ]);
-        assert.deepEqual(node.outputs[0].links, [100]);
-        assert.deepEqual(node.outputs[1].links, [101]);
-        assert.deepEqual(node.outputs.slice(8).map(output => output.type), POSE_CROP_GUIDE_OUTPUTS.map(output => output.type));
-        ensurePoseCropGuideOutputs(node);
-        assert.equal(node.outputs.length, 11, "idempotent");
-    }
-    conditioned.outputs[10].links = [5];
-    assert.deepEqual(poseCropGuideOutputNames(conditioned), ["crop_preview"]);
+test("the crop outputs are a group of Additional Outputs and a restored workflow keeps its links", () => {
+    const group = POSE_ADDITIONAL_OUTPUT_GROUPS.find(entry => entry.title === "Crop Guide");
+    assert.deepEqual(group.outputs.map(output => output.name), ["crop_json", "crop_image", "crop_preview"]);
+    const links = new Map([[5, { origin_slot: 10 }]]);
+    const names = ["images", "lighting_prompt", ...POSE_CONDITIONING_OUTPUTS.map(output => output.name),
+        ...POSE_CROP_GUIDE_OUTPUTS.map(output => output.name)];
+    const node = {
+        outputs: names.map(name => ({ name, links: name === "crop_preview" ? [5] : null })),
+        removeOutput(slot) {
+            this.outputs.splice(slot, 1);
+            for (const output of this.outputs.slice(slot)) {
+                for (const id of output.links || []) links.get(id).origin_slot--;
+            }
+        },
+    };
+    restorePoseAdditionalOutputs(node, []);
+    assert.deepEqual(poseAdditionalOutputNames(node), ["crop_preview"]);
+    assert.equal(links.get(5).origin_slot, 2);
 });
 
 // --- Editor overlay -------------------------------------------------------------
@@ -547,7 +545,9 @@ test("execution sends one guide per captured image; Debug Mode uses the library 
         { name: "crop_json", links: [2] }, { name: "crop_image", links: [] }, { name: "crop_preview", links: [3] },
     ];
     w.syncToNode(false);
-    same(JSON.parse(scene.node.widgets[0].value).export.crop_outputs, ["crop_json", "crop_preview"]);
+    const saved = JSON.parse(scene.node.widgets[0].value).export;
+    same(saved.additional_outputs, ["crop_json", "crop_image", "crop_preview"]);
+    same(saved.linked_additional_outputs, ["crop_json", "crop_preview"]);
     w.isAnimationMode = () => true;
     assert.equal(w.cropGuidesForCapture(), null, "Animation mode sends no guides");
 });

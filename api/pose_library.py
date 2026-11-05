@@ -213,10 +213,32 @@ async def refresh_pose_repositories(request):
 
 
 async def publish_local_pose_repository(request):
-    return web.json_response(
-        {"error": "Remote publishing is disabled by the VNCCS security policy"},
-        status=403,
-    )
+    try:
+        if not expected_content_length(request, 16384):
+            return web.json_response({"error": "Request body is too large"}, status=413)
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("Request must be an object")
+    except Exception:
+        return web.json_response({"error": "Invalid JSON object"}, status=400)
+    repo_id = library.normalize_repo_id(data.get("repo_id")) if isinstance(data.get("repo_id"), str) else ""
+    token = data.get("token")
+    if not repo_id:
+        return web.json_response({"error": "Repository id is required"}, status=400)
+    if not isinstance(token, str) or not token.strip() or len(token) > 4096:
+        return web.json_response({"error": "A Hugging Face write token is required"}, status=400)
+    if any(type(data.get(key, False)) is not bool for key in ("create", "private")):
+        return web.json_response({"error": "Create and private must be booleans"}, status=400)
+    task_id = str(data.get("task_id") or uuid.uuid4())
+    try:
+        result = await asyncio.to_thread(
+            library.publish_local_repository_to_hf, repo_id, token=token.strip(),
+            create=data.get("create", False), private=data.get("private", False), task_id=task_id,
+        )
+        return web.json_response({"success": True, "task_id": task_id, "result": result,
+                                  "local_repository": library.get_local_repository_info()})
+    except Exception as exc:
+        return web.json_response({"error": str(exc).replace(token.strip(), "[redacted]")}, status=500)
 
 
 async def list_poses(request):

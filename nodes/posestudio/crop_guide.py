@@ -12,7 +12,7 @@ import math
 
 CROP_GUIDE_SCHEMA_VERSION = 1
 CROP_GUIDE_PIXEL_EPSILON = 1e-6
-# Appended after the conditioning outputs; never reorder.
+# The Crop Guide group of Settings > Additional Outputs.
 POSE_CROP_GUIDE_OUTPUTS = ("crop_json", "crop_image", "crop_preview")
 CROP_GUIDE_ASPECT_RATIOS = {
     "free": None, "1:1": 1.0, "4:3": 4 / 3, "3:4": 3 / 4,
@@ -119,22 +119,6 @@ def build_crop_json(guide, width, height, pose_index=0):
     if normalized["aspect_ratio"] == "custom":
         record["custom_aspect_ratio"] = list(normalized["custom_aspect_ratio"])
     return record
-
-
-def unsupported_crop_json(width, height, reason, pose_index=None):
-    """Disabled record for runs whose images do not correspond to the edited capture frame."""
-    record = build_crop_json(None, width, height, pose_index)
-    record["unsupported"] = reason
-    return record
-
-
-def requested_crop_outputs(export):
-    """Linked crop outputs recorded by the widget in ``export.crop_outputs``."""
-    names = export.get("crop_outputs") if isinstance(export, dict) else None
-    if not isinstance(names, list):
-        return ()
-    requested = {name for name in names if isinstance(name, str)}
-    return tuple(name for name in POSE_CROP_GUIDE_OUTPUTS if name in requested)
 
 
 def crop_guide_unsupported_reason(export, editor_mode, output_mode):

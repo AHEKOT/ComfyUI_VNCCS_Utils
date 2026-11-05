@@ -8,7 +8,7 @@
  */
 
 
-import { installCustomSelects } from "../shared/custom_select.mjs";
+import { installCustomSelects } from "../shared/custom_select.mjs?v=20261104-scaled-menu";
 
 export const POSE_ANIMATION_SCHEMA_VERSION = 2;
 export const MODEL_ROTATION_TRACK = "@modelRotation";
@@ -1004,6 +1004,7 @@ export const DEFAULT_CAPTURE_DISTANCE = 45;
 // units tall; this range keeps it in front of the camera and inside the far plane.
 export const MIN_CAPTURE_DISTANCE = 10;
 export const MAX_CAPTURE_DISTANCE = 250;
+export const CAPTURE_LENS_STEP = 0.1;
 
 export function normalizeCaptureLens(source = {}) {
     // null, "" and booleans coerce to finite numbers; treat them as missing.

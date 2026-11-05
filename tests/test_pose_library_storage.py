@@ -431,16 +431,12 @@ def test_large_animation_listing_reads_and_serializes_off_the_event_loop(store, 
 
 
 def test_refresh_reports_asset_failure_as_error(store, tmp_path, monkeypatch):
-    import sys
-    import types
-
-    hub = types.ModuleType("huggingface_hub")
-    hub.HfApi = lambda: SimpleNamespace(repo_info=lambda **kwargs: SimpleNamespace(sha="revision"))
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text('{"poses": [{"json_path": "poses/Standing/Walk.json"}]}')
-    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
-    monkeypatch.setattr(library, "download_hf_file_with_progress", lambda **kwargs: str(manifest))
-    monkeypatch.setattr(library, "download_hf_file", mock.Mock(side_effect=OSError("offline")))
+    repository = mock.MagicMock()
+    repository.__enter__.return_value = repository
+    repository.head.return_value = b"revision"
+    manifest = b'{"poses": [{"json_path": "poses/Standing/Walk.json"}]}'
+    monkeypatch.setattr(library, "clone_pose_repository", mock.Mock(return_value=repository))
+    monkeypatch.setattr(library, "read_git_repository_file", mock.Mock(side_effect=[manifest, OSError("offline")]))
     result = library.refresh_pose_repository({"repo_id": "artist/poses"}, task_id="failed-assets")
     assert result["status"] == "error"
     assert "offline" in result["last_error"]

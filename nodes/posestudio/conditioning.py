@@ -10,7 +10,7 @@ from io import BytesIO
 import numpy as np
 from PIL import Image
 
-# Appended after ``images`` and ``lighting_prompt``; never reorder.
+# The Conditioning group of Settings > Additional Outputs.
 POSE_CONDITIONING_OUTPUTS = ("depth", "normal", "outline", "silhouette", "mask", "character_id")
 POSE_CONDITIONING_PASSES = ("depth", "normal", "outline", "character_id")
 _PASS_FOR_OUTPUT = {
@@ -22,15 +22,6 @@ POSE_CHARACTER_ID_COLORS = ((255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)
 
 _MAX_PASS_BYTES = 32 * 1024 * 1024
 _MAX_TOTAL_CHARS = 64 * 1024 * 1024
-
-
-def requested_conditioning_outputs(export):
-    """Linked auxiliary outputs recorded by the widget in ``export.conditioning_outputs``."""
-    names = export.get("conditioning_outputs") if isinstance(export, dict) else None
-    if not isinstance(names, list):
-        return ()
-    requested = {name for name in names if isinstance(name, str)}
-    return tuple(name for name in POSE_CONDITIONING_OUTPUTS if name in requested)
 
 
 def conditioning_passes(outputs):

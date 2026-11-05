@@ -1,0 +1,984 @@
+{
+  "id": "54bb395d-3e60-4c94-b525-85523901575b",
+  "revision": 0,
+  "last_node_id": 506,
+  "last_link_id": 798,
+  "nodes": [
+    {
+      "id": 470,
+      "type": "LoadImage",
+      "pos": [
+        -1350,
+        3140
+      ],
+      "size": [
+        1190,
+        820
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            786
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.36.0",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "DancersBunny.png",
+        "image"
+      ],
+      "widgets_values_named": {
+        "image": "DancersBunny.png",
+        "upload": "image"
+      }
+    },
+    {
+      "id": 476,
+      "type": "UNETLoader",
+      "pos": [
+        -120,
+        2750
+      ],
+      "size": [
+        510,
+        90
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            783
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.36.0",
+        "Node name for S&R": "UNETLoader",
+        "models": [
+          {
+            "name": "qwen_image_2.1_int8_convrot.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
+            "directory": "diffusion_models"
+          }
+        ]
+      },
+      "widgets_values": [
+        "qwen_image_2.1_int8_convrot.safetensors",
+        "default"
+      ],
+      "widgets_values_named": {
+        "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    {
+      "id": 477,
+      "type": "CLIPLoader",
+      "pos": [
+        -120,
+        2910
+      ],
+      "size": [
+        510,
+        120
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            741
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.36.0",
+        "Node name for S&R": "CLIPLoader",
+        "models": [
+          {
+            "name": "qwen3vl_8b_bf16.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3vl_8b_bf16.safetensors",
+            "directory": "text_encoders"
+          }
+        ]
+      },
+      "widgets_values": [
+        "qwen3vl_8b_int8_convrot.safetensors",
+        "qwen_image",
+        "default"
+      ],
+      "widgets_values_named": {
+        "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+        "type": "qwen_image",
+        "device": "default"
+      }
+    },
+    {
+      "id": 478,
+      "type": "VAELoader",
+      "pos": [
+        -120,
+        3110
+      ],
+      "size": [
+        510,
+        70
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            729,
+            743
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.36.0",
+        "Node name for S&R": "VAELoader",
+        "models": [
+          {
+            "name": "qwen_image_2.1_vae_bf16.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors",
+            "directory": "vae"
+          }
+        ]
+      },
+      "widgets_values": [
+        "qwen_image_2.1_vae_bf16.safetensors"
+      ],
+      "widgets_values_named": {
+        "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+      }
+    },
+    {
+      "id": 479,
+      "type": "EmptyLatentImage",
+      "pos": [
+        70,
+        3350
+      ],
+      "size": [
+        300,
+        120
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          },
+          "link": 793
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          },
+          "link": 794
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            795
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.36.0",
+        "Node name for S&R": "EmptyLatentImage"
+      },
+      "widgets_values": [
+        1024,
+        1024,
+        1
+      ],
+      "widgets_values_named": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      }
+    },
+    {
+      "id": 480,
+      "type": "VAEDecode",
+      "pos": [
+        1690,
+        3000
+      ],
+      "size": [
+        230,
+        60
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 731
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 729
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            797,
+            798
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.36.0",
+        "Node name for S&R": "VAEDecode"
+      }
+    },
+    {
+      "id": 481,
+      "type": "KSampler",
+      "pos": [
+        1250,
+        2980
+      ],
+      "size": [
+        270,
+        270
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 735
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 736
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 737
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 795
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            731
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.36.0",
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        488345170733023,
+        "fixed",
+        25,
+        1,
+        "euler",
+        "simple",
+        1
+      ],
+      "widgets_values_named": {
+        "seed": 488345170733023,
+        "control_after_generate": "fixed",
+        "steps": 25,
+        "cfg": 1,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 1
+      }
+    },
+    {
+      "id": 483,
+      "type": "QwenImage21Cache",
+      "pos": [
+        1250,
+        2800
+      ],
+      "size": [
+        270,
+        90
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 784
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            735
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.36.0",
+        "Node name for S&R": "QwenImage21Cache"
+      },
+      "widgets_values": [
+        "gpu",
+        "int8"
+      ],
+      "widgets_values_named": {
+        "device": "gpu",
+        "dtype": "int8"
+      }
+    },
+    {
+      "id": 484,
+      "type": "TextEncodeQwenImage21",
+      "pos": [
+        570,
+        2890
+      ],
+      "size": [
+        460,
+        290
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 741
+        },
+        {
+          "name": "images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 785
+        },
+        {
+          "name": "images.image_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 786
+        },
+        {
+          "name": "images.image_3",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "images.image_4",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": 743
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          },
+          "link": 791
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": [
+            736
+          ]
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "links": [
+            737
+          ]
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": []
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.36.0",
+        "Node name for S&R": "TextEncodeQwenImage21"
+      },
+      "widgets_values": [
+        "replace the pose of <image 2> with the pose of <image 1>. keep the character of <image 2>",
+        "",
+        1024
+      ],
+      "widgets_values_named": {
+        "prompt": "replace the pose of <image 2> with the pose of <image 1>. keep the character of <image 2>",
+        "negative_prompt": "",
+        "resolution": 1024
+      }
+    },
+    {
+      "id": 488,
+      "type": "VNCCS_PoseStudio",
+      "pos": [
+        -1360,
+        2160
+      ],
+      "size": [
+        1200,
+        940
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pose_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "images",
+          "name": "images",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": [
+            785,
+            792,
+            796
+          ]
+        },
+        {
+          "name": "lighting_prompt",
+          "shape": 6,
+          "type": "STRING",
+          "links": [
+            791
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs-utils",
+        "ver": "0.7.0",
+        "Node name for S&R": "VNCCS_PoseStudio"
+      },
+      "widgets_values": [
+        "{\"schema_version\":3,\"active_character_id\":\"character-1\",\"characters\":[{\"id\":\"character-1\",\"slot\":0,\"name\":\"Main Character\",\"color\":\"#ffffff\",\"transform\":{\"x\":0.0027268292087311214,\"y\":0.7873186007067478,\"z\":-0.49175172497270364,\"zoom\":1.4902677613961948},\"mesh\":{\"age\":25,\"gender\":0.5,\"weight\":0.5,\"muscle\":0.5,\"height\":0.5,\"breast_size\":0.5,\"firmness\":0.5,\"show_genitals\":false,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"shoulder_l_length\":0.5,\"shoulder_r_length\":0.5,\"hip_l_length\":0.5,\"hip_r_length\":0.5,\"upper_arm_l_length\":0.5,\"upper_arm_r_length\":0.5,\"forearm_l_length\":0.5,\"forearm_r_length\":0.5,\"thigh_l_length\":0.5,\"thigh_r_length\":0.5,\"shin_l_length\":0.5,\"shin_r_length\":0.5,\"spine_length\":0.5},\"poses\":[{\"bones\":{},\"bonePositions\":{\"Root\":[0,-8.178140640258789,-0.2576471269130707]},\"modelRotation\":[0,0,0],\"ikEffectorPositions\":{\"pelvis\":[0.0027268292087311214,-0.30433746835154274,-0.35130032696965374],\"hand_l\":[5.553345914587382,1.193521749149531,1.8244779370673572],\"hand_r\":[-5.547892256169918,1.193521749149531,1.8244779370673572],\"foot_l\":[2.2416275397811853,-10.545230451892476,-0.40263370323014275],\"foot_r\":[-2.2361738813637233,-10.545230451892476,-0.40263370323014275],\"head\":[0.0027268292087311214,7.432051772581943,0.0978820851357981],\"upperarm_l\":[1.9995391148697972,4.931669952538992,-0.27525705577095777],\"upperarm_r\":[-1.994085456452335,4.931669952538992,-0.27525705577095777]},\"poleTargetPositions\":{\"leftArm\":[-0.7928059016203156,1.5172658532587624,1.5420021994161195],\"rightArm\":[-1.1354046825243163,1.137988359364977,-2.048983653283038],\"leftLeg\":[-2.727117345359623,1.2087599608282356,1.386152351465362],\"rightLeg\":[-3.1143529484973276,0.970284373766858,0.012294249154028034]},\"hipBonePosition\":{\"hips\":[0,7.445617198944092,0.3518928736448288]},\"cameraParams\":{\"offset_x\":0.0027268292087311214,\"offset_y\":0.7873186007067478,\"zoom\":1.4902677613961948,\"yaw_deg\":0,\"pitch_deg\":0},\"prompt\":\"\"}],\"animation\":null}],\"timeline\":{\"fps\":12,\"duration\":2,\"frameCount\":24,\"currentFrame\":0,\"loop\":true},\"pose_prompts\":[\"\"],\"mesh\":{\"age\":25,\"gender\":0.5,\"weight\":0.5,\"muscle\":0.5,\"height\":0.5,\"breast_size\":0.5,\"firmness\":0.5,\"show_genitals\":false,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"shoulder_l_length\":0.5,\"shoulder_r_length\":0.5,\"hip_l_length\":0.5,\"hip_r_length\":0.5,\"upper_arm_l_length\":0.5,\"upper_arm_r_length\":0.5,\"forearm_l_length\":0.5,\"forearm_r_length\":0.5,\"thigh_l_length\":0.5,\"thigh_r_length\":0.5,\"shin_l_length\":0.5,\"shin_r_length\":0.5,\"spine_length\":0.5},\"export\":{\"view_width\":1024,\"view_height\":1024,\"cam_zoom\":1.4902677613961948,\"cam_offset_x\":0.0027268292087311214,\"cam_offset_y\":0.7873186007067478,\"cam_yaw_deg\":0,\"cam_pitch_deg\":0,\"output_mode\":\"LIST\",\"grid_columns\":2,\"bg_color\":[255,255,255],\"debugMode\":false,\"debugKeepLighting\":false,\"debugShowSAMHelper\":false,\"debugShowSAMMeshOverlay\":false,\"samApplyCamera\":false,\"keepOriginalLighting\":true,\"user_prompt\":\"\",\"prompt_template\":\"Draw character from image2\\n<lighting>\\n<user_prompt>\",\"skin_type\":\"naked\",\"interface_mode\":\"studio\",\"manager_auto_analyze_proportions\":true,\"capture_image_size\":false,\"editor_mode\":\"image\",\"animation_image_batch\":false,\"hand_controls_v2\":true,\"directional_skydome_enabled\":false},\"poses\":[{\"bones\":{},\"bonePositions\":{\"Root\":[0,-8.178140640258789,-0.2576471269130707]},\"modelRotation\":[0,0,0],\"ikEffectorPositions\":{\"pelvis\":[0.0027268292087311214,-0.30433746835154274,-0.35130032696965374],\"hand_l\":[5.553345914587382,1.193521749149531,1.8244779370673572],\"hand_r\":[-5.547892256169918,1.193521749149531,1.8244779370673572],\"foot_l\":[2.2416275397811853,-10.545230451892476,-0.40263370323014275],\"foot_r\":[-2.2361738813637233,-10.545230451892476,-0.40263370323014275],\"head\":[0.0027268292087311214,7.432051772581943,0.0978820851357981],\"upperarm_l\":[1.9995391148697972,4.931669952538992,-0.27525705577095777],\"upperarm_r\":[-1.994085456452335,4.931669952538992,-0.27525705577095777]},\"poleTargetPositions\":{\"leftArm\":[-0.7928059016203156,1.5172658532587624,1.5420021994161195],\"rightArm\":[-1.1354046825243163,1.137988359364977,-2.048983653283038],\"leftLeg\":[-2.727117345359623,1.2087599608282356,1.386152351465362],\"rightLeg\":[-3.1143529484973276,0.970284373766858,0.012294249154028034]},\"hipBonePosition\":{\"hips\":[0,7.445617198944092,0.3518928736448288]},\"cameraParams\":{\"offset_x\":0.0027268292087311214,\"offset_y\":0.7873186007067478,\"zoom\":1.4902677613961948,\"yaw_deg\":0,\"pitch_deg\":0},\"prompt\":\"\"}],\"lights\":[{\"type\":\"directional\",\"color\":\"#ffffff\",\"intensity\":2,\"x\":10,\"y\":20,\"z\":30},{\"type\":\"ambient\",\"color\":\"#505050\",\"intensity\":1,\"x\":0,\"y\":0,\"z\":0}],\"activeTab\":0,\"capture_id\":\"vnccs_capture_488\",\"lighting_prompts\":[\"\"],\"background_url\":null}",
+        "",
+        ""
+      ],
+      "widgets_values_named": {
+        "pose_data": "{\"schema_version\":3,\"active_character_id\":\"character-1\",\"characters\":[{\"id\":\"character-1\",\"slot\":0,\"name\":\"Main Character\",\"color\":\"#ffffff\",\"transform\":{\"x\":0.0027268292087311214,\"y\":0.7873186007067478,\"z\":-0.49175172497270364,\"zoom\":1.4902677613961948},\"mesh\":{\"age\":25,\"gender\":0.5,\"weight\":0.5,\"muscle\":0.5,\"height\":0.5,\"breast_size\":0.5,\"firmness\":0.5,\"show_genitals\":false,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"shoulder_l_length\":0.5,\"shoulder_r_length\":0.5,\"hip_l_length\":0.5,\"hip_r_length\":0.5,\"upper_arm_l_length\":0.5,\"upper_arm_r_length\":0.5,\"forearm_l_length\":0.5,\"forearm_r_length\":0.5,\"thigh_l_length\":0.5,\"thigh_r_length\":0.5,\"shin_l_length\":0.5,\"shin_r_length\":0.5,\"spine_length\":0.5},\"poses\":[{\"bones\":{},\"bonePositions\":{\"Root\":[0,-8.178140640258789,-0.2576471269130707]},\"modelRotation\":[0,0,0],\"ikEffectorPositions\":{\"pelvis\":[0.0027268292087311214,-0.30433746835154274,-0.35130032696965374],\"hand_l\":[5.553345914587382,1.193521749149531,1.8244779370673572],\"hand_r\":[-5.547892256169918,1.193521749149531,1.8244779370673572],\"foot_l\":[2.2416275397811853,-10.545230451892476,-0.40263370323014275],\"foot_r\":[-2.2361738813637233,-10.545230451892476,-0.40263370323014275],\"head\":[0.0027268292087311214,7.432051772581943,0.0978820851357981],\"upperarm_l\":[1.9995391148697972,4.931669952538992,-0.27525705577095777],\"upperarm_r\":[-1.994085456452335,4.931669952538992,-0.27525705577095777]},\"poleTargetPositions\":{\"leftArm\":[-0.7928059016203156,1.5172658532587624,1.5420021994161195],\"rightArm\":[-1.1354046825243163,1.137988359364977,-2.048983653283038],\"leftLeg\":[-2.727117345359623,1.2087599608282356,1.386152351465362],\"rightLeg\":[-3.1143529484973276,0.970284373766858,0.012294249154028034]},\"hipBonePosition\":{\"hips\":[0,7.445617198944092,0.3518928736448288]},\"cameraParams\":{\"offset_x\":0.0027268292087311214,\"offset_y\":0.7873186007067478,\"zoom\":1.4902677613961948,\"yaw_deg\":0,\"pitch_deg\":0},\"prompt\":\"\"}],\"animation\":null}],\"timeline\":{\"fps\":12,\"duration\":2,\"frameCount\":24,\"currentFrame\":0,\"loop\":true},\"pose_prompts\":[\"\"],\"mesh\":{\"age\":25,\"gender\":0.5,\"weight\":0.5,\"muscle\":0.5,\"height\":0.5,\"breast_size\":0.5,\"firmness\":0.5,\"show_genitals\":false,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"shoulder_l_length\":0.5,\"shoulder_r_length\":0.5,\"hip_l_length\":0.5,\"hip_r_length\":0.5,\"upper_arm_l_length\":0.5,\"upper_arm_r_length\":0.5,\"forearm_l_length\":0.5,\"forearm_r_length\":0.5,\"thigh_l_length\":0.5,\"thigh_r_length\":0.5,\"shin_l_length\":0.5,\"shin_r_length\":0.5,\"spine_length\":0.5},\"export\":{\"view_width\":1024,\"view_height\":1024,\"cam_zoom\":1.4902677613961948,\"cam_offset_x\":0.0027268292087311214,\"cam_offset_y\":0.7873186007067478,\"cam_yaw_deg\":0,\"cam_pitch_deg\":0,\"output_mode\":\"LIST\",\"grid_columns\":2,\"bg_color\":[255,255,255],\"debugMode\":false,\"debugKeepLighting\":false,\"debugShowSAMHelper\":false,\"debugShowSAMMeshOverlay\":false,\"samApplyCamera\":false,\"keepOriginalLighting\":true,\"user_prompt\":\"\",\"prompt_template\":\"Draw character from image2\\n<lighting>\\n<user_prompt>\",\"skin_type\":\"naked\",\"interface_mode\":\"studio\",\"manager_auto_analyze_proportions\":true,\"capture_image_size\":false,\"editor_mode\":\"image\",\"animation_image_batch\":false,\"hand_controls_v2\":true,\"directional_skydome_enabled\":false},\"poses\":[{\"bones\":{},\"bonePositions\":{\"Root\":[0,-8.178140640258789,-0.2576471269130707]},\"modelRotation\":[0,0,0],\"ikEffectorPositions\":{\"pelvis\":[0.0027268292087311214,-0.30433746835154274,-0.35130032696965374],\"hand_l\":[5.553345914587382,1.193521749149531,1.8244779370673572],\"hand_r\":[-5.547892256169918,1.193521749149531,1.8244779370673572],\"foot_l\":[2.2416275397811853,-10.545230451892476,-0.40263370323014275],\"foot_r\":[-2.2361738813637233,-10.545230451892476,-0.40263370323014275],\"head\":[0.0027268292087311214,7.432051772581943,0.0978820851357981],\"upperarm_l\":[1.9995391148697972,4.931669952538992,-0.27525705577095777],\"upperarm_r\":[-1.994085456452335,4.931669952538992,-0.27525705577095777]},\"poleTargetPositions\":{\"leftArm\":[-0.7928059016203156,1.5172658532587624,1.5420021994161195],\"rightArm\":[-1.1354046825243163,1.137988359364977,-2.048983653283038],\"leftLeg\":[-2.727117345359623,1.2087599608282356,1.386152351465362],\"rightLeg\":[-3.1143529484973276,0.970284373766858,0.012294249154028034]},\"hipBonePosition\":{\"hips\":[0,7.445617198944092,0.3518928736448288]},\"cameraParams\":{\"offset_x\":0.0027268292087311214,\"offset_y\":0.7873186007067478,\"zoom\":1.4902677613961948,\"yaw_deg\":0,\"pitch_deg\":0},\"prompt\":\"\"}],\"lights\":[{\"type\":\"directional\",\"color\":\"#ffffff\",\"intensity\":2,\"x\":10,\"y\":20,\"z\":30},{\"type\":\"ambient\",\"color\":\"#505050\",\"intensity\":1,\"x\":0,\"y\":0,\"z\":0}],\"activeTab\":0,\"capture_id\":\"vnccs_capture_488\",\"lighting_prompts\":[\"\"],\"background_url\":null}",
+        "animation_image_batch": "",
+        "pose_studio_ui": ""
+      }
+    },
+    {
+      "id": 501,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        540,
+        2740
+      ],
+      "size": [
+        560,
+        90
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 783
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            784
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.36.0",
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "QI2.1\\VNCCS\\VNCCS_QI2_PoseStudioV2.safetensors",
+        1
+      ],
+      "widgets_values_named": {
+        "lora_name": "QI2.1\\VNCCS\\VNCCS_QI2_PoseStudioV2.safetensors",
+        "strength_model": 1
+      }
+    },
+    {
+      "id": 504,
+      "type": "Image Comparer (rgthree)",
+      "pos": [
+        3370,
+        2720
+      ],
+      "size": [
+        1030,
+        1030
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "dir": 3,
+          "name": "image_a",
+          "type": "IMAGE",
+          "link": 797
+        },
+        {
+          "dir": 3,
+          "name": "image_b",
+          "type": "IMAGE",
+          "link": 796
+        }
+      ],
+      "outputs": [
+        {
+          "dir": 4,
+          "name": "images",
+          "shape": 3,
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "rgthree-comfy",
+        "ver": "27b4f4cdcf3b127c29d5d8135ac1536ecbd4c383",
+        "comparer_mode": "Slide"
+      },
+      "widgets_values": [
+        [
+          {
+            "name": "A",
+            "selected": true,
+            "url": "/api/view?filename=rgthree.compare._temp_tkmxb_00015_.png&type=temp&subfolder=&rand=0.9473692833600572"
+          },
+          {
+            "name": "B",
+            "selected": true,
+            "url": "/api/view?filename=rgthree.compare._temp_tkmxb_00016_.png&type=temp&subfolder=&rand=0.95858648664139"
+          }
+        ]
+      ],
+      "widgets_values_named": {
+        "rgthree_comparer": {
+          "images": [
+            {
+              "name": "A",
+              "selected": true,
+              "url": "/api/view?filename=rgthree.compare._temp_tkmxb_00015_.png&type=temp&subfolder=&rand=0.9473692833600572",
+              "img": {}
+            },
+            {
+              "name": "B",
+              "selected": true,
+              "url": "/api/view?filename=rgthree.compare._temp_tkmxb_00016_.png&type=temp&subfolder=&rand=0.95858648664139",
+              "img": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": 505,
+      "type": "GetImageSize",
+      "pos": [
+        -100,
+        3380
+      ],
+      "size": [
+        140,
+        130
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 792
+        }
+      ],
+      "outputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "links": [
+            793
+          ]
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": [
+            794
+          ]
+        },
+        {
+          "name": "batch_size",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.36.0",
+        "Node name for S&R": "GetImageSize"
+      }
+    },
+    {
+      "id": 506,
+      "type": "SaveImage",
+      "pos": [
+        2010,
+        2720
+      ],
+      "size": [
+        1340,
+        1040
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 798
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.36.0",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "ComfyUI"
+      ],
+      "widgets_values_named": {
+        "filename_prefix": "ComfyUI"
+      }
+    }
+  ],
+  "links": [
+    [
+      729,
+      478,
+      0,
+      480,
+      1,
+      "VAE"
+    ],
+    [
+      731,
+      481,
+      0,
+      480,
+      0,
+      "LATENT"
+    ],
+    [
+      735,
+      483,
+      0,
+      481,
+      0,
+      "MODEL"
+    ],
+    [
+      736,
+      484,
+      0,
+      481,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      737,
+      484,
+      1,
+      481,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      783,
+      476,
+      0,
+      501,
+      0,
+      "MODEL"
+    ],
+    [
+      784,
+      501,
+      0,
+      483,
+      0,
+      "MODEL"
+    ],
+    [
+      792,
+      488,
+      0,
+      505,
+      0,
+      "IMAGE"
+    ],
+    [
+      793,
+      505,
+      0,
+      479,
+      0,
+      "INT"
+    ],
+    [
+      794,
+      505,
+      1,
+      479,
+      1,
+      "INT"
+    ],
+    [
+      795,
+      479,
+      0,
+      481,
+      3,
+      "LATENT"
+    ],
+    [
+      796,
+      488,
+      0,
+      504,
+      1,
+      "IMAGE"
+    ],
+    [
+      797,
+      480,
+      0,
+      504,
+      0,
+      "IMAGE"
+    ],
+    [
+      798,
+      480,
+      0,
+      506,
+      0,
+      "IMAGE"
+    ],
+    [
+      741,
+      477,
+      0,
+      484,
+      0,
+      "CLIP"
+    ],
+    [
+      785,
+      488,
+      0,
+      484,
+      1,
+      "IMAGE"
+    ],
+    [
+      786,
+      470,
+      0,
+      484,
+      2,
+      "IMAGE"
+    ],
+    [
+      743,
+      478,
+      0,
+      484,
+      5,
+      "VAE"
+    ],
+    [
+      791,
+      488,
+      1,
+      484,
+      6,
+      "STRING"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 38,
+      "title": "Models",
+      "bounding": [
+        -130,
+        2640,
+        530,
+        590
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 39,
+      "title": "Image Size",
+      "bounding": [
+        -130,
+        3260,
+        530,
+        250
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 40,
+      "title": "Conditioning",
+      "bounding": [
+        430,
+        2640,
+        700,
+        860
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 41,
+      "title": "Sampling",
+      "bounding": [
+        1160,
+        2640,
+        470,
+        860
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.5730855330116843,
+      "offset": [
+        2390.0641239172005,
+        -1842.369254778354
+      ]
+    },
+    "frontendVersion": "1.53.10",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4,
+  "seed_widgets": {
+    "481": 0
+  }
+}
