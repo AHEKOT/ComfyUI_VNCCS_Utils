@@ -243,9 +243,9 @@ The **Conditioning** group has `depth`, `normal`, `outline`, `silhouette`, `mask
 `character_id`. All are off by default, so a new node has only `images` and
 `lighting_prompt`.
 
-- **Off costs nothing.** A disabled output has no socket and no rendering, PNG encoding
-  or image allocation. An enabled output is rendered at every RUN, linked or not, so turn
-  off what you do not use. `images` is unchanged either way.
+- **Unused outputs cost nothing.** A disabled output has no socket. An enabled output
+  without a link has a socket, but neither gets rendering, PNG encoding or image
+  allocation. `images` is unchanged either way.
 - **Sockets appear in the order you enable them**, after `lighting_prompt`. Turning one
   off removes that socket and its links; links on the other outputs stay connected.
 - **Saved workflows** keep their enabled outputs and links. A workflow with links from a
@@ -254,8 +254,9 @@ The **Conditioning** group has `depth`, `normal`, `outline`, `silhouette`, `mask
 
 The enabled outputs are saved in socket order in `pose_data.export.additional_outputs`.
 The backend fills the slots after `lighting_prompt` in that order, so in an API-format
-prompt, slot 2 is the first name in the list, slot 3 the second, and so on. Enabling an
-output changes `pose_data`, which re-executes the node.
+prompt, slot 2 is the first name in the list, slot 3 the second, and so on. The outputs
+with a link are saved in `pose_data.export.linked_additional_outputs`, so enabling or
+linking an output re-executes the node.
 
 ### Conditioning outputs
 
@@ -274,7 +275,7 @@ output changes `pose_data`, which re-executes the node.
 - **Pose Manager.** RUN still sends the card images byte for byte; the passes are
   rendered at RUN with the exact camera each card was captured with.
 - **Debug Mode and `pose_image`** captures produce passes for the image they output.
-- **Animation mode** is not supported yet: an enabled conditioning output stops the run
+- **Animation mode** is not supported yet: a linked conditioning output stops the run
   there with an error instead of returning blank images. Turn it off or switch to Image
   mode.
 

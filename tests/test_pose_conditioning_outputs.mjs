@@ -4,17 +4,20 @@ import * as THREE from "../web/vendor/three/three.module.js";
 import { PoseViewerCore } from "../web/pose_studio/core.js";
 import {
     POSE_ADDITIONAL_OUTPUT_GROUPS,
+    poseAdditionalOutputNames,
+    poseLinkedAdditionalOutputNames,
+    restorePoseAdditionalOutputs,
+    savedPoseAdditionalOutputs,
+    setPoseAdditionalOutput,
+} from "../web/pose_studio/additional_outputs.mjs";
+import {
     POSE_CHARACTER_ID_COLORS,
     POSE_CONDITIONING_OUTPUTS,
     POSE_DEPTH_FAR_LEVEL,
-    poseAdditionalOutputNames,
     poseCaptureCameraFromSnapshot,
     poseConditioningPasses,
     poseDepthImage,
     poseOutlineImage,
-    restorePoseAdditionalOutputs,
-    savedPoseAdditionalOutputs,
-    setPoseAdditionalOutput,
     snapshotPoseCaptureCamera,
 } from "../web/pose_studio/conditioning.mjs";
 import { createScene, Element } from "./helpers/pose_studio_scene.mjs";
@@ -26,11 +29,13 @@ const PASSES = ["depth", "normal", "outline", "character_id"];
 
 const ALL_NAMES = POSE_CONDITIONING_OUTPUTS.map(output => output.name);
 
-function enabledOutputs(names = ALL_NAMES) {
+function enabledOutputs(names = ALL_NAMES, linked = names) {
     return [
         { name: "images", type: "IMAGE", links: [1] },
         { name: "lighting_prompt", type: "STRING", links: null },
-        ...names.map(name => ({ name, type: name === "mask" ? "MASK" : "IMAGE", links: null })),
+        ...names.map((name, index) => ({
+            name, type: name === "mask" ? "MASK" : "IMAGE", links: linked.includes(name) ? [10 + index] : null,
+        })),
     ];
 }
 
@@ -205,13 +210,14 @@ test("disabling one output keeps the links of the others on the matching slot", 
 
 test("a new node and restored workflows keep only enabled or linked additional outputs", () => {
     // A new node is built from all the slots in the node definition.
-    const fresh = socketNode(enabledOutputs());
+    const fresh = socketNode(enabledOutputs(ALL_NAMES, []));
     restorePoseAdditionalOutputs(fresh);
     assert.deepEqual(fresh.outputs.map(output => output.name), ["images", "lighting_prompt"]);
 
     // A two-output workflow stays as it is, with its links.
     const legacy = socketNode(enabledOutputs([]));
     const [images, prompt] = legacy.outputs;
+    assert.deepEqual(poseLinkedAdditionalOutputNames(legacy), []);
     restorePoseAdditionalOutputs(legacy);
     assert.equal(legacy.outputs[0], images);
     assert.equal(legacy.outputs[1], prompt);
@@ -219,13 +225,14 @@ test("a new node and restored workflows keep only enabled or linked additional o
     assert.equal(legacy.outputs.length, 2);
 
     // A saved list keeps enabled sockets that have no link yet, in their saved order.
-    const saved = socketNode(enabledOutputs(["mask", "depth"]));
+    const saved = socketNode(enabledOutputs(["mask", "depth"], []));
     restorePoseAdditionalOutputs(saved, ["mask", "depth"]);
     assert.deepEqual(poseAdditionalOutputNames(saved), ["mask", "depth"]);
+    assert.deepEqual(poseLinkedAdditionalOutputNames(saved), []);
 
     // All eight sockets always visible: the linked one stays, its link moves with it.
     const links = new Map([[7, { origin_slot: 7 }]]);
-    const eight = socketNode(enabledOutputs(), links);
+    const eight = socketNode(enabledOutputs(ALL_NAMES, []), links);
     eight.outputs[7].links = [7];
     restorePoseAdditionalOutputs(eight, ["character_id"]);
     assert.deepEqual(poseAdditionalOutputNames(eight), ["character_id"]);
@@ -233,7 +240,6 @@ test("a new node and restored workflows keep only enabled or linked additional o
 
     // A link is kept even when the saved list does not name it.
     const linked = socketNode(enabledOutputs(["depth"]));
-    linked.outputs[2].links = [9];
     restorePoseAdditionalOutputs(linked, "not a list");
     assert.deepEqual(poseAdditionalOutputNames(linked), ["depth"]);
 
@@ -420,11 +426,16 @@ test("disabled outputs render and encode nothing and keep RGB captures and pose_
     assert.equal(plainSaved.export.additional_outputs, undefined);
     const plainOwners = rgbOwners(plain, plain.w.poseCaptures[0]);
 
-    const enabled = conditioningScene({ outputs: enabledOutputs(["silhouette", "normal"]) });
+    const unlinked = conditioningScene({ outputs: enabledOutputs(["depth"], []) });
+    assert.equal(run(unlinked), null);
+    assert.equal(unlinked.renderer.targetRenders.length, 0, "an enabled output without a link renders nothing");
+
+    const enabled = conditioningScene({ outputs: enabledOutputs(["silhouette", "depth", "normal"], ["silhouette", "normal"]) });
     const snapshot = run(enabled);
-    assert.deepEqual(Object.keys(snapshot[0]).sort(), ["character_id", "normal"]);
-    assert.deepEqual(JSON.parse(enabled.node.widgets[0].value).export.additional_outputs, ["silhouette", "normal"],
-        "pose_data records the enabled outputs in socket order");
+    assert.deepEqual(Object.keys(snapshot[0]).sort(), ["character_id", "normal"], "only linked outputs get passes");
+    const saved = JSON.parse(enabled.node.widgets[0].value).export;
+    assert.deepEqual(saved.additional_outputs, ["silhouette", "depth", "normal"], "pose_data keeps the socket order");
+    assert.deepEqual(saved.linked_additional_outputs, ["silhouette", "normal"]);
     assert.deepEqual(rgbOwners(enabled, enabled.w.poseCaptures[0]), plainOwners, "RGB capture is unchanged");
 });
 
@@ -484,8 +495,12 @@ test("Pose Manager RUN reuses the cards and renders passes with each card's own 
     });
 });
 
-test("animation mode refuses enabled conditioning outputs instead of returning blank images", () => {
+test("animation mode refuses linked conditioning outputs instead of returning blank images", () => {
     const scene = conditioningScene({ outputs: enabledOutputs(["depth"]) });
     scene.w.isAnimationMode = () => true;
     assert.throws(() => scene.w.syncToNode(true, { executionCapture: true, skipCaptureUpload: true }), /Image mode/);
+    const unlinked = conditioningScene({ outputs: enabledOutputs(["depth"], []) });
+    unlinked.w.isAnimationMode = () => true;
+    unlinked.w.syncToNode(true, { executionCapture: true, skipCaptureUpload: true });
+    assert.equal(unlinked.renderer.targetRenders.length, 0);
 });

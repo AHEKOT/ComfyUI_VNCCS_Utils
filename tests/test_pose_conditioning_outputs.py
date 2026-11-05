@@ -15,11 +15,19 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _load_conditioning_module():
-    """nodes/posestudio/conditioning.py needs only NumPy and Pillow."""
-    name = "vnccs_pose_conditioning_logic"
-    spec = importlib.util.spec_from_file_location(name, ROOT / "nodes" / "posestudio" / "conditioning.py")
+def _load_logic_module(stem):
+    """The list and pass logic in nodes/posestudio/ needs only NumPy and Pillow."""
+    package_name = "vnccs_pose_conditioning_logic"
+    if package_name not in sys.modules:
+        package = types.ModuleType(package_name)
+        package.__path__ = [str(ROOT / "nodes" / "posestudio")]
+        sys.modules[package_name] = package
+    name = f"{package_name}.{stem}"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, ROOT / "nodes" / "posestudio" / f"{stem}.py")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -43,7 +51,8 @@ def _load_pose_studio_module():
     return module
 
 
-CONDITIONING = _load_conditioning_module()
+CONDITIONING = _load_logic_module("conditioning")
+ADDITIONAL = _load_logic_module("additional_outputs")
 ALL_OUTPUTS = list(CONDITIONING.POSE_CONDITIONING_OUTPUTS)
 WIDTH, HEIGHT = 6, 4
 
@@ -71,7 +80,7 @@ def _pose(index):
     }, ids
 
 
-def _run(count=2, outputs=ALL_OUTPUTS, output_mode="LIST", editor_mode="image", conditioning=True, mutate=None):
+def _run(count=2, outputs=ALL_OUTPUTS, output_mode="LIST", editor_mode="image", conditioning=True, mutate=None, linked=None):
     poses = [_pose(index) for index in range(count)]
     data = {
         "export": {
@@ -83,6 +92,7 @@ def _run(count=2, outputs=ALL_OUTPUTS, output_mode="LIST", editor_mode="image", 
     }
     if outputs:
         data["export"]["additional_outputs"] = list(outputs)
+        data["export"]["linked_additional_outputs"] = list(outputs if linked is None else linked)
     if conditioning:
         data["captured_conditioning"] = [passes for _rgb, passes, _ids in poses]
     if mutate:
@@ -95,7 +105,7 @@ class AdditionalOutputListTests(unittest.TestCase):
     """Runs without PyTorch."""
 
     def test_enabled_outputs_keep_socket_order(self):
-        read = CONDITIONING.enabled_additional_outputs
+        read = ADDITIONAL.enabled_additional_outputs
         self.assertEqual(read({"additional_outputs": ["mask", "depth"]}), ("mask", "depth"))
         self.assertEqual(read({}), ())
         self.assertEqual(read(None), ())
@@ -104,7 +114,17 @@ class AdditionalOutputListTests(unittest.TestCase):
     def test_invalid_lists_never_shift_a_slot(self):
         for names in ("depth", ["depth", "depth"], ["depth", "future"], [1], [["depth"]]):
             with self.assertRaisesRegex(ValueError, "additional_outputs"):
-                CONDITIONING.enabled_additional_outputs({"additional_outputs": names})
+                ADDITIONAL.enabled_additional_outputs({"additional_outputs": names})
+
+    def test_linked_outputs_are_a_subset_of_the_enabled_ones(self):
+        read = ADDITIONAL.linked_additional_outputs
+        enabled = ("mask", "depth")
+        self.assertEqual(read({"linked_additional_outputs": ["depth", "mask"]}, enabled), ("mask", "depth"))
+        self.assertEqual(read({"linked_additional_outputs": []}, enabled), ())
+        self.assertEqual(read({}, enabled), enabled, "a prompt without link data produces what it enables")
+        for names in ("depth", ["normal"]):
+            with self.assertRaisesRegex(ValueError, "linked_additional_outputs"):
+                read({"linked_additional_outputs": names}, enabled)
 
     def test_passes_cover_only_what_the_enabled_outputs_need(self):
         self.assertEqual(CONDITIONING.conditioning_passes(("mask", "silhouette")), ("character_id",))
@@ -195,6 +215,9 @@ class PoseConditioningOutputTests(unittest.TestCase):
         self.assertEqual(len(result[0]), 2)
         for output in result[2:]:
             self.assertEqual(output, [])
+        # An enabled output without a link is not produced and needs no pass.
+        _node, result, _ids = _run(outputs=["depth"], linked=[], conditioning=False)
+        self.assertEqual(result[2], [])
         # Passes the browser skipped for disabled outputs are never decoded.
         _node, result, ids = _run(outputs=["mask"], mutate=lambda data: [
             item.pop(name) for item in data["captured_conditioning"] for name in ("depth", "normal", "outline")
@@ -222,9 +245,12 @@ class PoseConditioningOutputTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Character ID palette"):
             _run(mutate=blend)
 
-    def test_animation_mode_refuses_enabled_conditioning_outputs(self):
+    def test_animation_mode_refuses_linked_conditioning_outputs(self):
         with self.assertRaisesRegex(RuntimeError, "Additional Outputs"):
             _run(editor_mode="animation")
+        _node, result, _ids = _run(editor_mode="animation", linked=[], conditioning=False,
+                                   mutate=lambda data: data["export"].update(animation_image_batch=True))
+        self.assertEqual(list(result[2:]), [[]] * 6)
 
     def test_animation_outputs_keep_their_slots_when_nothing_is_enabled(self):
         node, result, _ids = _run(count=2, outputs=[], conditioning=False, editor_mode="animation",

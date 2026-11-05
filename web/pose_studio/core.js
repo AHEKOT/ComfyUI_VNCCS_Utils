@@ -6,7 +6,7 @@
 
 
 import { normalizeCaptureLens } from "./animation.mjs?v=20261105.1";
-import { capturePoseConditioning } from "./conditioning.mjs?v=20261105.1";
+import { capturePoseConditioning } from "./conditioning.mjs?v=20261105.2";
 
 // Determine the extension's base URL dynamically to support varied directory names
 const EXTENSION_URL = new URL(".", import.meta.url).toString();

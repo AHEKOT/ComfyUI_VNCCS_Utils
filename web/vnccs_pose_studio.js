@@ -19,15 +19,19 @@ import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js?v=1791
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js?v=1791754604000";
 import { installCustomSelects } from "./shared/custom_select.mjs?v=20261104-scaled-menu";
 import {
-    POSE_ADDITIONAL_OUTPUT_GROUPS,
     poseCaptureCameraFromSnapshot,
-    poseAdditionalOutputNames,
     poseConditioningPasses,
+    snapshotPoseCaptureCamera,
+} from "./pose_studio/conditioning.mjs?v=20261105.2";
+import {
+    POSE_ADDITIONAL_OUTPUT_GROUPS,
+    POSE_BASE_OUTPUT_COUNT,
+    poseAdditionalOutputNames,
+    poseLinkedAdditionalOutputNames,
     restorePoseAdditionalOutputs,
     savedPoseAdditionalOutputs,
     setPoseAdditionalOutput,
-    snapshotPoseCaptureCamera,
-} from "./pose_studio/conditioning.mjs?v=20261105.1";
+} from "./pose_studio/additional_outputs.mjs?v=20261105.2";
 import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
@@ -15981,11 +15985,12 @@ class PoseStudioWidget {
         const outputCount = isDebugExecution
             ? 1
             : animationMode ? this.animationState.frameCount : this.poses.length;
-        // Additional outputs are rendered only for execution and only when enabled;
-        // ordinary editing and disabled outputs never pay for them.
+        // Additional outputs are rendered only for execution and only when enabled
+        // and linked; ordinary editing and unused outputs never pay for them.
         const additionalOutputs = poseAdditionalOutputNames(this.node);
+        const linkedAdditionalOutputs = poseLinkedAdditionalOutputNames(this.node);
         const conditioningPasses = fullCapture && options.executionCapture === true
-            ? poseConditioningPasses(additionalOutputs)
+            ? poseConditioningPasses(linkedAdditionalOutputs)
             : [];
         if (conditioningPasses.length && animationMode) {
             throw new Error("Pose Studio depth, normal, outline, silhouette, mask and character_id outputs "
@@ -16257,7 +16262,11 @@ class PoseStudioWidget {
         delete exportToSave.debugPortraitMode;
         delete exportToSave.conditioning_outputs;
         delete exportToSave.additional_outputs;
-        if (additionalOutputs.length) exportToSave.additional_outputs = additionalOutputs;
+        delete exportToSave.linked_additional_outputs;
+        if (additionalOutputs.length) {
+            exportToSave.additional_outputs = additionalOutputs;
+            exportToSave.linked_additional_outputs = linkedAdditionalOutputs;
+        }
 
         // captured_images are excluded from the widget to avoid inflating workflow size
         // (each 1024×1024 PNG is ~500KB base64; multiple poses exceed ComfyUI localStorage limit)
@@ -17358,6 +17367,17 @@ app.registerExtension({
                     this.onResize(this.size); // Force correct aspect ratio on config
                 }, 500);
             }
+        };
+
+        // Linked additional outputs are saved in pose_data, so a new link re-executes the node.
+        const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+        nodeType.prototype.onConnectionsChange = function (type, slot) {
+            const result = onConnectionsChange?.apply(this, arguments);
+            // type 2 is LiteGraph.OUTPUT.
+            if (type === 2 && slot >= POSE_BASE_OUTPUT_COUNT) {
+                this.studioWidget?.syncToNode(false, { skipCapture: true });
+            }
+            return result;
         };
 
         // Re-capture with fresh random params on each execution when Debug Mode is enabled

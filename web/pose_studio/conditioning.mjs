@@ -14,7 +14,7 @@ import {
     renderConditioningPasses,
 } from "../shared/conditioning_render.mjs";
 
-/** Conditioning outputs a user can enable in Settings > Additional Outputs. */
+/** The Conditioning group of Settings > Additional Outputs (additional_outputs.mjs). */
 export const POSE_CONDITIONING_OUTPUTS = Object.freeze([
     Object.freeze({ name: "depth", type: "IMAGE", hint: "Camera depth, nearest surface white" }),
     Object.freeze({ name: "normal", type: "IMAGE", hint: "View-space normal map" }),
@@ -23,20 +23,6 @@ export const POSE_CONDITIONING_OUTPUTS = Object.freeze([
     Object.freeze({ name: "mask", type: "MASK", hint: "Character coverage as a MASK" }),
     Object.freeze({ name: "character_id", type: "IMAGE", hint: "One flat colour per character" }),
 ]);
-
-/** `images` and `lighting_prompt` are always on the node; additional outputs follow them. */
-export const POSE_BASE_OUTPUT_COUNT = 2;
-
-/** Groups of the Additional Outputs settings section. */
-export const POSE_ADDITIONAL_OUTPUT_GROUPS = Object.freeze([
-    Object.freeze({ title: "Conditioning", outputs: POSE_CONDITIONING_OUTPUTS }),
-]);
-
-const ADDITIONAL_OUTPUTS = new Map(POSE_ADDITIONAL_OUTPUT_GROUPS
-    .flatMap(group => group.outputs)
-    .map(output => [output.name, output]));
-// LiteGraph.GRID_SHAPE marks a list output, like the sockets built from the node definition.
-const LIST_OUTPUT_SHAPE = 6;
 
 /**
  * Character ID colours by character slot (Character 1 = slot 0 = ID 1).
@@ -61,63 +47,10 @@ const PASS_FOR_OUTPUT = {
     silhouette: "character_id", mask: "character_id", character_id: "character_id",
 };
 
-/**
- * Enabled additional outputs in slot order. The first name is slot 2, the next
- * slot 3 and so on: the backend fills its slots from this list, saved in
- * `export.additional_outputs`, so sockets can come and go without moving a link.
- */
-export function poseAdditionalOutputNames(node) {
-    return (node?.outputs || []).slice(POSE_BASE_OUTPUT_COUNT)
-        .map(output => output?.name)
-        .filter(name => ADDITIONAL_OUTPUTS.has(name));
-}
-
 /** Passes the browser must render and upload for the requested outputs. */
 export function poseConditioningPasses(outputNames = []) {
     const needed = new Set(outputNames.map(name => PASS_FOR_OUTPUT[name]).filter(Boolean));
     return PASS_ORDER.filter(pass => needed.has(pass));
-}
-
-/**
- * Add or remove one socket. New sockets are appended and removing one lets
- * LiteGraph shift the links of later sockets, so the other links stay connected.
- * Returns whether the node changed.
- */
-export function setPoseAdditionalOutput(node, name, enabled) {
-    const output = ADDITIONAL_OUTPUTS.get(name);
-    if (!output || !Array.isArray(node?.outputs)) return false;
-    const index = node.outputs.findIndex((slot, slotIndex) => slotIndex >= POSE_BASE_OUTPUT_COUNT && slot?.name === name);
-    if (enabled === index >= 0) return false;
-    if (enabled) node.addOutput(name, output.type, { shape: LIST_OUTPUT_SHAPE });
-    else node.removeOutput(index);
-    return true;
-}
-
-/**
- * Hide every additional output that is neither saved as enabled nor linked. A new
- * node keeps only its base outputs, and a workflow keeps what it uses, including
- * links saved when all these outputs were always visible.
- */
-export function restorePoseAdditionalOutputs(node, savedNames = []) {
-    if (!Array.isArray(node?.outputs) || typeof node.removeOutput !== "function") return;
-    const saved = new Set(Array.isArray(savedNames) ? savedNames : []);
-    for (let index = node.outputs.length - 1; index >= POSE_BASE_OUTPUT_COUNT; index--) {
-        const output = node.outputs[index];
-        if (ADDITIONAL_OUTPUTS.has(output?.name) && !saved.has(output.name) && !output.links?.length) {
-            node.removeOutput(index);
-        }
-    }
-}
-
-/** Enabled outputs saved in a node's `pose_data` widget. */
-export function savedPoseAdditionalOutputs(node) {
-    const value = node?.widgets?.find(widget => widget?.name === "pose_data")?.value;
-    if (typeof value !== "string" || !value) return [];
-    try {
-        return JSON.parse(value)?.export?.additional_outputs ?? [];
-    } catch {
-        return [];
-    }
 }
 
 export function poseCharacterIdColor(slot) {

@@ -196,6 +196,21 @@ test("a new node has two outputs, RUN does no extra work, and Settings lists the
   expect(await page.evaluate(() => [window.__passCaptures, window.__uploads])).toEqual([0, 0]);
   expect((await classify(page, "rgb")).covered).toBeGreaterThan(0);
   expect(await outputNames(page)).toEqual(BASE);
+
+  // Enabled without a link: the socket exists, and RUN still does no extra work.
+  await toggle(page, "silhouette");
+  expect(await outputNames(page)).toEqual([...BASE, "silhouette"]);
+  await run(page);
+  expect(await page.evaluate(() => [window.__passCaptures, window.__uploads])).toEqual([0, 0]);
+
+  // Adding the link saves it at once, and the next RUN renders that output.
+  await page.evaluate(() => window.__addSave("silhouette", "silhouette"));
+  expect(await page.evaluate(() => JSON.parse(
+    window.__node.widgets.find(widget => widget.name === "pose_data").value,
+  ).export.linked_additional_outputs)).toEqual(["silhouette"]);
+  await run(page);
+  expect(await page.evaluate(() => window.__passCaptures)).toBeGreaterThan(0);
+  expect((await classify(page, "silhouette")).allBinary).toBe(true);
 });
 
 test("enabled outputs carry the right image, and disabling one keeps the other links", async ({ page }, testInfo) => {
