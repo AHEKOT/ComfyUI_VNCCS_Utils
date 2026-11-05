@@ -42,6 +42,9 @@ Outputs:
 | `images` | `IMAGE` list | Rendered pose image output. In LIST mode it is one image per pose tab. In GRID mode it is a one-item list containing the grid image. |
 | `lighting_prompt` | `STRING` list | Combined lighting, per-pose, and connected camera prompt aligned with `images`. |
 
+A new node has only these two outputs. Settings > **Additional Outputs** adds more: see
+[Additional outputs](#additional-outputs).
+
 Important backend behavior:
 
 - The node requests a fresh frontend sync for every execution.
@@ -233,6 +236,247 @@ Use GRID when:
 - You want a single pose sheet/contact sheet.
 - You are building reference previews rather than separate generation inputs.
 
+## Additional outputs
+
+Open Settings (the gear button) and turn on what you need under **Additional Outputs**.
+The **Conditioning** group has `depth`, `normal`, `outline`, `silhouette`, `mask` and
+`character_id`, the **Crop Guide** group has `crop_json`, `crop_image` and `crop_preview`,
+and the **Per-character Export** group has `character_json` and `character_passes`. All
+are off by default, so a new node has only `images` and `lighting_prompt`.
+
+- **Unused outputs cost nothing.** A disabled output has no socket. An enabled output
+  without a link has a socket, but neither gets rendering, PNG encoding or image
+  allocation. `images` is unchanged either way.
+- **Sockets appear in the order you enable them**, after `lighting_prompt`. Turning one
+  off removes that socket and its links; links on the other outputs stay connected.
+- **Saved workflows** keep their enabled outputs and links. A workflow with links from a
+  version where these outputs were always visible keeps the linked ones and hides the
+  others.
+
+The enabled outputs are saved in socket order in `pose_data.export.additional_outputs`.
+The backend fills the slots after `lighting_prompt` in that order, so in an API-format
+prompt, slot 2 is the first name in the list, slot 3 the second, and so on. The outputs
+with a link are saved in `pose_data.export.linked_additional_outputs`, so enabling or
+linking an output re-executes the node.
+
+### Conditioning outputs
+
+- **Same camera as `images`.** Every pass is rendered right after its RGB capture
+  through that capture's camera and at the output resolution, so FOV, Distance,
+  Align Camera to View, Yaw/Pitch, Zoom and the radar placement affect all outputs
+  identically.
+- **Characters only.** The passes draw a private scene of the character meshes
+  (every character, with its own pose, position, zoom and rotation; hidden
+  characters are skipped). The grid, capture frame, bones, joint markers, reference
+  image, skydome, gizmos, imported figure overlays and any other editor helper never
+  appear. Lighting, skin texture and model colour do not affect them.
+- **Overlaps** are resolved by the depth test in every pass, exactly as in `images`.
+- **LIST / GRID.** LIST returns one image per pose tab; GRID builds the same grid as
+  `images` on a black (ID 0) background.
+- **Pose Manager.** RUN still sends the card images byte for byte; the passes are
+  rendered at RUN with the exact camera each card was captured with.
+- **Debug Mode and `pose_image`** captures produce passes for the image they output.
+- **Animation mode** is not supported yet: a linked conditioning output stops the run
+  there with an error instead of returning blank images. Turn it off or switch to Image
+  mode.
+
+| Output | Encoding |
+| --- | --- |
+| `depth` | Grayscale linear camera depth: nearest visible surface **white (255)**, farthest one gray 32, background **black (0)**. Normalized per image over all characters, so depth differences between characters stay visible. Same convention as MiDaS / ControlNet depth maps. |
+| `normal` | View-space normals, OpenGL / three.js `MeshNormalMaterial` convention: R = +X (right), G = +Y (up), B = +Z (toward the camera), `rgb = normal * 0.5 + 0.5`. A surface facing the camera is (128, 128, 255). Background is black. |
+| `outline` | **White lines on black.** A character pixel is on the outline when a neighbour is background, another character behind it, or a part of the same character behind it (an inverse-depth step of at least 1 %, e.g. an arm in front of the body). Lines lie inside the silhouette, 1 px wide up to 640 px and thicker on larger outputs. Normal creases are not drawn yet. |
+| `silhouette` | White (255) characters on black. |
+| `mask` | ComfyUI `MASK`, 1.0 on characters, 0.0 on background. |
+| `character_id` | Flat colours without anti-aliasing by character slot: Character 1 = red (255, 0, 0), Character 2 = green (0, 255, 0), Character 3 = blue (0, 0, 255), Character 4 = yellow (255, 255, 0); background = ID 0 = black. The colour follows the slot, not the selected character, so it is stable across edits, saves and reloads. One channel threshold extracts a character's mask. |
+
+The passes reuse the 3D Factory conditioning renderer
+(`web/shared/conditioning_render.mjs`).
+
+## Crop Guide
+
+The **Crop Guide** section (left panel, below Camera Angle) adds a framing rectangle
+inside the orange capture frame. Use it to compose a wide 3D shot that keeps every
+joint in the frame (so OpenPose, depth and normal conditioning stay complete), mark the
+final crop, generate from the uncropped image and crop the generated image afterwards.
+
+- **The guide never changes the capture.** `images`, the auxiliary outputs, the camera,
+  FOV, Distance and the pose are identical with the guide on or off. It is an editor
+  overlay drawn on its own 2D layer, so it never appears in a capture.
+- **One rectangle per pose tab**, shared by every character (scene level, like the
+  prompt and the lens). New tabs start with a disabled guide.
+- **Enabled** makes the tab's rectangle drive the crop outputs, which you turn on in
+  Settings > [Additional Outputs](#additional-outputs). **Show** hides or shows
+  the overlay; **Dim Outside** darkens the frame around it (both are editor preferences).
+- **Edit Crop** turns on editing: drag inside the rectangle to move it, drag a corner or
+  edge handle to resize it. Orbit, pan, zoom and bone editing keep working outside the
+  rectangle, and nothing is intercepted while editing is off. Editing works from any
+  orbited view: the pointer is projected onto the frame's plane.
+- **Aspect**: Free, 1:1, 4:3, 3:4, 16:9, 9:16 or Custom (W : H). Ratios are of the final
+  crop in output **pixels**, so 1:1 is square on a 1280 x 720 output too. Fixed ratios
+  are always locked; with Free, **Lock** keeps the current shape while resizing.
+- **X / Y / W / H** are exact output pixels and update the rectangle while you type; the
+  overlay updates the fields while you drag. **Center** centres the rectangle; **Fit to
+  Frame** makes it the largest centred rectangle of the selected ratio. The readout shows
+  the size, position and actual ratio.
+- Every drag, field edit or button is one **Undo** step; edits are realtime and persist
+  when the gesture ends. Rectangles stay inside the image with a minimum of 8 x 8 pixels.
+- The rectangle lives in post-projection image space, so FOV, Distance, Maintain Subject
+  Size, Align Camera to View, Orbit Camera, Yaw/Pitch, Zoom and output resolution changes
+  keep its normalized coordinates. It never moves the camera or the pose. After an output
+  resolution change a fixed ratio can be off by the aspect change; the readout says so
+  until you resize or Fit.
+
+### Coordinates and crop_json
+
+The rectangle is stored normalized: origin top-left, +x right, +y down, `0..1`, no
+rotation, always fully inside the image. Workflows store it per tab in
+`pose_data.crop_guides`; static Pose Library assets store the active tab's guide as
+`crop_guide` (animation scenes store `crop_guides`). Workflows and library assets saved
+before the crop guide existed load with a disabled guide; loading a static library pose
+applies its guide to the current tab, like its lens. No image data is stored.
+
+Stored guide fields: `schema_version` (1), `enabled`, `x`, `y`, `width`, `height`,
+`aspect_ratio` (`free`, `1:1`, `4:3`, `3:4`, `16:9`, `9:16`, `custom`),
+`custom_aspect_ratio` (`[w, h]`) and `aspect_ratio_locked`. NaN, Infinity, negative,
+non-numeric or oversized values are rejected (the guide loads disabled) or clamped inside.
+
+Pixel conversion, identical in the browser and in Pose Studio:
+left and top use `floor(x * width)`, right and bottom use `ceil((x + w) * width)` and
+are exclusive, all clamped to the image, at least 1 pixel; width and height are the
+differences of the boundaries. Products within 1e-6 pixel of an integer count as that
+integer, so float error (`0.1 + 0.2`) never shifts a boundary. The editor snaps the
+rectangle to whole output pixels, so the fields, the overlay and `pixel_rect` agree.
+
+Example `crop_json`:
+
+```json
+{
+  "schema_version": 1,
+  "type": "vnccs_crop_guide",
+  "enabled": true,
+  "coordinate_system": "top_left_normalized",
+  "source": {"width": 1280, "height": 720},
+  "rect": {"x": 0.25, "y": 0.1, "width": 0.4375, "height": 0.7777777777777778},
+  "pixel_rect": {"x": 320, "y": 72, "width": 560, "height": 560},
+  "aspect_ratio": "1:1",
+  "aspect_ratio_value": 1.0,
+  "aspect_ratio_locked": true,
+  "pose_index": 0
+}
+```
+
+`pose_index` is the pose tab (`null` for a Debug Mode library pose); `custom_aspect_ratio`
+is added for Custom.
+
+### Output modes
+
+| Mode | Crop outputs |
+| --- | --- |
+| Studio, Image mode, LIST | One `crop_json`, `crop_image` and `crop_preview` per pose tab, in the order of `images`. |
+| Debug Mode | The single library pose uses that asset's saved guide (disabled if it has none). |
+| GRID, Animation (VIDEO or IMAGE batch), Pose Manager | Not supported: their images are not the Studio capture frame of each tab. A linked crop output stops the run with an error; unlinked outputs return disabled `crop_json` and black placeholders. |
+
+A crop output with a link in an unsupported mode stops the run with an error. Each crop
+output is only produced while it is linked, so an unconnected `crop_image` costs no image
+copy. An enabled guide gives a copy of the crop that never shares pixels with `images`; a
+disabled guide gives the full image. Pose Manager RUN and its card cache are unchanged.
+
+### Using the rectangle elsewhere
+
+`rect` in `crop_json` is normalized, so it stays valid for an image that was only resized.
+After letterboxing, padding or a center crop it must go through the same transform first,
+and it marks an image region, not the subject, if a generator moved or reframed the
+subject.
+
+## Per-character export
+
+`character_json` and `character_passes` export every character of a multi-character
+pose as its own set of control images in one run, for this workflow:
+
+1. Generate each character with its own crop and its solo control passes.
+2. Cut each result out with that character's visible mask and composite.
+3. Finish contact areas (hands, overlaps) with inpainting.
+
+Pose Studio renders the passes at the full image size. `bbox_full` and `bbox_visible` in
+`character_json` give the rectangles for cropping them.
+
+- **Solo renders.** For every captured image, the widget renders the full Character ID
+  pass and, per character, the normal, depth and coverage of that character alone (all
+  other characters hidden), through the same capture camera and at the output resolution.
+  Parts hidden behind other characters are therefore present in the solo passes.
+- **Cost.** Turn the outputs on in Settings > [Additional Outputs](#additional-outputs).
+  Nothing is rendered, encoded or allocated while both are off or unlinked; `images` and
+  every other output are identical either way. While either is linked, each image costs
+  one extra three-pass render of the full scene plus one per character, and PNG encoding
+  of the results. The image frames of `character_passes` are built only while that output
+  is linked. A new link is saved in `pose_data`, so the node runs again. Pass images are
+  sent with the run and never stored in the workflow.
+- **Exported characters** are the characters shown in the capture, in ascending slot
+  order. A character hidden in the scene or entirely outside the frame is not exported;
+  a character fully covered by others is exported (its visible mask is empty).
+- **Run modes.** Studio, Image mode, LIST output (including Debug Mode and `pose_image`
+  runs). GRID, Animation and Pose Manager runs stop with an error while either output is
+  linked.
+
+### Slots, IDs and lists
+
+- `slot` is the Characters panel slot (0-based, 4 at most). Deleting a character can
+  leave a gap (for example slots 0 and 2); slots never shift.
+- The Character ID value is `slot + 1` (0 is background) and the colour is fixed per
+  slot: `#ff0000`, `#00ff00`, `#0000ff`, `#ffff00`. It is unrelated to the Model colour
+  of the Characters panel.
+- Lists are ordered by captured image (pose tab) first, then by ascending slot.
+  `list_index` is the position of a character in `character_passes`.
+
+### character_passes
+
+One IMAGE batch per exported character, `[3, height, width, 3]` at the full image size,
+frames in this fixed order:
+
+| Frame | Content |
+| --- | --- |
+| 0 `normal_solo` | View-space normal of the character alone, same encoding as `normal`; background (0, 0, 0). |
+| 1 `depth_solo` | Camera depth of the character alone on the scene scale (below), unquantized float gray; background 0. |
+| 2 `silhouette` | Full-body coverage of the solo render: 1.0 on the character, 0.0 elsewhere. |
+
+Scene depth scale: over all exported characters of the image, the nearest surface is
+level 255 and the farthest is level 32 (`POSE_DEPTH_FAR_LEVEL`), the same convention as
+the `depth` output. Occluded surfaces count too, so the scale equals the `depth` output's
+whenever the farthest surface is visible; otherwise it extends to the hidden surface.
+Values are kept as floats so later steps can renormalize without banding.
+
+### character_json
+
+```json
+{
+  "schema_version": 1,
+  "type": "vnccs_character_set",
+  "pose_index": 0,
+  "pose_name": "Pose 1",
+  "source": {"width": 1024, "height": 1024},
+  "passes": ["normal_solo", "depth_solo", "silhouette"],
+  "background": {"normal": [0, 0, 0], "depth": 0},
+  "depth": {"normalization": "scene", "near_level": 255, "far_level": 32, "near": 39.226356, "far": 46.093616},
+  "characters": [
+    {"slot": 0, "id_value": 1, "id_color": "#ff0000", "list_index": 0, "z_order": 1,
+     "bbox_full": {"x": 324, "y": 213, "width": 376, "height": 595},
+     "bbox_visible": {"x": 324, "y": 213, "width": 273, "height": 595},
+     "pixels_full": 58276, "pixels_visible": 47336,
+     "depth": {"near": 43.230089, "far": 46.093616, "visible_median": 45.11975}}
+  ]
+}
+```
+
+`pose_name` is the pose tab label (a Debug Mode run uses the library pose name and
+`pose_index` `null`). Depths are camera distances in scene units. Bounds are full-image
+pixels, origin top-left; `bbox_visible` is `null` for a fully occluded character.
+
+`z_order` ranks the characters of an image by the median camera depth of their visible
+pixels, 0 = nearest; fully occluded characters come last, ordered by their full-body
+median. Interleaved poses (arms around each other) have no single front-to-back order,
+so compositing must use `mask_visible`; `z_order` is only a hint, for example for edge
+blending.
+
 ## Camera and Framing
 
 Pose Studio stores shared output dimensions and camera angles in the `export`
@@ -246,11 +490,61 @@ Common settings:
 | --- | --- |
 | `view_width` / `view_height` | Output resolution. |
 | camera yaw/pitch | Shared viewing direction for the whole scene. |
+| FOV / Distance | Shared capture lens in **Camera Angle**: vertical field of view (15–75°, default 30°) and camera distance (10–250, default 45). Wide angles exaggerate perspective; narrow angles flatten it. |
+| Maintain Subject Size | When on, changing FOV moves the camera so the subject keeps its size and only the perspective changes (`distance * tan(FOV / 2)` stays constant). |
+| Align Camera to View | Moves the capture camera to the current viewport camera (position, rotation, zoom), like Unity's Align With View, and captures what the orange frame covers. Shortcut: `Ctrl+Shift+F` while Pose Studio has focus. **Orbit Camera** returns to the regular camera. While aligned, Yaw and Pitch orbit around the aligned pivot. |
 | Camera positioning radar | Moves the selected character; every character keeps its own X/Y. |
 | Camera Zoom | Scales the selected character; every character keeps its own zoom. |
 | model rotation | Rotate the mannequin without changing the viewport UI state. |
 | background color | Used for final render and grid background. |
 | `directional_skydome_enabled` | Show/export the directional skydome and expose the `camera_prompt` input. |
+
+Type an exact value in the number beside the FOV or Distance label. The number and
+the slider both step by 0.1 and update together while you drag or type; one edit is one
+Undo step, and Undo restores the viewport camera along with the capture lens.
+
+FOV alone keeps the camera where it is, so it changes how much of the scene fits in the
+frame, like a zoom: near and far figures keep their proportions. To change those
+proportions, change Distance, or turn on **Maintain Subject Size** and change FOV: the
+subject keeps its size while near figures grow and far figures shrink at a wide FOV, and
+the reverse at a narrow one. The viewport and RUN output show the same perspective.
+
+The SAM standard-camera fit measures through the current FOV and Distance and keeps
+them. It uses the regular front camera, so a saved **Align Camera to View** is cleared
+when the fit succeeds.
+
+The lens is stored with each pose tab's `cameraParams` (`fov_deg`, `distance`,
+`maintain_subject_size`), mirrored on every character like yaw/pitch, and in the
+library asset's `camera` block. Poses and workflows saved without these fields load
+with the original 30° / 45 camera. When the view snaps to the capture camera, the
+viewport shows the capture perspective while the orange frame keeps its size. After you
+orbit, pan or zoom the view, FOV and Distance apply to that view instead of moving it back:
+it keeps its direction and pivot, shows the capture perspective, and Distance moves it along
+its line of sight by the same ratio. **Preview** snaps back to the capture camera. While an applied SAM camera is active its
+projection sets the lens, so FOV and Distance are disabled until it is paused or
+cleared; the stored manual lens is not overwritten.
+
+**Align Camera to View** is the reverse of the automatic snap from the capture camera
+to the viewport. The capture camera takes the viewport camera's exact position and
+rotation; characters, their placement and their joints do not change. Framing rules:
+
+- The capture covers what the orange frame covers in the viewport. The viewport always
+  shows the frame with a margin around it, so the image is the centre of the view at
+  the frame's height, and the FOV you set is kept: aligning right after a FOV change or
+  **Preview** leaves the camera unchanged. When the output aspect differs, a wider output
+  shows more at the sides and a narrower one crops the sides.
+- FOV outside 15–75° is stored as the nearest lens value plus a matching zoom, and a
+  pivot closer than 10 or farther than 250 is moved along the view ray. Neither changes
+  the image.
+- While aligned, Yaw and Pitch show the aligned direction and orbit the camera around the
+  aligned pivot; FOV and Distance still work (Distance moves the camera along its view ray).
+  **Orbit Camera** returns to the regular camera with the same Yaw, Pitch and lens; the
+  camera reset returns to the default camera.
+- The view is stored per pose tab as `cameraParams.view` (and `export.cam_view`), shared
+  by every character, saved to the Pose Library and workflows, and used by RUN captures.
+  Pose Manager cards keep fitting each pose into the card, through the aligned angle and
+  lens. An applied SAM camera takes precedence; the aligned view returns when SAM is
+  paused or cleared.
 
 Tips:
 
@@ -591,6 +885,7 @@ Frontend/backend payload limits:
 | Pose capture cache total text size | 64 MiB |
 | Decoded captured image | 32 MiB per image |
 | Captured image pixels | 4096 x 4096 per image |
+| Character passes | 64 MiB of base64 text per run, within the 64 MiB sync capture body |
 | Captured sequence pixels | 64 Mi pixels in total; reduce resolution or frame count above this |
 | SAM3D upload image | 32 MiB |
 | SAM3D upload pixels | 4096 x 4096 |

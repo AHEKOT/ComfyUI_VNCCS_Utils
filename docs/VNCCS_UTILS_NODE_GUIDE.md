@@ -139,6 +139,12 @@ Outputs:
 | --- | --- | --- |
 | `images` | `IMAGE` list | One image per pose tab in LIST mode, or one grid image in GRID mode. |
 | `lighting_prompt` | `STRING` list | Combined lighting, pose, and connected camera prompt per output image. |
+| `depth` … `character_id` | `IMAGE` / `MASK` lists | Off by default (Settings > Additional Outputs). Auxiliary control images aligned with `images`. |
+| `crop_json` | `STRING` list | Off by default (Settings > Additional Outputs). Crop guide of each image (see [Crop Guide](VNCCS_POSE_STUDIO_USAGE.md#crop-guide)). |
+| `crop_image` | `IMAGE` list | Off by default. Crop of each full image, for checking the composition. |
+| `crop_preview` | `IMAGE` list | Off by default. Each full image with the guide drawn. |
+| `character_json` | `STRING` list | Off by default. Per-character information of each image (see [Per-character export](VNCCS_POSE_STUDIO_USAGE.md#per-character-export)). |
+| `character_passes` | `IMAGE` list | Off by default. One batch per exported character: solo normal, solo depth and full-body silhouette. |
 
 ## Troubleshooting
 

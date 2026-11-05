@@ -1,0 +1,24 @@
+{
+    "description": "Normalized crop guide rectangles and the pixel rectangles both web/pose_studio/crop_guide.mjs and nodes/posestudio/crop_guide.py must produce (left/top floor, right/bottom ceil exclusive, 1e-6 px float snapping, clamped, at least 1 px).",
+    "pixel_rects": [
+        { "name": "whole image", "rect": [0, 0, 1, 1], "size": [1024, 768], "expected": [0, 0, 1024, 768] },
+        { "name": "default guide", "rect": [0.1, 0.1, 0.8, 0.8], "size": [1000, 1000], "expected": [100, 100, 800, 800] },
+        { "name": "fractions floor and ceil", "rect": [0.25, 0.5, 0.5, 0.25], "size": [3, 3], "expected": [0, 1, 3, 2] },
+        { "name": "bottom-right corner", "rect": [0.999, 0.999, 0.001, 0.001], "size": [100, 50], "expected": [99, 49, 1, 1] },
+        { "name": "minimum one pixel", "rect": [0.5, 0.5, 1e-9, 1e-9], "size": [10, 10], "expected": [5, 5, 1, 1] },
+        { "name": "thirds of 1080p", "rect": [0.3333333333333333, 0.6666666666666666, 0.3333333333333333, 0.3333333333333333], "size": [1920, 1080], "expected": [640, 720, 640, 360] },
+        { "name": "non-square image", "rect": [0.1, 0.2, 0.3, 0.4], "size": [1280, 720], "expected": [128, 144, 384, 288] },
+        { "name": "half pixel edges", "rect": [0.0005, 0, 0.5, 1], "size": [1000, 1], "expected": [0, 0, 501, 1] },
+        { "name": "float error above an integer (0.30000000000000004 * 1000)", "rect": [0.1, 0.1, 0.2, 0.2], "size": [1000, 1000], "expected": [100, 100, 200, 200] },
+        { "name": "float error below an integer (0.29 * 100)", "rect": [0.29, 0.57, 0.5, 0.4], "size": [100, 100], "expected": [29, 57, 50, 40] }
+    ],
+    "normalize": [
+        { "name": "missing data loads disabled", "input": null, "expected": { "enabled": false, "x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8 } },
+        { "name": "NaN-like strings are rejected", "input": { "enabled": true, "x": "0.2", "y": 0.1, "width": 0.5, "height": 0.5 }, "expected": { "enabled": false, "x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8 } },
+        { "name": "negative size is rejected", "input": { "enabled": true, "x": 0.2, "y": 0.1, "width": -0.5, "height": 0.5 }, "expected": { "enabled": false, "x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8 } },
+        { "name": "out of range is clamped inside", "input": { "enabled": true, "x": 0.9, "y": -0.5, "width": 0.5, "height": 2 }, "expected": { "enabled": true, "x": 0.5, "y": 0, "width": 0.5, "height": 1 } },
+        { "name": "boolean is not a number", "input": { "enabled": true, "x": true, "y": 0, "width": 0.5, "height": 0.5 }, "expected": { "enabled": false, "x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8 } },
+        { "name": "valid guide is unchanged", "input": { "enabled": true, "x": 0.125, "y": 0.25, "width": 0.5, "height": 0.375, "aspect_ratio": "4:3", "aspect_ratio_locked": false }, "expected": { "enabled": true, "x": 0.125, "y": 0.25, "width": 0.5, "height": 0.375, "aspect_ratio": "4:3", "aspect_ratio_locked": true } },
+        { "name": "unknown aspect falls back to free", "input": { "enabled": true, "x": 0, "y": 0, "width": 1, "height": 1, "aspect_ratio": "2.39:1", "custom_aspect_ratio": [0, 3] }, "expected": { "enabled": true, "aspect_ratio": "free", "custom_aspect_ratio": [1, 1], "aspect_ratio_locked": false } }
+    ]
+}

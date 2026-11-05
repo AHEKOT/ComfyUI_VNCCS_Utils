@@ -20,6 +20,31 @@ import hashlib
 import torch
 import numpy as np
 from PIL import Image
+from .posestudio.additional_outputs import (
+    POSE_ADDITIONAL_OUTPUT_TYPE,
+    POSE_ADDITIONAL_OUTPUTS,
+    enabled_additional_outputs,
+    linked_additional_outputs,
+)
+from .posestudio.conditioning import (
+    POSE_CONDITIONING_OUTPUTS,
+    conditioning_passes,
+    decode_pose_conditioning,
+    silhouette_from_character_ids,
+)
+from .posestudio.crop_guide import (
+    POSE_CROP_GUIDE_OUTPUTS,
+    build_crop_json,
+    capture_crop_guides,
+    crop_guide_unsupported_reason,
+    crop_image,
+    draw_crop_preview,
+)
+from .posestudio.character_passes import (
+    POSE_CHARACTER_OUTPUTS,
+    build_character_sets,
+    decode_character_captures,
+)
 _CAPTURED_IMAGE_MAX_COUNT = 600
 _CAPTURED_IMAGE_MAX_TOTAL_CHARS = 64 * 1024 * 1024
 _CAPTURED_IMAGE_MAX_BYTES = 32 * 1024 * 1024
@@ -242,9 +267,13 @@ class VNCCS_PoseStudio:
     # The first socket is narrowed to IMAGE or VIDEO by the frontend according
     # to editor_mode and the animation image-batch setting. Keeping the backend
     # union makes every workflow variant valid during server-side validation.
-    RETURN_TYPES = ("IMAGE,VIDEO", "STRING")
-    RETURN_NAMES = ("images", "lighting_prompt")
-    OUTPUT_IS_LIST = (True, True)
+    # Auxiliary control images are appended after the original two slots so
+    # existing links keep their indices; they align with ``images``.
+    # Sockets after lighting_prompt exist only for enabled outputs, and each one
+    # follows export.additional_outputs, so a slot can hold any of these types.
+    RETURN_TYPES = ("IMAGE,VIDEO", "STRING") + (POSE_ADDITIONAL_OUTPUT_TYPE,) * len(POSE_ADDITIONAL_OUTPUTS)
+    RETURN_NAMES = ("images", "lighting_prompt") + POSE_ADDITIONAL_OUTPUTS
+    OUTPUT_IS_LIST = (True,) * (2 + len(POSE_ADDITIONAL_OUTPUTS))
     FUNCTION = "generate"
     CATEGORY = "VNCCS/pose"
     
@@ -532,7 +561,15 @@ class VNCCS_PoseStudio:
         # lists. This instance-level flag is read by the executor after
         # generate() returns, while the legacy image-mode LIST output keeps the
         # class-level list contract.
-        self.OUTPUT_IS_LIST = (not animation_outputs_image_batch, True)
+        self.OUTPUT_IS_LIST = (not animation_outputs_image_batch,) + (True,) * (len(self.RETURN_TYPES) - 1)
+        enabled_outputs = enabled_additional_outputs(export)
+        linked_outputs = linked_additional_outputs(export, enabled_outputs)
+        if linked_outputs and editor_mode == "animation":
+            raise RuntimeError(
+                "Pose Studio additional outputs (" + ", ".join(linked_outputs)
+                + ") are available in Image mode. Turn them off in Settings > Additional Outputs"
+                " or switch to Image mode."
+            )
             
         # === 1. Try Client-Side Rendered Images (CSR) ===
         # If frontend sent captured images, use them directly.
@@ -568,10 +605,24 @@ class VNCCS_PoseStudio:
                     np_img = np.array(img).astype(np.float32) / 255.0
                     tensors.append(torch.from_numpy(np_img))
 
+                crop_outputs = tuple(name for name in linked_outputs if name in POSE_CROP_GUIDE_OUTPUTS)
+                character_outputs = tuple(name for name in linked_outputs if name in POSE_CHARACTER_OUTPUTS)
+                frame_reason = (
+                    crop_guide_unsupported_reason(export, editor_mode, output_mode)
+                    if crop_outputs or character_outputs else None
+                )
+                for label, outputs in (("crop", crop_outputs), ("character", character_outputs)):
+                    if outputs and frame_reason:
+                        raise RuntimeError(
+                            "Pose Studio " + label + " outputs (" + ", ".join(outputs) + ") are available for "
+                            "Studio Image mode with LIST output; " + frame_reason + " is not supported. "
+                            "Turn them off in Settings > Additional Outputs or switch to Studio, Image mode and LIST."
+                        )
                 if editor_mode == "animation":
                     frame_batch = torch.stack(tensors, dim=0)
+                    disabled = self._additional_output_values(enabled_outputs, {})
                     if animation_outputs_image_batch:
-                        return (frame_batch, lighting_prompts)
+                        return (frame_batch, lighting_prompts, *disabled)
                     video = _create_comfy_video(
                         frame_batch,
                         _animation_frame_rate(data),
@@ -579,12 +630,17 @@ class VNCCS_PoseStudio:
                     # OUTPUT_IS_LIST stays enabled for the image-mode contract.
                     # A one-item list still supplies one ordinary VIDEO value to
                     # downstream nodes while LIST images retain their old behavior.
-                    return ([video], lighting_prompts)
+                    return ([video], lighting_prompts, *disabled)
                 
+                conditioning_outputs = tuple(name for name in linked_outputs if name in POSE_CONDITIONING_OUTPUTS)
+                passes = self._decode_conditioning(data, conditioning_outputs, rendered_images)
                 if output_mode == "LIST":
                     # Return list of individual images and prompts
                     tensor_list = [t.unsqueeze(0) for t in tensors]
-                    return (tensor_list, lighting_prompts)
+                    produced = self._conditioning_tensors(conditioning_outputs, passes, lambda images: images)
+                    produced.update(self._crop_outputs(data, crop_outputs, rendered_images, tensor_list))
+                    produced.update(self._character_outputs(data, character_outputs, rendered_images))
+                    return (tensor_list, lighting_prompts, *self._additional_output_values(enabled_outputs, produced))
                 else:
                     grid_img = self._make_grid(rendered_images, grid_columns, tuple(bg_color))
                     np_grid = np.array(grid_img).astype(np.float32) / 255.0
@@ -593,7 +649,12 @@ class VNCCS_PoseStudio:
                     
                     # For grid, return only the first prompt (conceptually the "main" prompt)
                     combined_prompt = lighting_prompts[0] if lighting_prompts else ""
-                    return ([grid_tensor], [combined_prompt])
+                    # Auxiliary grids use the same layout on a black (ID 0) background.
+                    produced = self._conditioning_tensors(
+                        conditioning_outputs, passes,
+                        lambda images: [self._make_grid(images, grid_columns, (0, 0, 0))],
+                    )
+                    return ([grid_tensor], [combined_prompt], *self._additional_output_values(enabled_outputs, produced))
 
         raise RuntimeError(
             "Pose Studio did not receive images rendered by the browser widget. "
@@ -601,6 +662,101 @@ class VNCCS_PoseStudio:
             "and ensure WebGL is available while the workflow executes."
         )
     
+    def _decode_conditioning(self, data, outputs, rendered_images):
+        if not outputs:
+            return None
+        items = data.get("captured_conditioning")
+        if not isinstance(items, list) or len(items) != len(rendered_images):
+            raise RuntimeError(
+                "Pose Studio did not receive the auxiliary passes for "
+                + ", ".join(outputs)
+                + ". Keep the workflow open in the browser and hard-reload ComfyUI before retrying."
+            )
+        return decode_pose_conditioning(
+            items, conditioning_passes(outputs), [img.size for img in rendered_images]
+        )
+
+    def _additional_output_values(self, enabled, produced):
+        """Fill every slot after lighting_prompt in socket order.
+
+        ``produced`` holds the outputs with a link; everything else is an empty list.
+        """
+        values = [produced.get(name, []) for name in enabled]
+        return [*values, *([] for _ in range(len(POSE_ADDITIONAL_OUTPUTS) - len(values)))]
+
+    def _conditioning_tensors(self, outputs, passes, arrange):
+        """Image lists by output name, aligned with the ``images`` list.
+
+        ``arrange`` maps the per-pose PIL images to the output layout (identity for
+        LIST, a single grid for GRID).
+        """
+        result = {}
+        for name in outputs:
+            if name in ("silhouette", "mask"):
+                arrays = [
+                    silhouette_from_character_ids(item["character_id"]).astype(np.uint8)[:, :, None]
+                    .repeat(3, axis=2) * 255
+                    for item in passes
+                ]
+            else:
+                arrays = [item[name] for item in passes]
+            images = arrange([Image.fromarray(array) for array in arrays])
+            values = []
+            for img in images:
+                array = np.array(img).astype(np.float32) / 255.0
+                if name == "mask":
+                    values.append(torch.from_numpy(array[:, :, 0].copy()).unsqueeze(0))
+                else:
+                    values.append(torch.from_numpy(array).unsqueeze(0))
+            result[name] = values
+        return result
+
+    def _crop_outputs(self, data, outputs, layout_images, image_tensors):
+        """Lists by output name, aligned with ``images``, for the linked crop outputs only.
+
+        ``images`` itself is never cropped. Nothing is copied or drawn for an output
+        without a link, so a run that only uses ``images`` allocates nothing here.
+        """
+        if not outputs:
+            return {}
+        result = {name: [] for name in outputs}
+        for (guide, pose_index), img, image in zip(
+            capture_crop_guides(data, len(layout_images)), layout_images, image_tensors
+        ):
+            record = build_crop_json(guide, img.size[0], img.size[1], pose_index)
+            if "crop_json" in result:
+                result["crop_json"].append(json.dumps(record))
+            if "crop_image" in result:
+                result["crop_image"].append(crop_image(image, record["pixel_rect"]) if record["enabled"] else image)
+            if "crop_preview" in result:
+                result["crop_preview"].append(draw_crop_preview(image, record["pixel_rect"]) if record["enabled"] else image)
+        return result
+
+    def _character_outputs(self, data, outputs, layout_images):
+        """Lists by output name for the linked character outputs only.
+
+        character_json has one item per image and character_passes one batch per
+        character. Without a link nothing is read, decoded or allocated; the frames
+        of character_passes are only built while that output is linked.
+        """
+        if not outputs:
+            return {}
+        items = data.get("captured_characters")
+        if not isinstance(items, list) or len(items) != len(layout_images):
+            raise RuntimeError(
+                "Pose Studio did not receive the character passes for " + ", ".join(outputs)
+                + ". Keep the workflow open in the browser and hard-reload ComfyUI before retrying."
+            )
+        sizes = [img.size for img in layout_images]
+        with_passes = "character_passes" in outputs
+        records, frames = build_character_sets(decode_character_captures(items, sizes), sizes, with_passes=with_passes)
+        result = {}
+        if "character_json" in outputs:
+            result["character_json"] = [json.dumps(record) for record in records]
+        if with_passes:
+            result["character_passes"] = [torch.from_numpy(np.stack(frame, axis=0)) for frame in frames]
+        return result
+
     def _make_grid(self, images, columns, bg_color=(40, 40, 40)):
         """Combine images into a grid."""
         if not images:
