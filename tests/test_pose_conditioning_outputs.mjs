@@ -3,12 +3,18 @@ import test from "node:test";
 import * as THREE from "../web/vendor/three/three.module.js";
 import { PoseViewerCore } from "../web/pose_studio/core.js";
 import {
+    POSE_ADDITIONAL_OUTPUT_GROUPS,
+    poseAdditionalOutputNames,
+    poseLinkedAdditionalOutputNames,
+    restorePoseAdditionalOutputs,
+    savedPoseAdditionalOutputs,
+    setPoseAdditionalOutput,
+} from "../web/pose_studio/additional_outputs.mjs";
+import {
     POSE_CHARACTER_ID_COLORS,
     POSE_CONDITIONING_OUTPUTS,
     POSE_DEPTH_FAR_LEVEL,
-    ensurePoseConditioningOutputs,
     poseCaptureCameraFromSnapshot,
-    poseConditioningOutputNames,
     poseConditioningPasses,
     poseDepthImage,
     poseOutlineImage,
@@ -21,17 +27,35 @@ const noop = () => {};
 const WIDTH = 72, HEIGHT = 96;
 const PASSES = ["depth", "normal", "outline", "character_id"];
 
-function linkedOutputs(names = POSE_CONDITIONING_OUTPUTS.map(output => output.name)) {
+const ALL_NAMES = POSE_CONDITIONING_OUTPUTS.map(output => output.name);
+
+function enabledOutputs(names = ALL_NAMES, linked = names) {
     return [
         { name: "images", type: "IMAGE", links: [1] },
         { name: "lighting_prompt", type: "STRING", links: null },
-        ...POSE_CONDITIONING_OUTPUTS.map((output, index) => ({
-            ...output, links: names.includes(output.name) ? [10 + index] : [],
+        ...names.map((name, index) => ({
+            name, type: name === "mask" ? "MASK" : "IMAGE", links: linked.includes(name) ? [10 + index] : null,
         })),
     ];
 }
 
-function conditioningScene({ outputs = linkedOutputs() } = {}) {
+/** LiteGraph's socket behaviour: links record their slot, removal shifts later slots. */
+function socketNode(outputs, links = new Map()) {
+    return {
+        outputs,
+        links,
+        addOutput(name, type, extra) { this.outputs.push({ name, type, links: null, ...extra }); },
+        removeOutput(slot) {
+            for (const id of this.outputs[slot].links || []) links.delete(id);
+            this.outputs.splice(slot, 1);
+            for (const output of this.outputs.slice(slot)) {
+                for (const id of output.links || []) links.get(id).origin_slot--;
+            }
+        },
+    };
+}
+
+function conditioningScene({ outputs = enabledOutputs() } = {}) {
     const scene = createScene({ skinned: true });
     const { w, viewer, node } = scene;
     w.hydrateCharacterSceneModels = async () => {};
@@ -147,27 +171,83 @@ function assertMatchesRGB(scene, snapshot, index, message) {
     return slots;
 }
 
-test("auxiliary outputs append after images and lighting_prompt and only linked ones are requested", () => {
+test("Additional Outputs lists the conditioning group and sockets follow the order they were enabled", () => {
+    assert.equal(POSE_ADDITIONAL_OUTPUT_GROUPS[0].title, "Conditioning");
     assert.deepEqual(POSE_CONDITIONING_OUTPUTS.map(output => `${output.name}:${output.type}`), [
         "depth:IMAGE", "normal:IMAGE", "outline:IMAGE", "silhouette:IMAGE", "mask:MASK", "character_id:IMAGE",
     ]);
-    assert.deepEqual(poseConditioningOutputNames({ outputs: linkedOutputs(["mask", "depth"]) }), ["depth", "mask"]);
-    assert.deepEqual(poseConditioningOutputNames({ outputs: linkedOutputs([]) }), []);
-    assert.deepEqual(poseConditioningOutputNames(undefined), []);
+    assert.deepEqual(poseAdditionalOutputNames({ outputs: enabledOutputs(["mask", "depth"]) }), ["mask", "depth"]);
+    assert.deepEqual(poseAdditionalOutputNames({ outputs: enabledOutputs([]) }), []);
+    assert.deepEqual(poseAdditionalOutputNames(undefined), []);
     assert.deepEqual(poseConditioningPasses(["mask", "silhouette"]), ["character_id"]);
     assert.deepEqual(poseConditioningPasses(["character_id", "outline", "depth"]), ["depth", "outline", "character_id"]);
 
-    const images = { name: "images", type: "IMAGE", links: [12, 34] };
-    const prompt = { name: "lighting_prompt", type: "STRING", links: [56] };
-    const legacy = { outputs: [images, prompt], addOutput(name, type) { this.outputs.push({ name, type, links: null }); } };
-    ensurePoseConditioningOutputs(legacy);
-    ensurePoseConditioningOutputs(legacy);
+    const node = socketNode(enabledOutputs([]));
+    assert.equal(setPoseAdditionalOutput(node, "mask", true), true);
+    assert.equal(setPoseAdditionalOutput(node, "mask", true), false, "enabling twice adds one socket");
+    assert.equal(setPoseAdditionalOutput(node, "depth", true), true);
+    assert.equal(setPoseAdditionalOutput(node, "images", false), false, "the base outputs cannot be removed");
+    assert.equal(setPoseAdditionalOutput(node, "unknown", true), false);
+    assert.deepEqual(node.outputs.map(output => output.name), ["images", "lighting_prompt", "mask", "depth"]);
+    assert.deepEqual(node.outputs.slice(2).map(output => `${output.type}:${output.shape}`), ["MASK:6", "IMAGE:6"],
+        "new sockets are list sockets of the exact type");
+});
+
+test("disabling one output keeps the links of the others on the matching slot", () => {
+    const links = new Map([
+        [1, { origin_slot: 0 }], [2, { origin_slot: 1 }], [3, { origin_slot: 2 }], [4, { origin_slot: 3 }], [5, { origin_slot: 4 }],
+    ]);
+    const outputs = enabledOutputs(["mask", "depth", "outline"]);
+    outputs[0].links = [1]; outputs[1].links = [2]; outputs[2].links = [3]; outputs[3].links = [4]; outputs[4].links = [5];
+    const node = socketNode(outputs, links);
+    assert.equal(setPoseAdditionalOutput(node, "depth", false), true);
+    assert.deepEqual(poseAdditionalOutputNames(node), ["mask", "outline"]);
+    assert.equal(links.has(4), false, "the disabled output's own link goes with its socket");
+    assert.deepEqual([...links.values()].map(link => link.origin_slot), [0, 1, 2, 3],
+        "slot 3 is now outline, the second name in the saved list");
+    assert.deepEqual(node.outputs[3].links, [5]);
+});
+
+test("a new node and restored workflows keep only enabled or linked additional outputs", () => {
+    // A new node is built from all the slots in the node definition.
+    const fresh = socketNode(enabledOutputs(ALL_NAMES, []));
+    restorePoseAdditionalOutputs(fresh);
+    assert.deepEqual(fresh.outputs.map(output => output.name), ["images", "lighting_prompt"]);
+
+    // A two-output workflow stays as it is, with its links.
+    const legacy = socketNode(enabledOutputs([]));
+    const [images, prompt] = legacy.outputs;
+    assert.deepEqual(poseLinkedAdditionalOutputNames(legacy), []);
+    restorePoseAdditionalOutputs(legacy);
     assert.equal(legacy.outputs[0], images);
     assert.equal(legacy.outputs[1], prompt);
-    assert.deepEqual(legacy.outputs[0].links, [12, 34]);
-    assert.deepEqual(legacy.outputs.map(output => output.name), [
-        "images", "lighting_prompt", "depth", "normal", "outline", "silhouette", "mask", "character_id",
-    ]);
+    assert.deepEqual(legacy.outputs[0].links, [1]);
+    assert.equal(legacy.outputs.length, 2);
+
+    // A saved list keeps enabled sockets that have no link yet, in their saved order.
+    const saved = socketNode(enabledOutputs(["mask", "depth"], []));
+    restorePoseAdditionalOutputs(saved, ["mask", "depth"]);
+    assert.deepEqual(poseAdditionalOutputNames(saved), ["mask", "depth"]);
+    assert.deepEqual(poseLinkedAdditionalOutputNames(saved), []);
+
+    // All eight sockets always visible: the linked one stays, its link moves with it.
+    const links = new Map([[7, { origin_slot: 7 }]]);
+    const eight = socketNode(enabledOutputs(ALL_NAMES, []), links);
+    eight.outputs[7].links = [7];
+    restorePoseAdditionalOutputs(eight, ["character_id"]);
+    assert.deepEqual(poseAdditionalOutputNames(eight), ["character_id"]);
+    assert.equal(links.get(7).origin_slot, 2);
+
+    // A link is kept even when the saved list does not name it.
+    const linked = socketNode(enabledOutputs(["depth"]));
+    restorePoseAdditionalOutputs(linked, "not a list");
+    assert.deepEqual(poseAdditionalOutputNames(linked), ["depth"]);
+
+    const widget = value => ({ widgets: [{ name: "pose_data", value }] });
+    assert.deepEqual(savedPoseAdditionalOutputs(widget(JSON.stringify({ export: { additional_outputs: ["mask"] } }))), ["mask"]);
+    assert.deepEqual(savedPoseAdditionalOutputs(widget("{broken")), []);
+    assert.deepEqual(savedPoseAdditionalOutputs(widget("")), []);
+    assert.deepEqual(savedPoseAdditionalOutputs({}), []);
 });
 
 test("depth maps near to white and far to the floor level; outlines follow silhouettes and occlusions", () => {
@@ -334,20 +414,55 @@ test("editor helpers and unknown overlays never reach the auxiliary passes", asy
     assert.ok(single.includes(w.getActiveCharacter().slot + 1));
 });
 
-test("unlinked outputs render nothing and keep RGB captures and pose_data unchanged", () => {
-    const plain = conditioningScene({ outputs: linkedOutputs([]) });
+test("disabled outputs render and encode nothing and keep RGB captures and pose_data unchanged", () => {
+    const plain = conditioningScene({ outputs: enabledOutputs([]) });
+    let conditioningCaptures = 0;
+    const capture = plain.viewer.captureConditioning;
+    plain.viewer.captureConditioning = (...args) => { conditioningCaptures++; return capture(...args); };
     assert.equal(run(plain), null);
-    assert.equal(plain.renderer.targetRenders.length, 0, "no auxiliary GPU work without linked outputs");
+    assert.equal(conditioningCaptures, 0, "no pass is captured or encoded");
+    assert.equal(plain.renderer.targetRenders.length, 0, "no render target is drawn");
     const plainSaved = JSON.parse(plain.node.widgets[0].value);
-    assert.equal(plainSaved.export.conditioning_outputs, undefined);
+    assert.equal(plainSaved.export.additional_outputs, undefined);
     const plainOwners = rgbOwners(plain, plain.w.poseCaptures[0]);
 
-    const linked = conditioningScene({ outputs: linkedOutputs(["silhouette", "normal"]) });
-    const snapshot = run(linked);
-    assert.deepEqual(Object.keys(snapshot[0]).sort(), ["character_id", "normal"]);
-    assert.deepEqual(JSON.parse(linked.node.widgets[0].value).export.conditioning_outputs, ["normal", "silhouette"],
-        "pose_data changes with the linked outputs so ComfyUI re-executes the node");
-    assert.deepEqual(rgbOwners(linked, linked.w.poseCaptures[0]), plainOwners, "RGB capture is unchanged");
+    const unlinked = conditioningScene({ outputs: enabledOutputs(["depth"], []) });
+    assert.equal(run(unlinked), null);
+    assert.equal(unlinked.renderer.targetRenders.length, 0, "an enabled output without a link renders nothing");
+
+    const enabled = conditioningScene({ outputs: enabledOutputs(["silhouette", "depth", "normal"], ["silhouette", "normal"]) });
+    const snapshot = run(enabled);
+    assert.deepEqual(Object.keys(snapshot[0]).sort(), ["character_id", "normal"], "only linked outputs get passes");
+    const saved = JSON.parse(enabled.node.widgets[0].value).export;
+    assert.deepEqual(saved.additional_outputs, ["silhouette", "depth", "normal"], "pose_data keeps the socket order");
+    assert.deepEqual(saved.linked_additional_outputs, ["silhouette", "normal"]);
+    assert.deepEqual(rgbOwners(enabled, enabled.w.poseCaptures[0]), plainOwners, "RGB capture is unchanged");
+});
+
+test("the settings toggle updates sockets and pose_data at once", () => {
+    const scene = conditioningScene({ outputs: enabledOutputs([]) });
+    const { w, node } = scene;
+    const socket = socketNode(node.outputs);
+    node.addOutput = socket.addOutput;
+    node.removeOutput = socket.removeOutput;
+    const checkboxes = [];
+    const collect = element => {
+        if (element.type === "checkbox") checkboxes.push(element);
+        for (const child of element.children || []) collect(child);
+    };
+    collect(w.createAdditionalOutputsSection().content);
+    const groupNames = POSE_ADDITIONAL_OUTPUT_GROUPS.flatMap(group => group.outputs.map(output => output.name));
+    assert.deepEqual(checkboxes.map(checkbox => checkbox.name), groupNames.map(name => `additional_output_${name}`));
+    assert.ok(checkboxes.every(checkbox => checkbox.checked === false), "everything is off by default");
+    const mask = checkboxes[groupNames.indexOf("mask")];
+    mask.checked = true;
+    mask.emit("change");
+    assert.deepEqual(poseAdditionalOutputNames(node), ["mask"]);
+    assert.deepEqual(JSON.parse(node.widgets[0].value).export.additional_outputs, ["mask"]);
+    mask.checked = false;
+    mask.emit("change");
+    assert.deepEqual(poseAdditionalOutputNames(node), []);
+    assert.equal(JSON.parse(node.widgets[0].value).export.additional_outputs, undefined);
 });
 
 test("Pose Manager RUN reuses the cards and renders passes with each card's own camera", () => {
@@ -381,8 +496,12 @@ test("Pose Manager RUN reuses the cards and renders passes with each card's own 
     });
 });
 
-test("animation mode refuses linked auxiliary outputs instead of returning blank images", () => {
-    const scene = conditioningScene({ outputs: linkedOutputs(["depth"]) });
+test("animation mode refuses linked conditioning outputs instead of returning blank images", () => {
+    const scene = conditioningScene({ outputs: enabledOutputs(["depth"]) });
     scene.w.isAnimationMode = () => true;
     assert.throws(() => scene.w.syncToNode(true, { executionCapture: true, skipCaptureUpload: true }), /Image mode/);
+    const unlinked = conditioningScene({ outputs: enabledOutputs(["depth"], []) });
+    unlinked.w.isAnimationMode = () => true;
+    unlinked.w.syncToNode(true, { executionCapture: true, skipCaptureUpload: true });
+    assert.equal(unlinked.renderer.targetRenders.length, 0);
 });

@@ -31,26 +31,10 @@ const PRESET_KEYS = new Set(CROP_GUIDE_ASPECT_PRESETS.map(preset => preset.key))
 
 /** Node outputs appended after the existing Pose Studio outputs, in slot order. */
 export const POSE_CROP_GUIDE_OUTPUTS = Object.freeze([
-    Object.freeze({ name: "crop_json", type: "STRING" }),
-    Object.freeze({ name: "crop_image", type: "IMAGE" }),
-    Object.freeze({ name: "crop_preview", type: "IMAGE" }),
+    Object.freeze({ name: "crop_json", type: "STRING", hint: "The crop rectangle of each image as JSON" }),
+    Object.freeze({ name: "crop_image", type: "IMAGE", hint: "Each full image cropped to its guide" }),
+    Object.freeze({ name: "crop_preview", type: "IMAGE", hint: "Each full image with the guide drawn" }),
 ]);
-
-/** Names of the crop outputs that are linked on a ComfyUI node, in slot order. */
-export function poseCropGuideOutputNames(node) {
-    const linked = new Set((node?.outputs || [])
-        .filter(output => Array.isArray(output?.links) && output.links.length > 0)
-        .map(output => output.name));
-    return POSE_CROP_GUIDE_OUTPUTS.map(output => output.name).filter(name => linked.has(name));
-}
-
-/** Workflows saved before the crop outputs existed only gain them at the end; earlier slots and links stay. */
-export function ensurePoseCropGuideOutputs(node) {
-    if (!Array.isArray(node?.outputs) || typeof node.addOutput !== "function") return;
-    for (const output of POSE_CROP_GUIDE_OUTPUTS) {
-        if (!node.outputs.some(existing => existing?.name === output.name)) node.addOutput(output.name, output.type);
-    }
-}
 
 export function defaultCropGuide() {
     return {

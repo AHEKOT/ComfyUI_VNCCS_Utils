@@ -41,17 +41,9 @@ Outputs:
 | --- | --- | --- |
 | `images` | `IMAGE` list | Rendered pose image output. In LIST mode it is one image per pose tab. In GRID mode it is a one-item list containing the grid image. |
 | `lighting_prompt` | `STRING` list | Combined lighting, per-pose, and connected camera prompt aligned with `images`. |
-| `depth` | `IMAGE` list | Camera depth of the characters, aligned with `images`. See [Auxiliary control images](#auxiliary-control-images). |
-| `normal` | `IMAGE` list | View-space normal map aligned with `images`. |
-| `outline` | `IMAGE` list | White contour lines on black aligned with `images`. |
-| `silhouette` | `IMAGE` list | White characters on black aligned with `images`. |
-| `mask` | `MASK` list | Character coverage (1 = character) aligned with `images`. |
-| `character_id` | `IMAGE` list | One flat colour per character slot on black, aligned with `images`. |
-| `crop_json` | `STRING` list | The crop guide of each image, aligned with `images`. See [Crop Guide](#crop-guide). |
-| `crop_image` | `IMAGE` list | Crop of each full image with its guide (the full image when the guide is disabled). |
-| `crop_preview` | `IMAGE` list | Each full image with the outside dimmed and the guide border drawn. |
-| `character_json` | `STRING` list | Per-character information of each image, aligned with `images`. See [Per-character export](#per-character-export). |
-| `character_passes` | `IMAGE` list | One batch per exported character: solo normal, solo depth and full-body silhouette at the full image size. |
+
+A new node has only these two outputs. Settings > **Additional Outputs** adds more: see
+[Additional outputs](#additional-outputs).
 
 Important backend behavior:
 
@@ -244,13 +236,30 @@ Use GRID when:
 - You want a single pose sheet/contact sheet.
 - You are building reference previews rather than separate generation inputs.
 
-## Auxiliary control images
+## Additional outputs
 
-`depth`, `normal`, `outline`, `silhouette`, `mask` and `character_id` are extra
-outputs appended after `images` and `lighting_prompt`, so existing links keep their
-slots. They are rendered in the browser only when at least one of them is linked;
-unlinked outputs return black placeholders and cost nothing, and `images` is
-unchanged either way.
+Open Settings (the gear button) and turn on what you need under **Additional Outputs**.
+The **Conditioning** group has `depth`, `normal`, `outline`, `silhouette`, `mask` and
+`character_id`, the **Crop Guide** group has `crop_json`, `crop_image` and `crop_preview`,
+and the **Per-character Export** group has `character_json` and `character_passes`. All
+are off by default, so a new node has only `images` and `lighting_prompt`.
+
+- **Unused outputs cost nothing.** A disabled output has no socket. An enabled output
+  without a link has a socket, but neither gets rendering, PNG encoding or image
+  allocation. `images` is unchanged either way.
+- **Sockets appear in the order you enable them**, after `lighting_prompt`. Turning one
+  off removes that socket and its links; links on the other outputs stay connected.
+- **Saved workflows** keep their enabled outputs and links. A workflow with links from a
+  version where these outputs were always visible keeps the linked ones and hides the
+  others.
+
+The enabled outputs are saved in socket order in `pose_data.export.additional_outputs`.
+The backend fills the slots after `lighting_prompt` in that order, so in an API-format
+prompt, slot 2 is the first name in the list, slot 3 the second, and so on. The outputs
+with a link are saved in `pose_data.export.linked_additional_outputs`, so enabling or
+linking an output re-executes the node.
+
+### Conditioning outputs
 
 - **Same camera as `images`.** Every pass is rendered right after its RGB capture
   through that capture's camera and at the output resolution, so FOV, Distance,
@@ -267,8 +276,9 @@ unchanged either way.
 - **Pose Manager.** RUN still sends the card images byte for byte; the passes are
   rendered at RUN with the exact camera each card was captured with.
 - **Debug Mode and `pose_image`** captures produce passes for the image they output.
-- **Animation mode** is not supported yet: linking an auxiliary output there stops
-  the run with an error instead of returning blank images.
+- **Animation mode** is not supported yet: a linked conditioning output stops the run
+  there with an error instead of returning blank images. Turn it off or switch to Image
+  mode.
 
 | Output | Encoding |
 | --- | --- |
@@ -279,8 +289,7 @@ unchanged either way.
 | `mask` | ComfyUI `MASK`, 1.0 on characters, 0.0 on background. |
 | `character_id` | Flat colours without anti-aliasing by character slot: Character 1 = red (255, 0, 0), Character 2 = green (0, 255, 0), Character 3 = blue (0, 0, 255), Character 4 = yellow (255, 255, 0); background = ID 0 = black. The colour follows the slot, not the selected character, so it is stable across edits, saves and reloads. One channel threshold extracts a character's mask. |
 
-The workflow records the linked auxiliary outputs in `pose_data.export.conditioning_outputs`
-so linking one re-executes the node. The passes reuse the 3D Factory conditioning renderer
+The passes reuse the 3D Factory conditioning renderer
 (`web/shared/conditioning_render.mjs`).
 
 ## Crop Guide
@@ -295,7 +304,8 @@ final crop, generate from the uncropped image and crop the generated image after
   overlay drawn on its own 2D layer, so it never appears in a capture.
 - **One rectangle per pose tab**, shared by every character (scene level, like the
   prompt and the lens). New tabs start with a disabled guide.
-- **Enabled** makes the tab's rectangle drive the crop outputs. **Show** hides or shows
+- **Enabled** makes the tab's rectangle drive the crop outputs, which you turn on in
+  Settings > [Additional Outputs](#additional-outputs). **Show** hides or shows
   the overlay; **Dim Outside** darkens the frame around it (both are editor preferences).
 - **Edit Crop** turns on editing: drag inside the rectangle to move it, drag a corner or
   edge handle to resize it. Orbit, pan, zoom and bone editing keep working outside the
@@ -330,7 +340,7 @@ Stored guide fields: `schema_version` (1), `enabled`, `x`, `y`, `width`, `height
 `custom_aspect_ratio` (`[w, h]`) and `aspect_ratio_locked`. NaN, Infinity, negative,
 non-numeric or oversized values are rejected (the guide loads disabled) or clamped inside.
 
-Pixel conversion, identical in the browser, in Pose Studio and in Apply Crop Guide:
+Pixel conversion, identical in the browser and in Pose Studio:
 left and top use `floor(x * width)`, right and bottom use `ceil((x + w) * width)` and
 are exclusive, all clamped to the image, at least 1 pixel; width and height are the
 differences of the boundaries. Products within 1e-6 pixel of an integer count as that
@@ -356,7 +366,7 @@ Example `crop_json`:
 ```
 
 `pose_index` is the pose tab (`null` for a Debug Mode library pose); `custom_aspect_ratio`
-is added for Custom. Runs where the guide does not apply add `"unsupported": "<reason>"`.
+is added for Custom.
 
 ### Output modes
 
@@ -366,40 +376,17 @@ is added for Custom. Runs where the guide does not apply add `"unsupported": "<r
 | Debug Mode | The single library pose uses that asset's saved guide (disabled if it has none). |
 | GRID, Animation (VIDEO or IMAGE batch), Pose Manager | Not supported: their images are not the Studio capture frame of each tab. A linked crop output stops the run with an error; unlinked outputs return disabled `crop_json` and black placeholders. |
 
-`crop_preview` is only drawn while it is linked (otherwise a black placeholder); linking
-it records `export.crop_outputs` in `pose_data` so the node runs again. `crop_image` is a
-copy of the crop and never shares pixels with `images`. Pose Manager RUN and its card
-cache are unchanged.
+A crop output with a link in an unsupported mode stops the run with an error. Each crop
+output is only produced while it is linked, so an unconnected `crop_image` costs no image
+copy. An enabled guide gives a copy of the crop that never shares pixels with `images`; a
+disabled guide gives the full image. Pose Manager RUN and its card cache are unchanged.
 
-### VNCCS Apply Crop Guide
+### Using the rectangle elsewhere
 
-`VNCCS Apply Crop Guide` (`VNCCS_ApplyCropGuide`, category `VNCCS/pose`) crops any image
-with a `crop_json`: inputs `image` (IMAGE), `crop_json` (STRING) and `aspect_mismatch`;
-output `cropped_image` (IMAGE list). It parses and validates the JSON, uses the input
-image's real resolution, converts the normalized rectangle with the same rounding and
-crops without resizing or interpolation. Invalid JSON, unknown schema versions,
-non-numeric or out-of-range rectangles stop with a clear error. A disabled guide returns
-the image unchanged.
-
-Pairing: one `crop_json` crops every image (each batch keeps its size); N images and N
-`crop_json` values pair in order; one batch of N images and N `crop_json` values is split
-per pose. Crops of different sizes are separate list items and are never stacked into one
-tensor. The same `crop_json` crops the depth, normal, outline, silhouette and Character ID
-outputs identically.
-
-Typical workflow: `images` -> ControlNet / generation -> `VNCCS Apply Crop Guide`
-(`crop_json` from Pose Studio) -> Save Image.
-
-Applying the rectangle to an image of a different resolution:
-
-1. **Pure resize** (same content scaled, e.g. 1280 x 720 -> 1920 x 1080): supported; the
-   same normalized rectangle is converted at the new resolution.
-2. **Letterbox, padding or center crop**: the rectangle must go through the same geometric
-   transform first. Apply Crop Guide refuses an aspect ratio that differs by more than 1 %
-   by default; choose `stretch` only when the image was resized without padding or
-   cropping (stretched).
-3. **The generator moved or reframed the subject**: no guarantee; the rectangle marks the
-   image region, not the subject.
+`rect` in `crop_json` is normalized, so it stays valid for an image that was only resized.
+After letterboxing, padding or a center crop it must go through the same transform first,
+and it marks an image region, not the subject, if a generator moved or reframed the
+subject.
 
 ## Per-character export
 
@@ -417,18 +404,19 @@ as Crop Guide and VNCCS Apply Crop Guide.
   pass and, per character, the normal, depth and coverage of that character alone (all
   other characters hidden), through the same capture camera and at the output resolution.
   Parts hidden behind other characters are therefore present in the solo passes.
-- **Cost.** Nothing is rendered while both outputs are unlinked; `images` and every
-  other output are identical either way. While linked, each image costs one extra
-  three-pass render of the full scene plus one per character, and PNG encoding of the
-  results. Linking either output records `export.character_outputs` in `pose_data`, so
-  the node runs again.
+- **Cost.** Turn the outputs on in Settings > [Additional Outputs](#additional-outputs).
+  Nothing is rendered, encoded or allocated while both are off or unlinked; `images` and
+  every other output are identical either way. While either is linked, each image costs
+  one extra three-pass render of the full scene plus one per character, and PNG encoding
+  of the results. The image frames of `character_passes` are built only while that output
+  is linked. A new link is saved in `pose_data`, so the node runs again. Pass images are
+  sent with the run and never stored in the workflow.
 - **Exported characters** are the characters shown in the capture, in ascending slot
   order. A character hidden in the scene or entirely outside the frame is not exported;
   a character fully covered by others is exported (its visible mask is empty).
 - **Run modes.** Studio, Image mode, LIST output (including Debug Mode and `pose_image`
   runs). GRID, Animation and Pose Manager runs stop with an error while either output is
-  linked; unlinked outputs return placeholders (`character_json` with `"unavailable"`
-  and black images).
+  linked.
 
 ### Slots, IDs and lists
 
@@ -577,6 +565,20 @@ Common settings:
 | model rotation | Rotate the mannequin without changing the viewport UI state. |
 | background color | Used for final render and grid background. |
 | `directional_skydome_enabled` | Show/export the directional skydome and expose the `camera_prompt` input. |
+
+Type an exact value in the number beside the FOV or Distance label. The number and
+the slider both step by 0.1 and update together while you drag or type; one edit is one
+Undo step, and Undo restores the viewport camera along with the capture lens.
+
+FOV alone keeps the camera where it is, so it changes how much of the scene fits in the
+frame, like a zoom: near and far figures keep their proportions. To change those
+proportions, change Distance, or turn on **Maintain Subject Size** and change FOV: the
+subject keeps its size while near figures grow and far figures shrink at a wide FOV, and
+the reverse at a narrow one. The viewport and RUN output show the same perspective.
+
+The SAM standard-camera fit measures through the current FOV and Distance and keeps
+them. It uses the regular front camera, so a saved **Align Camera to View** is cleared
+when the fit succeeds.
 
 The lens is stored with each pose tab's `cameraParams` (`fov_deg`, `distance`,
 `maintain_subject_size`), mirrored on every character like yaw/pitch, and in the

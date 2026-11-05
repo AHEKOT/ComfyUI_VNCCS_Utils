@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PoseViewerCore } from "../web/pose_studio/core.js";
+import {
+    POSE_ADDITIONAL_OUTPUT_GROUPS,
+    poseAdditionalOutputNames,
+    restorePoseAdditionalOutputs,
+} from "../web/pose_studio/additional_outputs.mjs";
 import { POSE_CHARACTER_ID_COLORS } from "../web/pose_studio/conditioning.mjs";
 import {
     POSE_CHARACTER_OUTPUTS,
     POSE_CHARACTER_PASS_ORDER,
-    ensurePoseCharacterOutputs,
     poseCharacterOutputNames,
     poseRawDepthImage,
 } from "../web/pose_studio/character_passes.mjs";
@@ -92,19 +96,26 @@ async function overlappingScene(options) {
     return scene;
 }
 
-test("character outputs append after the crop outputs and only linked ones are requested", () => {
+test("character outputs are a group of Additional Outputs and only linked ones are requested", () => {
     assert.deepEqual(POSE_CHARACTER_OUTPUTS.map(output => `${output.name}:${output.type}`),
         ["character_json:STRING", "character_passes:IMAGE"]);
     assert.deepEqual(POSE_CHARACTER_PASS_ORDER, ["normal_solo", "depth_solo", "silhouette"]);
-    assert.deepEqual(poseCharacterOutputNames({ outputs: linkedOutputs(["character_passes"]) }), ["character_passes"]);
-    assert.deepEqual(poseCharacterOutputNames({ outputs: linkedOutputs([]) }), []);
+    const group = POSE_ADDITIONAL_OUTPUT_GROUPS.find(entry => entry.title === "Per-character Export");
+    assert.deepEqual(group.outputs.map(output => output.name), ["character_json", "character_passes"]);
+    assert.deepEqual(poseCharacterOutputNames(["mask", "character_passes"]), ["character_passes"]);
+    assert.deepEqual(poseCharacterOutputNames([]), []);
     assert.deepEqual(poseCharacterOutputNames(undefined), []);
-    const crop = { name: "crop_preview", type: "IMAGE", links: [7] };
-    const legacy = { outputs: [{ name: "images", links: [1] }, crop], addOutput(name, type) { this.outputs.push({ name, type, links: null }); } };
-    ensurePoseCharacterOutputs(legacy);
-    ensurePoseCharacterOutputs(legacy);
-    assert.equal(legacy.outputs[1], crop);
-    assert.deepEqual(legacy.outputs.map(output => output.name), ["images", "crop_preview", "character_json", "character_passes"]);
+    // A workflow saved with these sockets keeps its link and hides the unused one.
+    const node = {
+        outputs: [
+            { name: "images", links: [1] }, { name: "lighting_prompt", links: null },
+            { name: "character_json", links: null }, { name: "character_passes", links: [7] },
+        ],
+        removeOutput(slot) { this.outputs.splice(slot, 1); },
+    };
+    restorePoseAdditionalOutputs(node, []);
+    assert.deepEqual(poseAdditionalOutputNames(node), ["character_passes"]);
+    assert.deepEqual(node.outputs[2].links, [7]);
 });
 
 test("packed depth keeps every byte and marks the background with 0", () => {
@@ -154,12 +165,12 @@ test("unlinked character outputs render nothing and keep RGB captures unchanged"
     const plain = await overlappingScene({ outputs: linkedOutputs([]) });
     assert.equal(run(plain), null);
     assert.equal(plain.renderer.targetRenders.length, 0, "no extra GPU work without linked character outputs");
-    assert.equal(JSON.parse(plain.node.widgets[0].value).export.character_outputs, undefined);
+    assert.deepEqual(JSON.parse(plain.node.widgets[0].value).export.linked_additional_outputs, []);
     const plainOwners = topDownOwners(plain.renderer.rgbFrames[0]);
 
     const linked = await overlappingScene({ outputs: linkedOutputs(["character_json"]) });
     assert.equal(run(linked).length, 1);
-    assert.deepEqual(JSON.parse(linked.node.widgets[0].value).export.character_outputs, ["character_json"],
+    assert.deepEqual(JSON.parse(linked.node.widgets[0].value).export.linked_additional_outputs, ["character_json"],
         "pose_data changes with the linked outputs so ComfyUI re-executes the node");
     assert.deepEqual(topDownOwners(linked.renderer.rgbFrames[0]), plainOwners, "RGB capture is unchanged");
 });
@@ -203,7 +214,7 @@ test("GRID, Pose Manager and Animation runs do not render character passes", asy
     grid.w.exportParams.output_mode = "GRID";
     assert.equal(run(grid), null);
     assert.equal(grid.renderer.targetRenders.length, 0);
-    assert.deepEqual(JSON.parse(grid.node.widgets[0].value).export.character_outputs,
+    assert.deepEqual(JSON.parse(grid.node.widgets[0].value).export.linked_additional_outputs,
         ["character_json", "character_passes"], "Python sees the linked outputs and stops with an error");
 
     const manager = characterScene();

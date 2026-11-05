@@ -8,7 +8,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791754604000";
 import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791754604000";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791754604000";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=20261104-scaled-menu";
 import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791754604000";
 import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791754604000";
 import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791754604000";

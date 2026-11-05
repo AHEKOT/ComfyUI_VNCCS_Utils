@@ -1,12 +1,13 @@
 [project]
 name = "vnccs-utils"
 description = "VNCCS utility nodes: Pose Studio, UniCanvas, and 3D Factory."
-version = "0.7.1"
+version = "0.7.2"
 license = {file = "LICENSE"} 
 
 dependencies = [
     "opencv-python",
     "huggingface_hub",
+    "dulwich>=1.2.20,<2",
     "aiohttp",
     "av",
     "kornia",

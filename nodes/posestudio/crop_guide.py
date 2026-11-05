@@ -4,22 +4,20 @@ The browser widget stores one rectangle per static pose tab in post-projection
 image space (normalized 0..1, origin top-left, +x right, +y down, no rotation,
 fully inside the image). This module mirrors web/pose_studio/crop_guide.mjs so
 the same JSON and image size always produce the same pixel rectangle, and does
-the pure image work for the crop outputs and ``VNCCS Apply Crop Guide``.
+the pure image work for the crop outputs.
 It never imports torch: tensors are only sliced and cloned through their methods.
 """
-import json
 import math
 
 CROP_GUIDE_SCHEMA_VERSION = 1
 CROP_GUIDE_PIXEL_EPSILON = 1e-6
-# Appended after the conditioning outputs; never reorder.
+# The Crop Guide group of Settings > Additional Outputs.
 POSE_CROP_GUIDE_OUTPUTS = ("crop_json", "crop_image", "crop_preview")
 CROP_GUIDE_ASPECT_RATIOS = {
     "free": None, "1:1": 1.0, "4:3": 4 / 3, "3:4": 3 / 4,
     "16:9": 16 / 9, "9:16": 9 / 16, "custom": None,
 }
 # Relative difference of width/height ratios that still counts as a pure resize.
-CROP_GUIDE_ASPECT_TOLERANCE = 0.01
 # Guide border in crop_preview (matches the editor overlay colour).
 CROP_PREVIEW_COLOR = (0.0, 0.85, 1.0)
 CROP_PREVIEW_DIM = 0.45
@@ -121,22 +119,6 @@ def build_crop_json(guide, width, height, pose_index=0):
     return record
 
 
-def unsupported_crop_json(width, height, reason, pose_index=None):
-    """Disabled record for runs whose images do not correspond to the edited capture frame."""
-    record = build_crop_json(None, width, height, pose_index)
-    record["unsupported"] = reason
-    return record
-
-
-def requested_crop_outputs(export):
-    """Linked crop outputs recorded by the widget in ``export.crop_outputs``."""
-    names = export.get("crop_outputs") if isinstance(export, dict) else None
-    if not isinstance(names, list):
-        return ()
-    requested = {name for name in names if isinstance(name, str)}
-    return tuple(name for name in POSE_CROP_GUIDE_OUTPUTS if name in requested)
-
-
 def crop_guide_unsupported_reason(export, editor_mode, output_mode):
     """Modes whose images are not the Studio capture frame the guide was drawn on."""
     if editor_mode == "animation":
@@ -194,86 +176,3 @@ def draw_crop_preview(image, pixel_rect):
     preview[:, y:y + h, x:x + thickness, :channels] = color
     preview[:, y:y + h, x + w - thickness:x + w, :channels] = color
     return preview
-
-
-def _strict_number(rect, key):
-    value = rect.get(key)
-    number = _finite(value)
-    if number is None:
-        raise ValueError(f"crop_json rect.{key} must be a finite number, got {value!r}")
-    return float(number)
-
-
-def parse_crop_json(value):
-    """Strict validation of one crop_json value for VNCCS Apply Crop Guide."""
-    if isinstance(value, dict):
-        record = value
-    else:
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("crop_json is empty. Connect the crop_json output of VNCCS Pose Studio.")
-        try:
-            record = json.loads(value)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"crop_json is not valid JSON: {exc.msg} (position {exc.pos})") from exc
-    if not isinstance(record, dict):
-        raise ValueError("crop_json must be a JSON object")
-    version = record.get("schema_version")
-    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
-        raise ValueError(f"crop_json needs a positive integer schema_version, got {version!r}")
-    if version > CROP_GUIDE_SCHEMA_VERSION:
-        raise ValueError(
-            f"crop_json schema_version {version} is newer than this node supports "
-            f"({CROP_GUIDE_SCHEMA_VERSION}); update ComfyUI_VNCCS_Utils"
-        )
-    system = record.get("coordinate_system", "top_left_normalized")
-    if system != "top_left_normalized":
-        raise ValueError(f"crop_json coordinate_system {system!r} is not supported")
-    enabled = record.get("enabled")
-    if not isinstance(enabled, bool):
-        raise ValueError(f"crop_json enabled must be true or false, got {enabled!r}")
-    rect = record.get("rect")
-    if not isinstance(rect, dict):
-        raise ValueError("crop_json must contain a rect object with x, y, width and height")
-    x, y = _strict_number(rect, "x"), _strict_number(rect, "y")
-    width, height = _strict_number(rect, "width"), _strict_number(rect, "height")
-    tolerance = 1e-9
-    if x < -tolerance or y < -tolerance or width <= 0 or height <= 0 \
-            or x + width > 1 + tolerance or y + height > 1 + tolerance:
-        raise ValueError(
-            "crop_json rect must lie inside the image (0 <= x, y; width, height > 0; "
-            f"x + width <= 1; y + height <= 1), got x={x}, y={y}, width={width}, height={height}"
-        )
-    width, height = min(width, 1.0), min(height, 1.0)
-    rect = {"x": _clamp(x, 0.0, 1 - width), "y": _clamp(y, 0.0, 1 - height), "width": width, "height": height}
-    source = record.get("source")
-    source_size = None
-    if source is not None:
-        sw, sh = (source.get("width"), source.get("height")) if isinstance(source, dict) else (None, None)
-        if any(isinstance(v, bool) or not isinstance(v, int) or v < 1 for v in (sw, sh)):
-            raise ValueError(f"crop_json source must have positive integer width and height, got {source!r}")
-        source_size = (sw, sh)
-    return {"enabled": enabled, "rect": rect, "source": source_size, "pose_index": record.get("pose_index")}
-
-
-def apply_crop_guide(image, record, aspect_mismatch="error"):
-    """Crop an IMAGE tensor [B, H, W, C] with a parsed crop_json record at the image's own resolution.
-
-    The normalized rect is converted with the same rounding as Pose Studio; no
-    resize or interpolation happens. A disabled guide returns the image unchanged.
-    """
-    if getattr(image, "ndim", None) != 4:
-        raise ValueError("Apply Crop Guide expects an IMAGE tensor shaped [batch, height, width, channels]")
-    if not record["enabled"]:
-        return image
-    height, width = int(image.shape[1]), int(image.shape[2])
-    source = record.get("source")
-    if source and aspect_mismatch != "stretch":
-        source_ratio, image_ratio = source[0] / source[1], width / height
-        if abs(image_ratio / source_ratio - 1) > CROP_GUIDE_ASPECT_TOLERANCE:
-            raise ValueError(
-                f"Image is {width} x {height} but crop_json was made for {source[0]} x {source[1]}; "
-                "the aspect ratios differ. A letterboxed, padded or center-cropped image needs the "
-                "same geometric transform applied to the crop first. If the image was only resized "
-                "(stretched), set aspect_mismatch to stretch."
-            )
-    return crop_image(image, crop_pixel_rect(record["rect"], width, height))

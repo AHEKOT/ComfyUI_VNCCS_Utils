@@ -253,8 +253,10 @@ function positionMenu(state) {
     const view = select.ownerDocument.defaultView;
     const rect = select.getBoundingClientRect();
     const selectStyle = view.getComputedStyle(select);
+    // The popup leaves the scaled graph; match the control's visible text size.
+    const scale = select.offsetWidth > 0 ? rect.width / select.offsetWidth : 1;
     const options = Array.from(select.options || []);
-    const longestTextWidth = measureLongestOptionWidth(select.ownerDocument, options, selectStyle);
+    const longestTextWidth = measureLongestOptionWidth(select.ownerDocument, options, selectStyle) * scale;
     const viewportGap = 8;
     // Menu chrome: check (16), gap (8), option padding (18), menu
     // padding/borders (14), plus scrollbar and rounding safety (18).
@@ -267,7 +269,7 @@ function positionMenu(state) {
     menu.style.width = `${Math.round(width)}px`;
     menu.style.maxHeight = `${Math.floor(placement.maxHeight)}px`;
     menu.style.fontFamily = selectStyle.fontFamily;
-    menu.style.fontSize = selectStyle.fontSize;
+    menu.style.fontSize = `${cssNumber(selectStyle.fontSize, 11) * scale}px`;
     menu.style.fontWeight = selectStyle.fontWeight;
     menu.style.top = placement.top === null ? "" : `${Math.round(placement.top)}px`;
     menu.style.bottom = placement.bottom === null ? "" : `${Math.round(placement.bottom)}px`;

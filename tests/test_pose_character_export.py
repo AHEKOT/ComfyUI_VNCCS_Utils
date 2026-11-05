@@ -8,10 +8,14 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-import torch
+import pytest
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
+torch = None
+POSE_STUDIO = None
+NODE = None
+EXPORT = None
 
 
 def _load(module, path):
@@ -29,10 +33,31 @@ def _load(module, path):
     return loaded
 
 
-POSE_STUDIO = _load("pose_studio", ROOT / "nodes" / "pose_studio.py")
-NODE = _load("character_export", ROOT / "nodes" / "character_export.py")
-PASSES = sys.modules["vnccs_pose_charexp_testpkg.nodes.posestudio.character_passes"]
-EXPORT = sys.modules["vnccs_pose_charexp_testpkg.nodes.posestudio.character_export"]
+def _load_passes():
+    """character_passes.py needs only NumPy and Pillow: its tests run without PyTorch."""
+    package_name = "vnccs_pose_charexp_logic"
+    package = types.ModuleType(package_name)
+    package.__path__ = [str(ROOT / "nodes" / "posestudio")]
+    sys.modules.setdefault(package_name, package)
+    name = f"{package_name}.character_passes"
+    spec = importlib.util.spec_from_file_location(name, ROOT / "nodes" / "posestudio" / "character_passes.py")
+    loaded = importlib.util.module_from_spec(spec)
+    sys.modules[name] = loaded
+    spec.loader.exec_module(loaded)
+    return loaded
+
+
+def _require_node():
+    """Tensor-dependent node tests are skipped where CI does not install PyTorch."""
+    global torch, POSE_STUDIO, NODE, EXPORT
+    torch = pytest.importorskip("torch")
+    if POSE_STUDIO is None:
+        POSE_STUDIO = _load("pose_studio", ROOT / "nodes" / "pose_studio.py")
+        NODE = _load("character_export", ROOT / "nodes" / "character_export.py")
+        EXPORT = sys.modules["vnccs_pose_charexp_testpkg.nodes.posestudio.character_export"]
+
+
+PASSES = _load_passes()
 COLORS = {0: (255, 0, 0), 1: (0, 255, 0), 2: (0, 0, 255), 3: (255, 255, 0)}
 WIDTH, HEIGHT = 40, 30
 CLIP_FAR = 1000.0
@@ -89,20 +114,20 @@ def _capture(index, slots=(0, 2, 3), outside=()):
 
 
 def _run(count=1, outputs=("character_json", "character_passes"), characters=True, slots=(0, 2, 3),
-         outside=(), output_mode="LIST", editor_mode="image", interface_mode="studio", mutate=None):
+         outside=(), output_mode="LIST", editor_mode="image", interface_mode="studio", mutate=None, linked=None):
+    _require_node()
     captures = [_capture(index, slots, outside) for index in range(count)]
     data = {
         "export": {
             "view_width": WIDTH, "view_height": HEIGHT, "output_mode": output_mode, "grid_columns": 2,
             "editor_mode": editor_mode, "interface_mode": interface_mode,
-            "conditioning_outputs": ["character_id"],
+            "additional_outputs": ["character_id", *outputs],
+            "linked_additional_outputs": list(("character_id", *outputs) if linked is None else linked),
         },
         "captured_images": [_png(rgb) for rgb, _ids, _entry, _depths in captures],
         "lighting_prompts": ["" for _ in captures],
         "captured_conditioning": [{"character_id": _png(ids)} for _rgb, ids, _entry, _depths in captures],
     }
-    if outputs:
-        data["export"]["character_outputs"] = list(outputs)
     if characters:
         data["captured_characters"] = [entry for _rgb, _ids, entry, _depths in captures]
     if mutate:
@@ -113,7 +138,7 @@ def _run(count=1, outputs=("character_json", "character_passes"), characters=Tru
 
 def _export(result, margin=64, align="8", depth_normalization="scene"):
     return NODE.VNCCS_CharacterExport().export(
-        result[0], result[7], result[11], result[12], [margin], [align], [depth_normalization],
+        result[0], result[2], result[3], result[4], [margin], [align], [depth_normalization],
     )
 
 
@@ -121,25 +146,42 @@ def _u8(array):
     return np.round(np.asarray(array) * 255).astype(np.uint8)
 
 
-class CharacterPassOutputTests(unittest.TestCase):
-    def test_outputs_are_appended_after_the_crop_outputs(self):
-        node = POSE_STUDIO.VNCCS_PoseStudio
-        self.assertEqual(node.RETURN_NAMES[11:], ("character_json", "character_passes"))
-        self.assertEqual(node.RETURN_TYPES[11:], ("STRING", "IMAGE"))
-        self.assertEqual(node.RETURN_NAMES[:11], (
-            "images", "lighting_prompt", "depth", "normal", "outline", "silhouette", "mask", "character_id",
-            "crop_json", "crop_image", "crop_preview",
-        ))
-        self.assertEqual(node.OUTPUT_IS_LIST, (True,) * 13)
+class CharacterPassLogicTests(unittest.TestCase):
+    def _captures(self, **kwargs):
+        entries = [_capture(index, **kwargs)[2] for index in range(2)]
+        sizes = [(WIDTH, HEIGHT)] * 2
+        return PASSES.decode_character_captures(entries, sizes), sizes
+
+    def test_widget_output_names_match(self):
         source = (ROOT / "web" / "pose_studio" / "character_passes.mjs").read_text(encoding="utf-8")
         self.assertIn('name: "character_json", type: "STRING"', source)
         self.assertIn('name: "character_passes", type: "IMAGE"', source)
         self.assertIn('["normal_solo", "depth_solo", "silhouette"]', source)
+        self.assertEqual(PASSES.POSE_CHARACTER_OUTPUTS, ("character_json", "character_passes"))
+
+    def test_character_json_alone_builds_no_image_frames(self):
+        decoded, sizes = self._captures()
+        records, frames = PASSES.build_character_sets(decoded, sizes)
+        slim_records, slim_frames = PASSES.build_character_sets(decoded, sizes, with_passes=False)
+        self.assertEqual(len(frames), 6)
+        self.assertEqual(slim_frames, [])
+        self.assertEqual(slim_records, records)
+        self.assertEqual([c["list_index"] for record in slim_records for c in record["characters"]], list(range(6)))
+
+
+class CharacterPassOutputTests(unittest.TestCase):
+    def test_outputs_share_the_additional_output_slots(self):
+        _require_node()
+        node = POSE_STUDIO.VNCCS_PoseStudio
+        self.assertEqual(node.RETURN_NAMES[-2:], ("character_json", "character_passes"))
+        self.assertEqual(node.RETURN_NAMES[:2], ("images", "lighting_prompt"))
+        self.assertEqual(node.RETURN_TYPES[2:], ("IMAGE,MASK,STRING",) * (len(node.RETURN_TYPES) - 2))
+        self.assertEqual(node.OUTPUT_IS_LIST, (True,) * len(node.RETURN_TYPES))
 
     def test_character_passes_pack_one_batch_per_character_in_pose_then_slot_order(self):
         _node, result, captures = _run(count=2)
-        records = [json.loads(value) for value in result[11]]
-        passes = result[12]
+        records = [json.loads(value) for value in result[3]]
+        passes = result[4]
         self.assertEqual(len(records), 2)
         self.assertEqual(len(passes), 6, "three exported characters per pose")
         for pose, record in enumerate(records):
@@ -175,7 +217,7 @@ class CharacterPassOutputTests(unittest.TestCase):
 
     def test_z_order_visible_bounds_and_fully_occluded_characters(self):
         _node, result, captures = _run()
-        record = json.loads(result[11][0])
+        record = json.loads(result[3][0])
         by_slot = {c["slot"]: c for c in record["characters"]}
         # Slot 2 is nearest, slot 0 behind it, slot 3 entirely hidden: ranked last.
         self.assertEqual({slot: c["z_order"] for slot, c in by_slot.items()}, {2: 0, 0: 1, 3: 2})
@@ -198,39 +240,50 @@ class CharacterPassOutputTests(unittest.TestCase):
             packed = np.stack([(depth >> 16) & 255, (depth >> 8) & 255, depth & 255], axis=-1)
             entry["characters"][0]["depth"] = _png(packed)
         _node, result, _captures = _run(mutate=far_spike)
-        by_slot = {c["slot"]: c for c in json.loads(result[11][0])["characters"]}
+        by_slot = {c["slot"]: c for c in json.loads(result[3][0])["characters"]}
         self.assertEqual(by_slot[0]["z_order"], 0)
         self.assertEqual(by_slot[2]["z_order"], 1)
 
     def test_slot_gaps_and_characters_outside_the_frame(self):
         _node, result, _captures = _run(slots=(0, 1, 2), outside=(1,))
-        record = json.loads(result[11][0])
+        record = json.loads(result[3][0])
         self.assertEqual([c["slot"] for c in record["characters"]], [0, 2], "slot 1 covers no pixel")
         self.assertEqual([c["list_index"] for c in record["characters"]], [0, 1])
         self.assertEqual([c["id_value"] for c in record["characters"]], [1, 3])
-        self.assertEqual(len(result[12]), 2)
+        self.assertEqual(len(result[4]), 2)
         outputs = _export(result)
         meta = json.loads(outputs[6][0])
         self.assertEqual([(c["slot"], c["id_color"], c["list_index"]) for c in meta["characters"]],
                          [(0, "#ff0000", 0), (2, "#0000ff", 1)])
 
-    def test_unlinked_outputs_are_placeholders_and_existing_outputs_are_unchanged(self):
-        _node, plain, _captures = _run(outputs=(), characters=False)
+    def test_disabled_and_unlinked_outputs_do_no_work_and_other_outputs_are_unchanged(self):
+        _require_node()
+        calls = []
+        decode, build = POSE_STUDIO.decode_character_captures, POSE_STUDIO.build_character_sets
+        POSE_STUDIO.decode_character_captures = lambda *args: calls.append("decode") or decode(*args)
+        POSE_STUDIO.build_character_sets = lambda *args, **kwargs: calls.append("build") or build(*args, **kwargs)
+        try:
+            # Disabled, and enabled without a link: no pass upload is read or decoded.
+            node, plain, _captures = _run(outputs=(), characters=False)
+            _node, unlinked, _captures = _run(linked=("character_id",), characters=False)
+            self.assertEqual(calls, [])
+            self.assertEqual(len(plain), len(node.RETURN_TYPES))
+            self.assertEqual(list(plain[3:5]), [[], []])
+            self.assertEqual(list(unlinked[3:5]), [[], []])
+            # Only character_json linked: records, and no character_passes frames.
+            _node, slim, _captures = _run(linked=("character_id", "character_json"))
+            self.assertEqual(calls, ["decode", "build"])
+            self.assertEqual(len(json.loads(slim[3][0])["characters"]), 3)
+            self.assertEqual(slim[4], [])
+        finally:
+            POSE_STUDIO.decode_character_captures, POSE_STUDIO.build_character_sets = decode, build
         _node, linked, _captures = _run()
-        self.assertEqual(len(plain), 13)
-        record = json.loads(plain[11][0])
-        self.assertEqual(record["characters"], [])
-        self.assertEqual(record["unavailable"], "character outputs are not linked")
-        self.assertEqual(tuple(plain[12][0].shape), (1, HEIGHT, WIDTH, 3))
-        self.assertEqual(float(plain[12][0].max()), 0.0)
-        for index in range(11):
+        for index in range(3):
             for left, right in zip(plain[index], linked[index]):
                 if isinstance(left, str):
                     self.assertEqual(left, right)
                 else:
                     self.assertTrue(torch.equal(left, right), f"output {index} is unchanged")
-        with self.assertRaisesRegex(ValueError, "not linked"):
-            _export(plain)
 
     def test_linked_outputs_without_passes_fail(self):
         with self.assertRaisesRegex(RuntimeError, "did not receive the character passes"):
@@ -255,19 +308,22 @@ class CharacterPassOutputTests(unittest.TestCase):
 
     def test_unsupported_run_modes_stop_when_character_outputs_are_linked(self):
         for kwargs, reason in (
-            ({"output_mode": "GRID"}, "GRID output"),
-            ({"interface_mode": "manager"}, "Pose Manager"),
-            ({"editor_mode": "animation", "mutate": lambda d: d["export"].update(
-                conditioning_outputs=[], animation_image_batch=True)}, "Animation mode"),
+            ({"output_mode": "GRID"}, "character outputs .*GRID output is not supported"),
+            ({"interface_mode": "manager"}, "character outputs .*Pose Manager is not supported"),
+            ({"editor_mode": "animation", "mutate": lambda d: d["export"].update(animation_image_batch=True)},
+             "Image mode"),
         ):
-            with self.assertRaisesRegex(RuntimeError, f"character outputs .*{reason} is not supported"):
+            with self.assertRaisesRegex(RuntimeError, reason):
                 _run(characters=False, **kwargs)
-            _node, result, _captures = _run(outputs=(), characters=False, **kwargs)
-            self.assertEqual(json.loads(result[11][0])["unavailable"], reason)
-            self.assertEqual(float(result[12][0].max()), 0.0)
+            _node, result, _captures = _run(linked=(), characters=False, **kwargs)
+            self.assertEqual(list(result[3:5]), [[], []])
 
 
 class CharacterCropRectTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _require_node()
+
     def test_margin_and_alignment_match_the_documented_example(self):
         rect = EXPORT.character_crop_rect({"x": 240, "y": 352, "width": 568, "height": 608}, 1024, 1024, 64, 8)
         self.assertEqual(rect, {"x": 176, "y": 288, "width": 696, "height": 736})
@@ -317,6 +373,10 @@ class CharacterCropRectTests(unittest.TestCase):
 
 
 class CharacterExportNodeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _require_node()
+
     def test_node_interface(self):
         node = NODE.VNCCS_CharacterExport
         self.assertEqual(node.RETURN_NAMES, (
@@ -431,19 +491,19 @@ class CharacterExportNodeTests(unittest.TestCase):
         _node, result, _captures = _run(count=2)
         batched = [torch.cat(result[0], dim=0)]
         outputs = NODE.VNCCS_CharacterExport().export(
-            batched, result[7], result[11], result[12], [0], ["8"], ["scene"])
+            batched, result[2], result[3], result[4], [0], ["8"], ["scene"])
         reference = _export(result, margin=0)
         for left, right in zip(outputs[5], reference[5]):
             self.assertTrue(torch.equal(left, right))
         with self.assertRaisesRegex(ValueError, "character_passes item"):
-            NODE.VNCCS_CharacterExport().export(result[0], result[7], result[11], result[12][:-1],
+            NODE.VNCCS_CharacterExport().export(result[0], result[2], result[3], result[4][:-1],
                                                 [0], ["8"], ["scene"])
         with self.assertRaisesRegex(ValueError, "images item"):
-            NODE.VNCCS_CharacterExport().export(result[0][:1], result[7], result[11], result[12],
+            NODE.VNCCS_CharacterExport().export(result[0][:1], result[2], result[3], result[4],
                                                 [0], ["8"], ["scene"])
         small = [image[:, :-1] for image in result[0]]
         with self.assertRaisesRegex(ValueError, "uncropped"):
-            NODE.VNCCS_CharacterExport().export(small, result[7], result[11], result[12], [0], ["8"], ["scene"])
+            NODE.VNCCS_CharacterExport().export(small, result[2], result[3], result[4], [0], ["8"], ["scene"])
 
     def test_character_json_validation(self):
         for value, message in (

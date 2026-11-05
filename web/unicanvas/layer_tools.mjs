@@ -27,7 +27,7 @@
  */
 
 import { clamp } from "./input_tools.mjs";
-import { installCustomSelects } from "../shared/custom_select.mjs";
+import { installCustomSelects } from "../shared/custom_select.mjs?v=20261104-scaled-menu";
 import { REMOVE_BG_DEFAULT_PROMPT, removeBgEditSettings, resolveRemoveBgSelection } from "./remove_bg.mjs";
 import { autoNameLayers } from "./naming.mjs";
 

@@ -1,3 +1,35 @@
+# Version 0.7.2
+
+## Pose Library Creation, Publishing, and Repository Reliability
+
+### New Node: VNCCS Pose Library Creator
+
+* **Create library poses from images**: Reconstruct a pose from `PoseImage` with SAM 3D Body, render it through Pose Studio, and generate a character preview from `CharacterImage` with Qwen Image 2.1. The node outputs the generated image and saves an editable pose with its preview to Local User Poses.
+* **Automatic metadata**: Generate English names, categories, and tags, with an optional category override and additional tags. Repeated names receive letter suffixes instead of overwriting existing entries.
+* **Generation controls and progress**: Use connected MODEL, CLIP, and VAE inputs with seed, resolution, steps, CFG, sampler, and scheduler controls. The widget reports recognition, rendering, generation, description, and saving stages, and displays the saved preview. Pose capture requires the workflow to remain open in ComfyUI; cancelled or superseded render requests cannot submit stale results.
+
+### Pose Studio: Library Publishing and Downloads
+
+* **Hugging Face publishing restored**: Publish local poses, animations, previews, and the library manifest to an existing repository or create a new public or private repository. Publishing requires an explicitly entered write token, which is neither saved nor included in workflow data.
+* **Consistent uploads**: Publish a snapshot of the local library in one commit while preserving unrelated remote files. Invalid local files and unsupported transfer sizes report errors; credential text is redacted from publication errors.
+* **Persistent publication target**: Store the linked Hugging Face repository, publication time, and result in Pose Library's own settings. Create the settings file automatically, migrate an existing legacy link, and preserve publication metadata when downloaded repositories are added, changed, or removed. Unreadable settings are retained and reported instead of silently replaced.
+* **Git repository cloning restored**: Import regular repository files from a shallow Git clone instead of downloading them individually. Git LFS assets are fetched at the cloned commit. Imports use Dulwich without requiring a system Git executable, running checkout hooks or filters, or loading user Git configuration.
+
+### Pose Studio: Interface Fixes
+
+* **Stable gallery position**: Deleting a library item preserves scroll position and selects a neighboring item, keeping the inspector open and avoiding gallery column shifts.
+* **Readable publication dialog**: Resize the form and its controls to the available node area. Repository and token validation now show actionable feedback, and error dialogs appear above library settings.
+* **Correct dropdown scale**: Match popup text to the control's visible size at the current graph zoom. All widgets load the same versioned selector module so an older cached implementation does not retain the oversized menu.
+
+### Prompt Designer
+
+* **Male and female pose cards**: Add two bundled cards, each containing 100 distinct, concise English pose descriptions for randomized prompt composition.
+
+### Release Checks
+
+* **Registry validation before publishing**: Registry publishing waits for the test workflow. CI builds the release archive and checks its validity and 100 MiB size limit alongside the existing source security checks.
+* **Regression coverage**: Add backend and browser coverage for pose creation, publication persistence, Git imports, gallery deletion, dialog layering, selector cache versions, and popup sizing across node sizes and graph scales.
+
 # Version 0.7.1
 
 ## Editor Reliability and Prompt Designer Updates

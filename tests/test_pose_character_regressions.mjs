@@ -286,7 +286,7 @@ test("library poses key their saved crop and zoom before editor commit", () => {
 test("library saving persists the active SAM projection camera in both pose representations", () => {
     const saveMethod = methodSource(
         poseStudioSource,
-        "async saveToLibrary(name, includePreview = true, metadata = {})",
+        "buildLibraryAsset(prompt = this.getPosePrompt(this.activeTab))",
         "\n    applyLibraryPoseFraming(cameraParams)",
     );
     assert.match(

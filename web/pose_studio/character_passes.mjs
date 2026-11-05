@@ -17,31 +17,20 @@ import {
     poseCharacterIdImage,
     poseConditioningMeshes,
     poseNormalImage,
-} from "./conditioning.mjs?v=20261102.1";
+} from "./conditioning.mjs?v=20261105.3";
 
-/** Node outputs appended after the crop guide outputs, in slot order. */
+/** The Per-character Export group of Settings > Additional Outputs. */
 export const POSE_CHARACTER_OUTPUTS = Object.freeze([
-    Object.freeze({ name: "character_json", type: "STRING" }),
-    Object.freeze({ name: "character_passes", type: "IMAGE" }),
+    Object.freeze({ name: "character_json", type: "STRING", hint: "Per-character information of each image as JSON" }),
+    Object.freeze({ name: "character_passes", type: "IMAGE", hint: "One batch per character: solo normal, solo depth, silhouette" }),
 ]);
 
 /** Frames of each character_passes item (one IMAGE batch per exported character). */
 export const POSE_CHARACTER_PASS_ORDER = Object.freeze(["normal_solo", "depth_solo", "silhouette"]);
 
-/** Names of the character outputs that are linked on a ComfyUI node, in slot order. */
-export function poseCharacterOutputNames(node) {
-    const linked = new Set((node?.outputs || [])
-        .filter(output => Array.isArray(output?.links) && output.links.length > 0)
-        .map(output => output.name));
-    return POSE_CHARACTER_OUTPUTS.map(output => output.name).filter(name => linked.has(name));
-}
-
-/** Workflows saved before the character outputs existed only gain them at the end; earlier slots and links stay. */
-export function ensurePoseCharacterOutputs(node) {
-    if (!Array.isArray(node?.outputs) || typeof node.addOutput !== "function") return;
-    for (const output of POSE_CHARACTER_OUTPUTS) {
-        if (!node.outputs.some(existing => existing?.name === output.name)) node.addOutput(output.name, output.type);
-    }
+/** The character outputs among `names`, which is what decides whether solo passes are rendered. */
+export function poseCharacterOutputNames(names) {
+    return (names || []).filter(name => POSE_CHARACTER_OUTPUTS.some(output => output.name === name));
 }
 
 /** Packed 24-bit view depth (0 = background) with an opaque alpha so PNG encoding keeps every byte. */

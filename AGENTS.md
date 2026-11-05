@@ -32,6 +32,18 @@ Pose Studio exception, approved by the owner: Background color controls exported
 captures and Pose Manager cards only. The Studio viewport keeps its fixed background.
 This is intentional; do not flag it or propose a viewport preview in future audits.
 
+## Pose Library publishing is a core feature
+
+Owner decision: publishing local poses and animations to Hugging Face, creating a
+repository, and linking an existing repository must remain available. Never disable
+these features through a blanket policy, feature flag, unconditional error, hidden
+control, or a security-cleanup change. Fix the specific vulnerability while preserving
+the working publish flow and explicit write authorization.
+
+Keep successful publish coverage for the UI, API, and upload service. Never replace
+successful-path tests with tests that expect publishing to be disabled. Changes to
+this product requirement require an explicit owner decision.
+
 ## UniCanvas document architecture
 
 - Unaccepted generation results (staging) are transient. Never serialize them into

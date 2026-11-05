@@ -39,15 +39,6 @@ _MAX_PASS_BYTES = 32 * 1024 * 1024
 _MAX_TOTAL_CHARS = 64 * 1024 * 1024
 
 
-def requested_character_outputs(export):
-    """Linked character outputs recorded by the widget in ``export.character_outputs``."""
-    names = export.get("character_outputs") if isinstance(export, dict) else None
-    if not isinstance(names, list):
-        return ()
-    requested = {name for name in names if isinstance(name, str)}
-    return tuple(name for name in POSE_CHARACTER_OUTPUTS if name in requested)
-
-
 def character_id_color(slot):
     """``#rrggbb`` Character ID colour of a slot (slot 0 = ID 1 = red)."""
     if isinstance(slot, bool) or not isinstance(slot, int) or not 0 <= slot < len(POSE_CHARACTER_ID_COLORS):
@@ -150,15 +141,17 @@ def _camera_depth(value, clip_far):
     return None if value is None else round(float(value) * clip_far / _DEPTH_UNITS, 6)
 
 
-def build_character_sets(decoded, sizes):
+def build_character_sets(decoded, sizes, with_passes=True):
     """character_json records and character_passes frames for decoded captures.
 
     Returns ``(records, passes)``: one record (dict) per capture and one
     ``(normal, depth, silhouette)`` tuple of float32 HxWx3 arrays per exported
     character, in list order. A character is exported when its solo render covers
-    at least one pixel; one fully hidden behind others is still exported.
+    at least one pixel; one fully hidden behind others is still exported. With
+    ``with_passes=False`` no frame is built and ``list_index`` stays the same.
     """
     records, passes = [], []
+    exported_count = 0
     for capture, (width, height) in zip(decoded, sizes):
         ids, clip_far = capture["ids"], capture["clip_far"]
         exported = []
@@ -189,20 +182,21 @@ def build_character_sets(decoded, sizes):
             seen = visible & coverage
             slot = character["slot"]
             body = character["depth"][coverage]
-            normal = character["normal"].copy()
-            normal[~coverage] = 0
-            depth = scene_depth_levels(character["depth"], coverage, near, far)
-            silhouette = coverage.astype(np.float32)
-            passes.append((
-                normal.astype(np.float32) / 255.0,
-                np.repeat(depth[:, :, None], 3, axis=2),
-                np.repeat(silhouette[:, :, None], 3, axis=2),
-            ))
+            if with_passes:
+                normal = character["normal"].copy()
+                normal[~coverage] = 0
+                depth = scene_depth_levels(character["depth"], coverage, near, far)
+                silhouette = coverage.astype(np.float32)
+                passes.append((
+                    normal.astype(np.float32) / 255.0,
+                    np.repeat(depth[:, :, None], 3, axis=2),
+                    np.repeat(silhouette[:, :, None], 3, axis=2),
+                ))
             characters.append({
                 "slot": slot,
                 "id_value": slot + 1,
                 "id_color": character_id_color(slot),
-                "list_index": len(passes) - 1,
+                "list_index": exported_count,
                 "z_order": z_order[slot],
                 "bbox_full": mask_bbox(coverage),
                 "bbox_visible": mask_bbox(seen),
@@ -215,6 +209,7 @@ def build_character_sets(decoded, sizes):
                                                     clip_far),
                 },
             })
+            exported_count += 1
         records.append({
             "schema_version": CHARACTER_SET_SCHEMA_VERSION,
             "type": CHARACTER_SET_TYPE,
@@ -233,15 +228,3 @@ def build_character_sets(decoded, sizes):
             "characters": characters,
         })
     return records, passes
-
-
-def unavailable_character_set(width, height, reason, pose_index=None):
-    """Placeholder record for runs that did not render character passes."""
-    return {
-        "schema_version": CHARACTER_SET_SCHEMA_VERSION,
-        "type": CHARACTER_SET_TYPE,
-        "pose_index": pose_index,
-        "source": {"width": width, "height": height},
-        "characters": [],
-        "unavailable": reason,
-    }

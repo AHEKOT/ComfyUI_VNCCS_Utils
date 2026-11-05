@@ -2,16 +2,28 @@ import base64
 import importlib.util
 import io
 import json
+import re
 import sys
 import types
 import unittest
 from pathlib import Path
 
 import numpy as np
-import torch
+import pytest
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
+torch = None
+POSE_STUDIO = None
+
+
+def _load_crop_guide():
+    """nodes/posestudio/crop_guide.py is pure Python: these tests run without PyTorch."""
+    name = "vnccs_pose_crop_logic"
+    spec = importlib.util.spec_from_file_location(name, ROOT / "nodes" / "posestudio" / "crop_guide.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _load(module, path):
@@ -29,9 +41,15 @@ def _load(module, path):
     return loaded
 
 
-POSE_STUDIO = _load("pose_studio", ROOT / "nodes" / "pose_studio.py")
-APPLY = _load("apply_crop_guide", ROOT / "nodes" / "apply_crop_guide.py")
-CROP = sys.modules["vnccs_pose_crop_testpkg.nodes.posestudio.crop_guide"]
+def _require_node():
+    """Tensor-dependent node tests are skipped where CI does not install PyTorch."""
+    global torch, POSE_STUDIO
+    torch = pytest.importorskip("torch")
+    if POSE_STUDIO is None:
+        POSE_STUDIO = _load("pose_studio", ROOT / "nodes" / "pose_studio.py")
+
+
+CROP = _load_crop_guide()
 CASES = json.loads((ROOT / "tests" / "fixtures" / "crop_guide_cases.json").read_text(encoding="utf-8"))
 WIDTH, HEIGHT = 40, 30
 
@@ -53,12 +71,14 @@ def _guide(x, y, w, h, enabled=True, **extra):
 
 
 def _run(guides, outputs=("crop_json", "crop_image", "crop_preview"), output_mode="LIST",
-         editor_mode="image", interface_mode="studio", key="captured_crop_guides", mutate=None):
+         editor_mode="image", interface_mode="studio", key="captured_crop_guides", mutate=None, linked=None):
+    _require_node()
     arrays = [_capture(index) for index in range(len(guides))]
     data = {
         "export": {
             "view_width": WIDTH, "view_height": HEIGHT, "output_mode": output_mode, "grid_columns": 2,
-            "editor_mode": editor_mode, "interface_mode": interface_mode, "crop_outputs": list(outputs),
+            "editor_mode": editor_mode, "interface_mode": interface_mode, "additional_outputs": list(outputs),
+            "linked_additional_outputs": list(outputs if linked is None else linked),
         },
         "captured_images": [_png(array) for array in arrays],
         "lighting_prompts": ["" for _ in arrays],
@@ -108,11 +128,9 @@ class CropGuideCoordinateTests(unittest.TestCase):
         source = (ROOT / "web" / "pose_studio" / "crop_guide.mjs").read_text(encoding="utf-8")
         block = source[source.index("POSE_CROP_GUIDE_OUTPUTS = Object.freeze(["):]
         block = block[:block.index("]);")]
-        import re
         names = tuple(re.findall(r'name: "(\w+)"', block))
         self.assertEqual(names, CROP.POSE_CROP_GUIDE_OUTPUTS)
-        self.assertEqual(POSE_STUDIO.VNCCS_PoseStudio.RETURN_NAMES[8:11], names)
-        self.assertEqual(POSE_STUDIO.VNCCS_PoseStudio.RETURN_TYPES[8:11], ("STRING", "IMAGE", "IMAGE"))
+        self.assertEqual(tuple(re.findall(r'type: "(\w+)"', block)), ("STRING", "IMAGE", "IMAGE"))
 
 
 class PoseStudioCropOutputTests(unittest.TestCase):
@@ -122,7 +140,7 @@ class PoseStudioCropOutputTests(unittest.TestCase):
         self.assertEqual(len(result), 13)
         self.assertEqual(node.OUTPUT_IS_LIST, (True,) * 13)
         images, _prompts = result[0], result[1]
-        crop_json, crop_images, previews = result[8:11]
+        crop_json, crop_images, previews = result[2:5]
         self.assertEqual(len(crop_json), len(images))
         for index, (image, text, crop, preview) in enumerate(zip(images, crop_json, crop_images, previews)):
             self.assertEqual(tuple(image.shape), (1, HEIGHT, WIDTH, 3), "images are never cropped")
@@ -153,32 +171,63 @@ class PoseStudioCropOutputTests(unittest.TestCase):
 
     def test_disabled_guides_pass_the_full_image_and_old_payloads_fall_back(self):
         _node, result, arrays = _run([_guide(0.1, 0.1, 0.2, 0.2, enabled=False), None])
-        crop_json, crops, previews = result[8:11]
+        crop_json, crops, previews = result[2:5]
         for index in range(2):
             self.assertFalse(json.loads(crop_json[index])["enabled"])
             self.assertIs(crops[index], result[0][index])
             self.assertIs(previews[index], result[0][index])
         # A payload without captured_crop_guides uses the per-tab crop_guides.
         _node, result, arrays = _run([_guide(0.5, 0.5, 0.5, 0.5), _guide(0, 0, 0.5, 0.5)], key="crop_guides")
-        self.assertEqual(json.loads(result[8][1])["pixel_rect"], {"x": 0, "y": 0, "width": 20, "height": 15})
-        self.assertEqual(tuple(result[9][0].shape), (1, 15, 20, 3))
+        self.assertEqual(json.loads(result[2][1])["pixel_rect"], {"x": 0, "y": 0, "width": 20, "height": 15})
+        self.assertEqual(tuple(result[3][0].shape), (1, 15, 20, 3))
         # ...except in Debug Mode, whose single image is a library pose, not a tab.
         _node, result, _arrays = _run([_guide(0.5, 0.5, 0.5, 0.5)], key="crop_guides",
                                       mutate=lambda data: data["export"].update(debugMode=True))
-        self.assertFalse(json.loads(result[8][0])["enabled"])
+        self.assertFalse(json.loads(result[2][0])["enabled"])
 
-    def test_unlinked_preview_is_a_placeholder_and_crop_image_never_copies_the_source(self):
-        _node, result, arrays = _run([_guide(0.25, 0.25, 0.5, 0.5)], outputs=())
-        self.assertEqual(float(result[10][0].max()), 0.0)
-        self.assertEqual(tuple(result[10][0].shape), (1, HEIGHT, WIDTH, 3))
+    def test_crop_image_is_a_copy_and_images_stay_intact(self):
+        _node, result, _arrays = _run([_guide(0.25, 0.25, 0.5, 0.5)])
         before = result[0][0].clone()
-        result[9][0].fill_(1.0)
+        result[3][0].fill_(1.0)
         torch.testing.assert_close(result[0][0], before, msg="crop_image is a copy; images stay intact")
+
+    def test_outputs_without_a_link_copy_and_draw_nothing(self):
+        _require_node()
+        calls = []
+        original_crop, original_preview = POSE_STUDIO.crop_image, POSE_STUDIO.draw_crop_preview
+        POSE_STUDIO.crop_image = lambda *args: calls.append("crop") or original_crop(*args)
+        POSE_STUDIO.draw_crop_preview = lambda *args: calls.append("preview") or original_preview(*args)
+        try:
+            guides = [_guide(0, 0, 1, 1)] * 4
+            # Enabled, not connected: this is the full-frame crop a run must not pay for.
+            _node, result, _arrays = _run(guides, linked=())
+            self.assertEqual(calls, [])
+            self.assertEqual(list(result[2:5]), [[], [], []])
+            # Only crop_json connected: still no image work.
+            _node, result, _arrays = _run(guides, linked=("crop_json",))
+            self.assertEqual(calls, [])
+            self.assertEqual(len(result[2]), 4)
+            self.assertEqual(list(result[3:5]), [[], []])
+            # Disabled: no slot is filled, and guides are not even read.
+            _node, result, _arrays = _run(guides, outputs=(), mutate=lambda data: data.pop("captured_crop_guides"))
+            self.assertEqual(calls, [])
+            # Connected: exactly one crop per image.
+            _run(guides, outputs=("crop_image",))
+            self.assertEqual(calls, ["crop"] * 4)
+        finally:
+            POSE_STUDIO.crop_image, POSE_STUDIO.draw_crop_preview = original_crop, original_preview
+
+    def test_slots_follow_the_enabled_order(self):
+        _node, result, _arrays = _run([_guide(0.25, 0.25, 0.5, 0.5)], outputs=("crop_image", "crop_json"))
+        record = json.loads(result[3][0])
+        self.assertTrue(record["enabled"])
+        rect = record["pixel_rect"]
+        self.assertEqual(tuple(result[2][0].shape), (1, rect["height"], rect["width"], 3))
 
     def test_debug_guides_without_tab_index(self):
         _node, result, _arrays = _run([_guide(0.25, 0.25, 0.5, 0.5)],
                                       mutate=lambda data: data["captured_crop_guides"][0].update(pose_index=None))
-        self.assertIsNone(json.loads(result[8][0])["pose_index"])
+        self.assertIsNone(json.loads(result[2][0])["pose_index"])
 
     def test_unsupported_modes_never_apply_a_rectangle(self):
         guides = [_guide(0.25, 0.25, 0.5, 0.5)] * 3
@@ -186,119 +235,13 @@ class PoseStudioCropOutputTests(unittest.TestCase):
                                ({"interface_mode": "manager"}, "Pose Manager"),
                                ({"editor_mode": "animation",
                                  "mutate": lambda data: data["export"].update(animation_image_batch=True)},
-                                "Animation mode")):
+                                "Image mode")):
             with self.assertRaisesRegex(RuntimeError, reason):
                 _run(guides, **kwargs)
-            node, result, _arrays = _run(guides, outputs=(), **kwargs)
-            self.assertEqual(len(result), 13)
-            for text in result[8]:
-                record = json.loads(text)
-                self.assertFalse(record["enabled"])
-                self.assertEqual(record["unsupported"], reason)
-            for tensor in result[9] + result[10]:
-                self.assertEqual(float(tensor.max()), 0.0)
-        _node, result, _arrays = _run(guides, outputs=(), output_mode="GRID")
-        self.assertEqual(tuple(result[9][0].shape), tuple(result[0][0].shape), "GRID placeholders match the grid")
-
-
-class ApplyCropGuideTests(unittest.TestCase):
-    def setUp(self):
-        self.node = APPLY.VNCCS_ApplyCropGuide()
-        self.source = torch.from_numpy(_capture(0, 80, 60).astype(np.float32) / 255).unsqueeze(0)
-        self.record = CROP.build_crop_json(_guide(0.25, 0.2, 0.5, 0.5), 80, 60, 0)
-        self.text = json.dumps(self.record)
-
-    def apply(self, images, texts, mode=None):
-        return self.node.apply(images, texts, None if mode is None else [mode])[0]
-
-    def test_same_resolution_equals_pose_studio_crop(self):
-        before = self.source.clone()
-        (crop,) = self.apply([self.source], [self.text])
-        rect = self.record["pixel_rect"]
-        torch.testing.assert_close(crop, CROP.crop_image(self.source, rect))
-        self.assertEqual(tuple(crop.shape), (1, 30, 40, 3))
-        torch.testing.assert_close(self.source, before, msg="source pixels are never modified")
-
-    def test_resized_generation_crops_the_same_region_without_interpolation(self):
-        # A 2x nearest-neighbour "generation" of the source: the crop is the 2x crop exactly.
-        generated = self.source.repeat_interleave(2, dim=1).repeat_interleave(2, dim=2)
-        (crop,) = self.apply([generated], [self.text])
-        (small,) = self.apply([self.source], [self.text])
-        self.assertEqual(tuple(crop.shape), (1, 60, 80, 3))
-        torch.testing.assert_close(crop, small.repeat_interleave(2, dim=1).repeat_interleave(2, dim=2))
-        # Arbitrary different resolution: the same normalized rectangle with floor/ceil rounding.
-        odd = torch.rand(1, 45, 60, 3)
-        (crop,) = self.apply([odd], [self.text])
-        rect = CROP.crop_pixel_rect(self.record["rect"], 60, 45)
-        self.assertEqual(rect, {"x": 15, "y": 9, "width": 30, "height": 23})
-        torch.testing.assert_close(crop, odd[:, 9:32, 15:45, :])
-
-    def test_letterboxed_results_are_refused_unless_stretch_is_chosen(self):
-        letterboxed = torch.zeros(1, 80, 80, 3)
-        with self.assertRaisesRegex(ValueError, "aspect ratios differ"):
-            self.apply([letterboxed], [self.text])
-        (crop,) = self.apply([letterboxed], [self.text], "stretch")
-        self.assertEqual(tuple(crop.shape), (1, 40, 40, 3))
-
-    def test_disabled_guide_returns_the_image_unchanged(self):
-        text = json.dumps(CROP.build_crop_json(_guide(0.25, 0.2, 0.5, 0.5, enabled=False), 80, 60))
-        (image,) = self.apply([self.source], [text])
-        self.assertIs(image, self.source)
-
-    def test_invalid_crop_json_errors_are_clear(self):
-        cases = {
-            "": "empty",
-            "{": "not valid JSON",
-            "[]": "JSON object",
-            json.dumps({**self.record, "schema_version": 2}): "newer than this node supports",
-            json.dumps({**self.record, "schema_version": "1"}): "schema_version",
-            json.dumps({**self.record, "enabled": "yes"}): "enabled must be true or false",
-            json.dumps({**self.record, "rect": {"x": 0.8, "y": 0, "width": 0.5, "height": 0.5}}): "inside the image",
-            json.dumps({**self.record, "rect": {"x": -0.1, "y": 0, "width": 0.5, "height": 0.5}}): "inside the image",
-            json.dumps({**self.record, "rect": {"x": 0, "y": 0, "width": 0, "height": 0.5}}): "inside the image",
-            json.dumps({**self.record, "rect": {"x": "0", "y": 0, "width": 0.5, "height": 0.5}}): "finite number",
-            json.dumps({**self.record, "source": {"width": 0, "height": 5}}): "source",
-            json.dumps({**self.record, "coordinate_system": "bottom_left"}): "coordinate_system",
-        }
-        for text, message in cases.items():
-            with self.assertRaisesRegex(ValueError, message, msg=text):
-                self.apply([self.source], [text])
-        nan = self.text.replace('"x": 0.25', '"x": NaN')
-        with self.assertRaisesRegex(ValueError, "finite number"):
-            self.apply([self.source], [nan])
-
-    def test_lists_keep_pose_correspondence_and_never_stack_different_sizes(self):
-        guides = [_guide(0, 0, 0.5, 0.5), _guide(0.5, 0.5, 0.25, 0.25), _guide(0, 0, 1, 1)]
-        texts = [json.dumps(CROP.build_crop_json(guide, 80, 60, index)) for index, guide in enumerate(guides)]
-        images = [self.source * (index + 1) / 3 for index in range(3)]
-        crops = self.apply(images, texts)
-        self.assertEqual([tuple(crop.shape) for crop in crops], [(1, 30, 40, 3), (1, 15, 20, 3), (1, 60, 80, 3)])
-        torch.testing.assert_close(crops[1], images[1][:, 30:45, 40:60, :])
-        # One batch with one image per pose is split in pose order.
-        batch = torch.cat(images, dim=0)
-        split = self.apply([batch], texts)
-        for crop, expected in zip(split, crops):
-            torch.testing.assert_close(crop, expected)
-        # One crop_json applies to every image and keeps each batch together.
-        same = self.apply([batch, self.source], [texts[1]])
-        self.assertEqual([tuple(crop.shape) for crop in same], [(3, 15, 20, 3), (1, 15, 20, 3)])
-        with self.assertRaisesRegex(ValueError, "2 image item"):
-            self.apply([self.source, self.source], texts)
-        with self.assertRaisesRegex(ValueError, "aspect_mismatch"):
-            self.apply([self.source], [self.text], "squash")
-
-    def test_pose_studio_output_feeds_apply_crop_guide(self):
-        guides = [_guide(0.1, 0.2, 0.4, 0.5), _guide(0.5, 0.0, 0.5, 1.0)]
-        _node, result, arrays = _run(guides)
-        images, crop_json, crop_images = result[0], result[8], result[9]
-        direct = self.node.apply(images, crop_json)[0]
-        for crop, expected in zip(direct, crop_images):
-            torch.testing.assert_close(crop, expected)
-        # The same crop_json crops a resized "generated" copy of each image at its own resolution.
-        generated = [image.repeat_interleave(3, dim=1).repeat_interleave(3, dim=2) for image in images]
-        cropped = self.node.apply(generated, crop_json)[0]
-        for crop, expected in zip(cropped, crop_images):
-            torch.testing.assert_close(crop, expected.repeat_interleave(3, dim=1).repeat_interleave(3, dim=2))
+            # Enabled without a link: the run goes on and the slots stay empty.
+            node, result, _arrays = _run(guides, linked=(), **kwargs)
+            self.assertEqual(len(result), len(node.RETURN_TYPES))
+            self.assertEqual(list(result[2:5]), [[], [], []])
 
 
 if __name__ == "__main__":
