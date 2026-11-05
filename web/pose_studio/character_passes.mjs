@@ -1,6 +1,6 @@
 /**
  * Pose Studio per-character passes for the character_json and character_passes
- * outputs (see VNCCS Character Export).
+ * outputs.
  *
  * For each captured image the widget renders, through the capture camera of
  * that image, the full Character ID pass and one solo render per visible

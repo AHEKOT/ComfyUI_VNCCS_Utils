@@ -397,8 +397,8 @@ pose as its own set of control images in one run, for this workflow:
 2. Cut each result out with that character's visible mask and composite.
 3. Finish contact areas (hands, overlaps) with inpainting.
 
-Pose Studio renders the passes; **VNCCS Character Export** crops them, in the same way
-as Crop Guide and VNCCS Apply Crop Guide.
+Pose Studio renders the passes at the full image size. `bbox_full` and `bbox_visible` in
+`character_json` give the rectangles for cropping them.
 
 - **Solo renders.** For every captured image, the widget renders the full Character ID
   pass and, per character, the normal, depth and coverage of that character alone (all
@@ -426,8 +426,7 @@ as Crop Guide and VNCCS Apply Crop Guide.
   slot: `#ff0000`, `#00ff00`, `#0000ff`, `#ffff00`. It is unrelated to the Model colour
   of the Characters panel.
 - Lists are ordered by captured image (pose tab) first, then by ascending slot.
-  `list_index` is the position of a character in `character_passes` and in every
-  per-kind output of VNCCS Character Export.
+  `list_index` is the position of a character in `character_passes`.
 
 ### character_passes
 
@@ -444,7 +443,7 @@ Scene depth scale: over all exported characters of the image, the nearest surfac
 level 255 and the farthest is level 32 (`POSE_DEPTH_FAR_LEVEL`), the same convention as
 the `depth` output. Occluded surfaces count too, so the scale equals the `depth` output's
 whenever the farthest surface is visible; otherwise it extends to the hidden surface.
-Values are kept as floats so Character Export can renormalize without banding.
+Values are kept as floats so later steps can renormalize without banding.
 
 ### character_json
 
@@ -477,72 +476,6 @@ pixels, 0 = nearest; fully occluded characters come last, ordered by their full-
 median. Interleaved poses (arms around each other) have no single front-to-back order,
 so compositing must use `mask_visible`; `z_order` is only a hint, for example for edge
 blending.
-
-### VNCCS Character Export
-
-`VNCCS Character Export` (`VNCCS_CharacterExport`, category `VNCCS/pose`) turns the Pose
-Studio outputs into per-character crops.
-
-| Input | Type | Notes |
-| --- | --- | --- |
-| `images` | `IMAGE` | Pose Studio `images` (LIST). |
-| `character_id` | `IMAGE` | Pose Studio `character_id` of the same run. |
-| `character_json` | `STRING` | Pose Studio `character_json`. |
-| `character_passes` | `IMAGE` | Pose Studio `character_passes`. |
-| `margin` | `INT` | Pixels around the full-body bounds at the output resolution (default 64). |
-| `align` | `8` / `64` | Crop width and height are multiples of this value (default 8). |
-| `depth_normalization` | `scene` / `character` | Depth scale of `depth_solo` (default `scene`). |
-
-Every per-kind output is an `IMAGE` list with one crop per exported character
-(`list_index` order); `meta` is a `STRING` list with one JSON per image.
-
-| Output | Content |
-| --- | --- |
-| `normal_solo` | Solo normal, cropped. Includes the parts hidden by other characters in the full render. |
-| `depth_solo` | Solo depth, cropped, 8-bit levels. `scene`: the scene scale above. `character`: 255..32 over this character's own full body. |
-| `character_id` | Crop of the full `character_id` pass, with every character's colour. |
-| `mask_visible` | White where this character is visible in the full render (from the full ID pass), black elsewhere. Use it for compositing. |
-| `mask_full` | White on the full-body silhouette of the solo render, occluded parts included. Use it for inpainting ranges. |
-| `rgb` | Crop of `images`, for checking (a Background image appears in it when set). |
-| `meta` | Crop rectangles and statistics, below. |
-
-Masks are white/black `IMAGE`s, so Save Image stores them directly. Backgrounds are
-normal (0, 0, 0) and depth 0, as recorded in `meta`. Crops of the other characters or
-masked variants are not output; crop any full pass with `crop_rect` instead.
-
-Coordinates: full-image pixels, (0, 0) top-left; a crop pixel is `full - (x, y)` of
-`crop_rect`. `crop_rect` is computed per character:
-
-1. Take the bounds of `mask_full` and add `margin` on every side.
-2. Grow width and height to multiples of `align`, centred.
-3. Shift the rectangle inward to fit the frame; only an axis that is still larger than
-   the frame after alignment is clamped to the whole frame.
-
-So `crop_rect` always contains the full-body bounds plus `margin` (within the frame), and
-its width and height are multiples of `align` except on a clamped axis. `crop_rect`
-width and height equal the size of every output image of that character.
-
-```json
-{
-  "schema_version": 1, "type": "vnccs_character_export_set", "pose_index": 0, "pose_name": "Pose 1",
-  "source": {"width": 1024, "height": 1024}, "background": {"normal": [0, 0, 0], "depth": 0},
-  "depth_normalization": "scene",
-  "characters": [{"slot": 0, "id_value": 1, "id_color": "#ff0000", "list_index": 0, "z_order": 1,
-    "crop_rect": {"x": 260, "y": 147, "width": 504, "height": 728},
-    "bbox_full": {"x": 324, "y": 213, "width": 376, "height": 595},
-    "bbox_visible": {"x": 324, "y": 213, "width": 273, "height": 595}, "visible_ratio": 0.8123}]
-}
-```
-
-`visible_ratio` is visible pixels / full-body pixels. `meta` has no file names; Save
-Image assigns them, in `list_index` order. Pairing: N `images` and `character_id` items
-(or one batch of N) for N `character_json` values, and one `character_passes` item per
-character; images must be the uncropped Pose Studio size. Placeholder or mismatched
-inputs stop with a clear error.
-
-Typical workflow: Pose Studio `images`, `character_id`, `character_json` and
-`character_passes` -> `VNCCS Character Export` -> Save Image per kind (and a text
-preview or save node for `meta`).
 
 ## Camera and Framing
 

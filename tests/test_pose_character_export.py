@@ -14,8 +14,6 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 torch = None
 POSE_STUDIO = None
-NODE = None
-EXPORT = None
 
 
 def _load(module, path):
@@ -49,12 +47,10 @@ def _load_passes():
 
 def _require_node():
     """Tensor-dependent node tests are skipped where CI does not install PyTorch."""
-    global torch, POSE_STUDIO, NODE, EXPORT
+    global torch, POSE_STUDIO
     torch = pytest.importorskip("torch")
     if POSE_STUDIO is None:
         POSE_STUDIO = _load("pose_studio", ROOT / "nodes" / "pose_studio.py")
-        NODE = _load("character_export", ROOT / "nodes" / "character_export.py")
-        EXPORT = sys.modules["vnccs_pose_charexp_testpkg.nodes.posestudio.character_export"]
 
 
 PASSES = _load_passes()
@@ -136,12 +132,6 @@ def _run(count=1, outputs=("character_json", "character_passes"), characters=Tru
     return node, node.generate(json.dumps(data)), captures
 
 
-def _export(result, margin=64, align="8", depth_normalization="scene"):
-    return NODE.VNCCS_CharacterExport().export(
-        result[0], result[2], result[3], result[4], [margin], [align], [depth_normalization],
-    )
-
-
 def _u8(array):
     return np.round(np.asarray(array) * 255).astype(np.uint8)
 
@@ -167,6 +157,17 @@ class CharacterPassLogicTests(unittest.TestCase):
         self.assertEqual(slim_frames, [])
         self.assertEqual(slim_records, records)
         self.assertEqual([c["list_index"] for record in slim_records for c in record["characters"]], list(range(6)))
+
+
+    def test_scene_depth_matches_the_full_depth_convention(self):
+        depth = np.zeros((2, 3), dtype=np.int64)
+        depth[0] = [10, 20, 30]
+        coverage = depth > 0
+        levels = PASSES.scene_depth_levels(depth, coverage, 10, 30) * 255
+        np.testing.assert_allclose(levels[0], [255, (255 + 32) / 2, 32], rtol=1e-6)
+        self.assertEqual(float(levels[1].max()), 0.0)
+        flat = PASSES.scene_depth_levels(depth, coverage, 15, 15) * 255
+        np.testing.assert_allclose(flat[0], [255, 255, 255])
 
 
 class CharacterPassOutputTests(unittest.TestCase):
@@ -251,10 +252,6 @@ class CharacterPassOutputTests(unittest.TestCase):
         self.assertEqual([c["list_index"] for c in record["characters"]], [0, 1])
         self.assertEqual([c["id_value"] for c in record["characters"]], [1, 3])
         self.assertEqual(len(result[4]), 2)
-        outputs = _export(result)
-        meta = json.loads(outputs[6][0])
-        self.assertEqual([(c["slot"], c["id_color"], c["list_index"]) for c in meta["characters"]],
-                         [(0, "#ff0000", 0), (2, "#0000ff", 1)])
 
     def test_disabled_and_unlinked_outputs_do_no_work_and_other_outputs_are_unchanged(self):
         _require_node()
@@ -317,201 +314,6 @@ class CharacterPassOutputTests(unittest.TestCase):
                 _run(characters=False, **kwargs)
             _node, result, _captures = _run(linked=(), characters=False, **kwargs)
             self.assertEqual(list(result[3:5]), [[], []])
-
-
-class CharacterCropRectTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        _require_node()
-
-    def test_margin_and_alignment_match_the_documented_example(self):
-        rect = EXPORT.character_crop_rect({"x": 240, "y": 352, "width": 568, "height": 608}, 1024, 1024, 64, 8)
-        self.assertEqual(rect, {"x": 176, "y": 288, "width": 696, "height": 736})
-
-    def test_alignment_grows_symmetrically(self):
-        rect = EXPORT.character_crop_rect({"x": 100, "y": 100, "width": 50, "height": 10}, 1000, 1000, 3, 64)
-        # 56 -> 64 (4 px each side), 16 -> 64 (24 px each side).
-        self.assertEqual(rect, {"x": 93, "y": 73, "width": 64, "height": 64})
-        rect = EXPORT.character_crop_rect({"x": 100, "y": 100, "width": 51, "height": 10}, 1000, 1000, 0, 8)
-        self.assertEqual(rect, {"x": 98, "y": 97, "width": 56, "height": 16})
-
-    def test_shift_inward_then_clamp(self):
-        # Left/top edge: shifted to 0 and keeps its aligned size.
-        rect = EXPORT.character_crop_rect({"x": 10, "y": 5, "width": 100, "height": 100}, 512, 512, 64, 8)
-        self.assertEqual(rect, {"x": 0, "y": 0, "width": 232, "height": 232})
-        # Right/bottom edge.
-        rect = EXPORT.character_crop_rect({"x": 450, "y": 480, "width": 60, "height": 30}, 512, 512, 64, 64)
-        self.assertEqual(rect, {"x": 320, "y": 320, "width": 192, "height": 192})
-        # Larger than the frame after alignment: that axis is clamped to the frame.
-        rect = EXPORT.character_crop_rect({"x": 20, "y": 100, "width": 280, "height": 50}, 300, 400, 16, 64)
-        self.assertEqual(rect, {"x": 0, "y": 61, "width": 300, "height": 128})
-
-    def test_rects_contain_the_margin_box_and_are_aligned_unless_clamped(self):
-        rng = np.random.default_rng(7)
-        for _ in range(500):
-            width, height = int(rng.integers(64, 700)), int(rng.integers(64, 700))
-            margin, align = int(rng.integers(0, 120)), int(rng.choice([8, 64]))
-            x, y = int(rng.integers(0, width)), int(rng.integers(0, height))
-            bbox = {"x": x, "y": y, "width": int(rng.integers(1, width - x + 1)),
-                    "height": int(rng.integers(1, height - y + 1))}
-            rect = EXPORT.character_crop_rect(bbox, width, height, margin, align)
-            for start, size, frame, key in (("x", "width", width, "x"), ("y", "height", height, "y")):
-                low = max(0, bbox[start] - margin)
-                high = min(frame, bbox[start] + bbox[size] + margin)
-                self.assertLessEqual(rect[start], low)
-                self.assertGreaterEqual(rect[start] + rect[size], high)
-                self.assertGreaterEqual(rect[start], 0)
-                self.assertLessEqual(rect[start] + rect[size], frame)
-                if rect[size] != frame:
-                    self.assertEqual(rect[size] % align, 0, (bbox, rect, margin, align))
-
-    def test_invalid_parameters(self):
-        with self.assertRaisesRegex(ValueError, "align"):
-            EXPORT.character_crop_rect({"x": 0, "y": 0, "width": 1, "height": 1}, 10, 10, 0, 16)
-        with self.assertRaisesRegex(ValueError, "margin"):
-            EXPORT.character_crop_rect({"x": 0, "y": 0, "width": 1, "height": 1}, 10, 10, -1, 8)
-
-
-class CharacterExportNodeTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        _require_node()
-
-    def test_node_interface(self):
-        node = NODE.VNCCS_CharacterExport
-        self.assertEqual(node.RETURN_NAMES, (
-            "normal_solo", "depth_solo", "character_id", "mask_visible", "mask_full", "rgb", "meta",
-        ))
-        self.assertEqual(node.RETURN_TYPES, ("IMAGE",) * 6 + ("STRING",))
-        self.assertEqual(node.OUTPUT_IS_LIST, (True,) * 7)
-        self.assertTrue(node.INPUT_IS_LIST)
-        inputs = node.INPUT_TYPES()["required"]
-        self.assertEqual(inputs["margin"][1]["default"], 64)
-        self.assertEqual(inputs["align"][0], ["8", "64"])
-        self.assertEqual(inputs["align"][1]["default"], "8")
-        self.assertEqual(inputs["depth_normalization"][0], ["scene", "character"])
-        self.assertEqual(inputs["depth_normalization"][1]["default"], "scene")
-        registered = (ROOT / "__init__.py").read_text(encoding="utf-8")
-        self.assertIn('"VNCCS_CharacterExport": VNCCS_CharacterExport', registered)
-
-    def test_acceptance_criteria_on_overlapping_and_occluded_characters(self):
-        _node, result, captures = _run(count=2)
-        outputs = _export(result, margin=4, align="8")
-        normal, depth, ids, visible, full, rgb, metas = outputs
-        self.assertEqual(len(metas), 2)
-        self.assertEqual(len(rgb), 6)
-        for pose, meta_text in enumerate(metas):
-            meta = json.loads(meta_text)
-            self.assertEqual(meta["type"], "vnccs_character_export_set")
-            self.assertEqual(meta["pose_index"], pose)
-            self.assertEqual(meta["pose_name"], f"Pose {pose + 1}")
-            self.assertEqual(meta["background"], {"normal": [0, 0, 0], "depth": 0})
-            self.assertEqual(meta["depth_normalization"], "scene")
-            source_rgb, source_ids, _entry, depths = captures[pose]
-            union = np.zeros((HEIGHT, WIDTH), dtype=int)
-            pasted = np.full_like(source_rgb, 40)
-            for character in meta["characters"]:
-                index, rect = character["list_index"], character["crop_rect"]
-                ys = slice(rect["y"], rect["y"] + rect["height"])
-                xs = slice(rect["x"], rect["x"] + rect["width"])
-                # 2. Every output image is exactly crop_rect sized.
-                for output in (normal, depth, ids, visible, full, rgb):
-                    self.assertEqual(tuple(output[index].shape), (1, rect["height"], rect["width"], 3))
-                color = np.array(COLORS[character["slot"]], dtype=np.uint8)
-                mask_visible = visible[index][0].numpy()[:, :, 0] > 0.5
-                mask_full = full[index][0].numpy()[:, :, 0] > 0.5
-                # 1. The mask re-extracted from the cropped character_id matches mask_visible.
-                extracted = np.all(_u8(ids[index][0].numpy()) == color, axis=-1)
-                np.testing.assert_array_equal(extracted, mask_visible)
-                np.testing.assert_array_equal(mask_full, (depths[character["slot"]] > 0)[ys, xs])
-                # 3. Solo passes are background outside mask_full and filled in occluded parts.
-                crop_normal, crop_depth = _u8(normal[index][0].numpy()), _u8(depth[index][0].numpy())
-                self.assertEqual(int(crop_normal[~mask_full].max(initial=0)), 0)
-                self.assertEqual(int(crop_depth[~mask_full].max(initial=0)), 0)
-                occluded = mask_full & ~mask_visible
-                self.assertTrue((crop_depth[occluded][:, 0] >= 32).all())
-                self.assertTrue((crop_normal[occluded].sum(axis=-1) > 0).all())
-                # 4. Pasting rgb back through mask_visible reproduces the character pixels.
-                region = pasted[ys, xs]
-                region[mask_visible] = _u8(rgb[index][0].numpy())[mask_visible]
-                union[ys, xs] += mask_visible
-                # 5. crop_rect contains bbox_full + margin and is aligned.
-                bbox = character["bbox_full"]
-                self.assertLessEqual(rect["x"], max(0, bbox["x"] - 4))
-                self.assertGreaterEqual(rect["x"] + rect["width"], min(WIDTH, bbox["x"] + bbox["width"] + 4))
-                for key, frame in (("width", WIDTH), ("height", HEIGHT)):
-                    self.assertTrue(rect[key] % 8 == 0 or rect[key] == frame)
-                self.assertAlmostEqual(character["visible_ratio"],
-                                       round(int(mask_visible.sum()) / int(mask_full.sum()), 4))
-            characters = source_ids.any(axis=-1)
-            self.assertTrue((union <= 1).all(), "mask_visible masks are disjoint")
-            np.testing.assert_array_equal(union.astype(bool), characters)
-            np.testing.assert_array_equal(pasted[characters], source_rgb[characters])
-            by_slot = {c["slot"]: c for c in meta["characters"]}
-            self.assertIsNone(by_slot[3]["bbox_visible"])
-            self.assertEqual(by_slot[3]["visible_ratio"], 0.0)
-            self.assertEqual(by_slot[2]["visible_ratio"], 1.0)
-            self.assertEqual([by_slot[s]["z_order"] for s in (2, 0, 3)], [0, 1, 2])
-
-    def test_depth_normalization_modes(self):
-        _node, result, captures = _run()
-        scene = _export(result, margin=0)
-        character = _export(result, margin=0, depth_normalization="character")
-        self.assertEqual(json.loads(character[6][0])["depth_normalization"], "character")
-        levels = []
-        for index in range(3):
-            scene_depth = _u8(scene[1][index][0].numpy())[:, :, 0]
-            mask = _u8(scene[4][index][0].numpy())[:, :, 0] > 0
-            levels.append(scene_depth[mask])
-            own = _u8(character[1][index][0].numpy())[:, :, 0]
-            # character: 255..32 over this character's own body.
-            self.assertEqual(int(own[mask].max()), 255)
-            self.assertEqual(int(own[mask].min()), 255 if index == 2 else 32)
-            self.assertEqual(int(own[~mask].max(initial=0)), 0)
-        # scene: one scale for every character; nearest 255 (slot 2), farthest 32 (slot 3).
-        self.assertEqual(int(levels[1].max()), 255)
-        self.assertEqual(int(levels[2].min()), 32)
-        self.assertGreater(int(levels[0].min()), 32)
-        self.assertLess(int(levels[0].max()), 255)
-        # A flat character (slot 3, single depth) is 255 in character mode.
-        flat = _u8(character[1][2][0].numpy())[:, :, 0]
-        self.assertEqual(set(np.unique(flat[flat > 0]).tolist()), {255})
-
-    def test_scene_depth_matches_the_full_depth_convention(self):
-        depth = np.zeros((2, 3), dtype=np.int64)
-        depth[0] = [10, 20, 30]
-        coverage = depth > 0
-        levels = PASSES.scene_depth_levels(depth, coverage, 10, 30) * 255
-        np.testing.assert_allclose(levels[0], [255, (255 + 32) / 2, 32], rtol=1e-6)
-        self.assertEqual(float(levels[1].max()), 0.0)
-        flat = PASSES.scene_depth_levels(depth, coverage, 15, 15) * 255
-        np.testing.assert_allclose(flat[0], [255, 255, 255])
-
-    def test_batched_images_are_split_per_pose_and_mismatches_fail(self):
-        _node, result, _captures = _run(count=2)
-        batched = [torch.cat(result[0], dim=0)]
-        outputs = NODE.VNCCS_CharacterExport().export(
-            batched, result[2], result[3], result[4], [0], ["8"], ["scene"])
-        reference = _export(result, margin=0)
-        for left, right in zip(outputs[5], reference[5]):
-            self.assertTrue(torch.equal(left, right))
-        with self.assertRaisesRegex(ValueError, "character_passes item"):
-            NODE.VNCCS_CharacterExport().export(result[0], result[2], result[3], result[4][:-1],
-                                                [0], ["8"], ["scene"])
-        with self.assertRaisesRegex(ValueError, "images item"):
-            NODE.VNCCS_CharacterExport().export(result[0][:1], result[2], result[3], result[4],
-                                                [0], ["8"], ["scene"])
-        small = [image[:, :-1] for image in result[0]]
-        with self.assertRaisesRegex(ValueError, "uncropped"):
-            NODE.VNCCS_CharacterExport().export(small, result[2], result[3], result[4], [0], ["8"], ["scene"])
-
-    def test_character_json_validation(self):
-        for value, message in (
-            ("", "empty"), ("{", "not valid JSON"), ('{"type": "x"}', "vnccs_character_set"),
-            ('{"type": "vnccs_character_set", "schema_version": 2}', "newer"),
-        ):
-            with self.assertRaisesRegex(ValueError, message):
-                EXPORT.parse_character_json(value)
 
 
 if __name__ == "__main__":

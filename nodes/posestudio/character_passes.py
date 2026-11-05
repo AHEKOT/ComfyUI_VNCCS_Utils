@@ -11,8 +11,7 @@ per visible character, a solo render with every other character hidden
   ``character_json`` (images first, then ascending slot), holding
   ``CHARACTER_PASS_ORDER`` at the full capture size.
 
-Crops, masks and the final depth normalization are done by VNCCS Character Export
-(nodes/posestudio/character_export.py). It never imports torch.
+It never imports torch.
 """
 import base64
 import math
@@ -124,7 +123,7 @@ def decode_character_captures(items, sizes):
 def scene_depth_levels(depth, coverage, near, far):
     """Float gray levels (0..1) of packed depth: ``near`` -> 255, ``far`` -> 32, background 0.
 
-    The values are not quantized so VNCCS Character Export can renormalize them
+    The values are not quantized so later steps can renormalize them
     per character without banding.
     """
     levels = np.zeros(depth.shape, dtype=np.float32)

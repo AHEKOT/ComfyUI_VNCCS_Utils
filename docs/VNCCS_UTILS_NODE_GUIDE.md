@@ -11,7 +11,6 @@ Registered nodes:
 | VNCCS Visual Camera Control | `VNCCS_VisualPositionControl` | `VNCCS` | Same prompt builder, controlled by the custom visual JS widget. |
 | VNCCS BBox Extractor | `VNCCS_BBox_Extractor` | `VNCCS/detailing` | Crop detected bounding-box regions into an image batch. |
 | VNCCS Pose Studio | `VNCCS_PoseStudio` | `VNCCS/pose` | Interactive 3D pose, body, camera, lighting, and pose-library workspace. |
-| VNCCS Character Export | `VNCCS_CharacterExport` | `VNCCS/pose` | Split multi-character Pose Studio images into per-character control crops and masks. |
 
 The bundled `vnccs_sam3d` package is used by Pose Studio for image-to-pose import
 and also contains standalone SAM 3D Body node classes. Those classes are not
@@ -146,34 +145,6 @@ Outputs:
 | `crop_preview` | `IMAGE` list | Off by default. Each full image with the guide drawn. |
 | `character_json` | `STRING` list | Off by default. Per-character information of each image (see [Per-character export](VNCCS_POSE_STUDIO_USAGE.md#per-character-export)). |
 | `character_passes` | `IMAGE` list | Off by default. One batch per exported character: solo normal, solo depth and full-body silhouette. |
-
-## VNCCS Character Export
-
-Crops every character of a multi-character Pose Studio image into its own control
-images, for generating characters separately and compositing them. Pure image
-processing on Pose Studio outputs of one LIST run.
-
-| Input | Type | Notes |
-| --- | --- | --- |
-| `images` | `IMAGE` | Pose Studio `images`. |
-| `character_id` | `IMAGE` | Pose Studio `character_id`. |
-| `character_json` | `STRING` | Pose Studio `character_json`. |
-| `character_passes` | `IMAGE` | Pose Studio `character_passes`. |
-| `margin` | `INT` | Pixels around each character's full-body bounds (default 64). |
-| `align` | `8` / `64` | Crop width and height are multiples of this value (default 8). |
-| `depth_normalization` | `scene` / `character` | One depth scale for the image, or 255..32 per character (default `scene`). |
-
-| Output | Type | Notes |
-| --- | --- | --- |
-| `normal_solo`, `depth_solo` | `IMAGE` list | The character alone, including parts hidden by others, cropped. |
-| `character_id` | `IMAGE` list | Crop of the full Character ID pass. |
-| `mask_visible` | `IMAGE` list | White where the character is visible in the full render, for compositing. |
-| `mask_full` | `IMAGE` list | White on the full-body silhouette, for inpainting ranges. |
-| `rgb` | `IMAGE` list | Crop of `images`, for checking. |
-| `meta` | `STRING` list | One JSON per image with each character's `crop_rect`, bounds, `z_order` and `visible_ratio`. |
-
-Per-kind lists have one item per character (image first, then ascending slot). Details are
-in [Per-character export](VNCCS_POSE_STUDIO_USAGE.md#vnccs-character-export).
 
 ## Troubleshooting
 
