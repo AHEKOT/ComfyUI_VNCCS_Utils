@@ -24,6 +24,12 @@ export class Element {
     appendChild(child) { this.children.push(child); child.parentElement = this; return child; }
     append(...children) { children.forEach(child => this.appendChild(child)); }
     replaceChildren(...children) { this.children = []; this.append(...children); }
+    replaceWith(element) {
+        const siblings = this.parentElement.children;
+        siblings[siblings.indexOf(this)] = element;
+        element.parentElement = this.parentElement;
+        this.parentElement = null;
+    }
     addEventListener(type, fn) { (this.events[type] ||= []).push(fn); }
     removeEventListener() {}
     dispatchEvent(event) { for (const fn of this.events[event.type] || []) fn(event); this[`on${event.type}`]?.(event); }
