@@ -424,24 +424,6 @@ const STYLES = `
     font-family: var(--ps-font-mono);
 }
 
-.vnccs-ps-input.vnccs-ps-value-input {
-    width: 52px;
-    padding: 1px 4px;
-    margin-left: auto;
-    font-size: 9px;
-    font-family: var(--ps-font-mono);
-    color: var(--ps-accent);
-    text-align: right;
-    appearance: textfield;
-    -moz-appearance: textfield;
-}
-
-.vnccs-ps-input.vnccs-ps-value-input::-webkit-inner-spin-button,
-.vnccs-ps-input.vnccs-ps-value-input::-webkit-outer-spin-button {
-    -webkit-appearance: none;
-    margin: 0;
-}
-
 .vnccs-ps-label-row {
     display: flex;
     justify-content: space-between;
@@ -6126,6 +6108,11 @@ class PoseStudioWidget {
     animationHistorySnapshot() {
         const state = JSON.parse(this.animationSnapshot());
         if (this.meshParams) state.editorMesh = { ...this.meshParams };
+        state.editorCamera = {
+            yaw_deg: this.exportParams.cam_yaw_deg || 0,
+            pitch_deg: this.exportParams.cam_pitch_deg || 0,
+            ...this.currentCaptureLens(),
+        };
         state.characterAnimations = (this.characters || [])
             .filter(character => character.animationState && character.id !== this.activeCharacterId)
             .map(character => ({ id: character.id, animation: JSON.parse(this.animationSnapshot(character.animationState)) }));
@@ -6170,6 +6157,21 @@ class PoseStudioWidget {
             this._animationInitialized = true;
             this.animationTimeline?.setState(this.animationState);
             this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
+            const camera = restored.editorCamera;
+            if (camera) {
+                const keepView = this.viewer?.isViewAtCaptureCamera?.() === false;
+                const changedView = JSON.stringify(this.exportParams.cam_view) !== JSON.stringify(camera.view);
+                this.exportParams.cam_yaw_deg = camera.yaw_deg;
+                this.exportParams.cam_pitch_deg = camera.pitch_deg;
+                this.setExportCaptureLens(camera);
+                this.applyCameraToViewer(!keepView);
+                if (keepView) {
+                    if (changedView) this.viewer.restoreEditorLens?.();
+                    else this.viewer.applyCaptureLensToView?.();
+                }
+                this.viewer?.setCameraParams?.(this.currentCameraParams());
+                this.syncCameraWidgets();
+            }
         } finally {
             this._restoringAnimationHistory = false;
         }
@@ -6749,6 +6751,7 @@ class PoseStudioWidget {
                     zoom: initialTransform.zoom,
                     yaw_deg: sceneCamera.yaw_deg,
                     pitch_deg: sceneCamera.pitch_deg,
+                    ...normalizeCaptureLens(sceneCamera),
                 },
             };
         });
@@ -8132,17 +8135,13 @@ class PoseStudioWidget {
         else if (this.viewer.updateCaptureCamera) this.viewer.updateCaptureCamera(...args);
     }
 
-    syncCameraWidgets({ replaceFocusedNumber = false } = {}) {
+    syncCameraWidgets() {
         for (const key of ['cam_zoom', 'cam_offset_x', 'cam_offset_y', 'cam_yaw_deg', 'cam_pitch_deg', 'cam_fov_deg', 'cam_distance']) {
             const widget = this.exportWidgets[key];
             if (widget) {
                 if (!(widget.type === "number" && document.activeElement === widget)) widget.value = this.exportParams[key];
                 if (widget._vnccsValueSpan) {
                     widget._vnccsValueSpan.innerText = Number(this.exportParams[key] || 0).toFixed(2);
-                }
-                const numberInput = widget._vnccsNumberInput;
-                if (numberInput && (replaceFocusedNumber || document.activeElement !== numberInput)) {
-                    numberInput.value = String(Number(Number(this.exportParams[key] || 0).toFixed(2)));
                 }
             }
         }
@@ -8160,7 +8159,6 @@ class PoseStudioWidget {
             const widget = this.exportWidgets?.[key];
             if (!widget) continue;
             widget.disabled = samLens;
-            if (widget._vnccsNumberInput) widget._vnccsNumberInput.disabled = samLens;
         }
         if (this._captureLensSamNote) this._captureLensSamNote.style.display = samLens ? "block" : "none";
         const aligned = !!this.exportParams.cam_view;
@@ -8229,46 +8227,10 @@ class PoseStudioWidget {
             ["FOV", "cam_fov_deg", MIN_CAPTURE_FOV_DEG, MAX_CAPTURE_FOV_DEG, DEFAULT_CAPTURE_FOV_DEG],
             ["Distance", "cam_distance", MIN_CAPTURE_DISTANCE, MAX_CAPTURE_DISTANCE, DEFAULT_CAPTURE_DISTANCE],
         ];
-        // Slider and number field share one step, so both accept the same values.
-        const step = CAPTURE_LENS_STEP;
-        const formatLensValue = key => String(Number(Number(this.exportParams[key] || 0).toFixed(2)));
-        const syncLensValues = () => {
-            // Maintain Subject Size edits Distance while FOV moves, so both pairs follow.
-            for (const [, key] of fields) {
-                const slider = this.exportWidgets[key];
-                slider.value = String(this.exportParams[key]);
-                const input = slider._vnccsNumberInput;
-                if (input && document.activeElement !== input) input.value = formatLensValue(key);
-            }
-        };
         for (const [label, key, min, max, defaultValue] of fields) {
-            const field = this.createSliderField(label, key, min, max, step, defaultValue, this.exportParams, true);
-            // Exact numeric entry drives the paired slider, so both share one update path.
-            const slider = this.exportWidgets[key];
-            const input = document.createElement("input");
-            input.type = "number";
-            input.className = "vnccs-ps-input vnccs-ps-value-input";
-            input.min = min;
-            input.max = max;
-            input.step = step;
-            input.value = formatLensValue(key);
-            input.title = key === "cam_fov_deg" ? "Vertical field of view in degrees" : "Capture camera distance";
-            // The slider's gesture tracking records one undo step for the whole numeric edit.
-            input.addEventListener("input", () => {
-                if (input.value === "" || !Number.isFinite(Number(input.value))) return;
-                slider.value = String(Math.max(min, Math.min(max, Number(input.value))));
-                slider.dispatchEvent(new Event("input"));
-            });
-            input.addEventListener("change", () => {
-                slider.dispatchEvent(new Event("change"));
-                input.value = formatLensValue(key);
-            });
-            slider._vnccsNumberInput = input;
-            // The number field replaces the read-only value beside the label.
-            slider._vnccsValueSpan.replaceWith(input);
-            slider._vnccsValueSpan = null;
-            slider.addEventListener("input", syncLensValues);
-            section.content.appendChild(field);
+            section.content.appendChild(this.createSliderField(
+                label, key, min, max, CAPTURE_LENS_STEP, defaultValue, this.exportParams, true,
+            ));
         }
 
         const maintainField = document.createElement("label");
@@ -9777,8 +9739,7 @@ class PoseStudioWidget {
             this.persistActivePoseCameraParams();
             this.applyCameraToViewer(false);
             this.viewer.restoreEditorLens?.();
-            // Undo ends a numeric edit, so a field that kept the focus shows the restored value too.
-            this.syncCameraWidgets({ replaceFocusedNumber: true });
+            this.syncCameraWidgets();
         }
         if (context?.prompt !== undefined) this.setPosePrompt(this.activeTab, context.prompt);
         this.syncCharacterEditorControls();
@@ -10256,6 +10217,7 @@ class PoseStudioWidget {
                 camera: {
                     yaw_deg: this.exportParams.cam_yaw_deg || 0,
                     pitch_deg: this.exportParams.cam_pitch_deg || 0,
+                    ...this.currentCaptureLens(),
                 },
                 characters: this.characters.map(character => {
                     this.ensureCharacterRuntime(character);

@@ -155,103 +155,45 @@ test("FOV and distance update the real perspective projection while sliding", ()
     }
 });
 
-test("numeric fields drive the paired sliders and stay synchronized", () => {
-    const scene = lensScene();
-    const { w, viewer } = scene;
-    const input = w.exportWidgets.cam_fov_deg._vnccsNumberInput;
-    input.value = "42";
-    input.emit("input");
-    assert.equal(w.exportParams.cam_fov_deg, 42);
-    assert.equal(viewer.captureCamera.fov, 42);
-    input.value = "500";
-    input.emit("input");
-    assert.equal(w.exportParams.cam_fov_deg, 75, "out-of-range input is clamped");
-    input.value = "";
-    input.emit("input");
-    assert.equal(w.exportParams.cam_fov_deg, 75, "empty input is ignored");
-    slide(scene, "cam_distance", 60);
-    assert.equal(w.exportWidgets.cam_distance._vnccsNumberInput.value, "60");
-});
-
-test("FOV and Distance each have one numeric editor beside the label and share the slider step", () => {
-    const scene = lensScene();
-    const { w } = scene;
-    const fields = scene.section.content.children.slice(0, 2);
-    for (const [field, key, value] of [[fields[0], "cam_fov_deg", "30"], [fields[1], "cam_distance", "45"]]) {
+test("FOV and Distance use the same value label, reset and slider as the other camera controls", () => {
+    const { w, section } = lensScene();
+    for (const [field, key, value] of [
+        [section.content.children[0], "cam_fov_deg", "30.00"],
+        [section.content.children[1], "cam_distance", "45.00"],
+    ]) {
         const slider = w.exportWidgets[key];
-        const input = slider._vnccsNumberInput;
-        assert.equal(input.type, "number");
-        assert.equal(input.value, value);
-        assert.equal(input.step, slider.step, `${key} number field and slider use one step`);
-        assert.equal(Number(slider.step), 0.1);
-        assert.equal(String(input.min), String(slider.min));
-        assert.equal(String(input.max), String(slider.max));
-        assert.equal(field.children.length, 2, "label row and slider only: no extra full-width field");
         const [labelRow, sliderWrap] = field.children;
-        assert.deepEqual(sliderWrap.children, [slider]);
         const valueRow = labelRow.children[1];
-        assert.equal(valueRow.children[0], input, "the number field replaces the value beside the label");
-        assert.equal(valueRow.children[1].className, "vnccs-ps-reset-btn", "the reset button stays aligned after it");
-        assert.equal(valueRow.children.length, 2);
+        assert.equal(valueRow.children[0], slider._vnccsValueSpan);
+        assert.equal(slider._vnccsValueSpan.className, w.exportWidgets.cam_yaw_deg._vnccsValueSpan.className);
+        assert.equal(slider._vnccsValueSpan.innerText, value);
+        assert.equal(valueRow.children[1].className, "vnccs-ps-reset-btn");
+        assert.deepEqual(sliderWrap.children, [slider]);
+        assert.equal(field.children.length, 2);
+        assert.equal(Number(slider.step), 0.1);
     }
 });
 
-test("number fields follow the slider on every input event and the slider follows typing", () => {
+test("lens value labels follow the sliders and Maintain Subject Size during a gesture", () => {
     const scene = lensScene();
     const { w } = scene;
     const fov = w.exportWidgets.cam_fov_deg;
     const distance = w.exportWidgets.cam_distance;
+    w.exportWidgets.cam_maintain_subject_size.checked = true;
+    w.exportWidgets.cam_maintain_subject_size.emit("change");
     fov.emit("pointerdown");
     for (const value of [33, 41, 58.5]) {
         fov.value = String(value);
         fov.emit("input");
-        assert.equal(fov._vnccsNumberInput.value, String(value), "live during the drag");
+        assert.equal(fov._vnccsValueSpan.innerText, value.toFixed(2));
+        assert.equal(distance._vnccsValueSpan.innerText, w.exportParams.cam_distance.toFixed(2));
+        assert.equal(Number(distance.value), w.exportParams.cam_distance);
     }
     fov.emit("change");
     fov.emit("pointerup");
-
-    distance._vnccsNumberInput.value = "45.1";
-    distance._vnccsNumberInput.emit("input");
-    assert.equal(w.exportParams.cam_distance, 45.1);
-    assert.equal(distance.value, "45.1", "the slider shows the typed value");
-
-    // Reset goes through the slider and updates the number field too.
     const resetButton = fov.parentElement.parentElement.children[0].children[1].children[1];
     resetButton.onclick({ stopPropagation: noop });
-    assert.equal(fov._vnccsNumberInput.value, "30");
-
-    // Maintain Subject Size moves Distance while FOV moves, and both pairs stay in step.
-    w.exportWidgets.cam_maintain_subject_size.checked = true;
-    w.exportWidgets.cam_maintain_subject_size.emit("change");
-    fov.emit("pointerdown");
-    for (const value of [40, 55, 70]) {
-        fov.value = String(value);
-        fov.emit("input");
-        assert.equal(distance.value, String(w.exportParams.cam_distance), "Distance slider is live");
-        assert.equal(distance._vnccsNumberInput.value, String(Number(w.exportParams.cam_distance.toFixed(2))), "Distance field is live");
-    }
-    fov.emit("change");
-    fov.emit("pointerup");
-});
-
-test("typing a number is one undo step that returns to the value before the edit", () => {
-    const scene = lensScene();
-    const { w, viewer } = scene;
-    const input = w.exportWidgets.cam_fov_deg._vnccsNumberInput;
-    const history = viewer.history.length;
-    for (const typed of ["6", "62"]) {
-        input.value = typed;
-        input.emit("input");
-    }
-    assert.equal(w.exportParams.cam_fov_deg, 62);
-    input.emit("change");
-    assert.equal(viewer.history.length, history + 1, "one undo step for the whole edit");
-    viewer.undo();
-    assert.equal(w.exportParams.cam_fov_deg, 30, "Undo returns to the value before typing");
-    assert.equal(input.value, "30");
-    viewer.redo();
-    assert.equal(w.exportParams.cam_fov_deg, 62);
-    assert.equal(input.value, "62");
+    assert.equal(fov._vnccsValueSpan.innerText, "30.00");
 });
 
 // Two points one unit apart vertically, at a given depth along the camera axis.
@@ -337,7 +279,7 @@ test("Undo and Redo restore the editor camera with the capture lens", () => {
     close(viewer.camera.projectionMatrix.elements[5], 1 / tanHalf(45) * start.zoom, 1e-9, "the editor projection is rebuilt");
     assert.deepEqual(viewer.camera.position.toArray(), start.position, "the editor distance returns");
     assert.equal(String(w.exportWidgets.cam_fov_deg.value), "30", "the slider returns");
-    assert.equal(w.exportWidgets.cam_fov_deg._vnccsNumberInput.value, "30", "the number field returns");
+    assert.equal(w.exportWidgets.cam_fov_deg._vnccsValueSpan.innerText, "30.00", "the value label returns");
 
     viewer.redo();
     assert.equal(w.exportParams.cam_fov_deg, 62);
@@ -398,7 +340,7 @@ test("the SAM standard fit keeps the lens it measured with", () => {
     close(distanceToTarget(viewer), 80, 1e-6, "the capture camera keeps the measured distance");
     assert.equal(w.poses[w.activeTab].cameraParams.fov_deg, 60, "the pose stores the measured lens");
     assert.equal(w.poses[w.activeTab].cameraParams.distance, 80);
-    assert.equal(w.exportWidgets.cam_fov_deg._vnccsNumberInput.value, "60");
+    assert.equal(w.exportWidgets.cam_fov_deg._vnccsValueSpan.innerText, "60.00");
 
     // An aligned view does not apply to the standard front camera.
     w.setExportCaptureLens({
@@ -1193,4 +1135,104 @@ test("Ctrl+Shift+F aligns only while Pose Studio has the interaction focus", () 
     listeners.focusin({ target: inside });
     w.host = { embedded: true };
     assert.equal(press().prevented, false, "UniCanvas hides the camera controls and the shortcut");
+});
+
+
+test("adding a character copies the full capture lens of every existing tab", async () => {
+    const scene = lensScene();
+    const { w, viewer } = scene;
+    const originalId = w.activeCharacterId;
+    slide(scene, "cam_fov_deg", 50);
+    slide(scene, "cam_distance", 80);
+    w.exportWidgets.cam_maintain_subject_size.checked = true;
+    w.exportWidgets.cam_maintain_subject_size.emit("change");
+    w.alignCaptureCameraToView();
+    const firstLens = w.currentCaptureLens();
+    w.addTab();
+    slide(scene, "cam_fov_deg", 70);
+    slide(scene, "cam_distance", 30);
+    const secondLens = w.currentCaptureLens();
+
+    assert.equal(await w.addCharacter(), true);
+    for (const character of w.characters) {
+        assert.deepEqual(normalizeCaptureLens(character.poses[0].cameraParams), firstLens);
+        assert.deepEqual(normalizeCaptureLens(character.poses[1].cameraParams), secondLens);
+    }
+    w.switchTab(0);
+    assert.deepEqual(w.currentCaptureLens(), firstLens);
+    assert.equal(viewer.captureCamera.fov, 50);
+    await w.selectCharacter(originalId);
+    assert.deepEqual(w.currentCaptureLens(), firstLens);
+    assert.deepEqual(normalizeCaptureLens(w.poses[0].cameraParams), firstLens);
+});
+
+test("animation JSON export and import retain the capture lens and aligned composition", async () => {
+    const source = lensScene();
+    source.w.setEditorMode("animation");
+    slide(source, "cam_fov_deg", 60);
+    slide(source, "cam_distance", 80);
+    source.w.exportWidgets.cam_maintain_subject_size.checked = true;
+    source.w.exportWidgets.cam_maintain_subject_size.emit("change");
+    source.viewer.camera.position.x += 5;
+    source.viewer.orbit.update();
+    source.w.alignCaptureCameraToView();
+    const expectedLens = source.w.currentCaptureLens();
+    const expectedCamera = cameraState(source.viewer);
+    let exported;
+    source.context.URL = {
+        createObjectURL(blob) { exported = blob; return "blob:animation-export"; },
+        revokeObjectURL: noop,
+    };
+    source.w.exportPose("animation", "Capture lens");
+    const data = JSON.parse(await exported.text());
+    assert.deepEqual(normalizeCaptureLens(data.camera), expectedLens);
+    const target = lensScene();
+    await target.w.loadCharacterSceneLibraryAsset(data, { animation: true });
+    target.w.applyCameraToViewer(false);
+    assert.deepEqual(target.w.currentCaptureLens(), expectedLens);
+    assertSameCamera(cameraState(target.viewer), expectedCamera, "imported animation capture");
+});
+
+test("animation Undo and Redo restore lens gestures and Align without changing the clip", () => {
+    const scene = lensScene();
+    const { w, viewer } = scene;
+    w.setEditorMode("animation");
+    const clip = w.animationSnapshot();
+    const start = cameraState(viewer);
+    const fov = w.exportWidgets.cam_fov_deg;
+    fov.emit("pointerdown");
+    for (const value of [40, 50, 60]) {
+        fov.value = String(value);
+        fov.emit("input");
+        assert.equal(viewer.captureCamera.fov, value);
+    }
+    fov.emit("change");
+    fov.emit("pointerup");
+    assert.equal(w._animationUndoStack.length, 1);
+    w.undoAnimation();
+    assertSameCamera(cameraState(viewer), start, "Undo FOV");
+    assert.equal(fov._vnccsValueSpan.innerText, "30.00");
+    close(viewer.camera.fov, 45);
+    w.redoAnimation();
+    assert.equal(viewer.captureCamera.fov, 60);
+    slide(scene, "cam_distance", 80);
+    w.undoAnimation();
+    assert.equal(w.exportParams.cam_distance, 45);
+    close(viewer.camera.position.distanceTo(viewer.orbit.target), 45);
+    w.redoAnimation();
+    assert.equal(w.exportParams.cam_distance, 80);
+    const orbitCamera = cameraState(viewer);
+    viewer.camera.position.x += 5;
+    viewer.orbit.update();
+    const editorPosition = viewer.camera.position.toArray();
+    w.alignCaptureCameraToView();
+    const alignedCamera = cameraState(viewer);
+    w.undoAnimation();
+    assertSameCamera(cameraState(viewer), orbitCamera, "Undo Align");
+    assert.equal(w.exportParams.cam_view, null);
+    assert.deepEqual(viewer.camera.position.toArray(), editorPosition);
+    w.redoAnimation();
+    assertSameCamera(cameraState(viewer), alignedCamera, "Redo Align");
+    assert.deepEqual(viewer.camera.position.toArray(), editorPosition);
+    assert.equal(w.animationSnapshot(), clip);
 });
