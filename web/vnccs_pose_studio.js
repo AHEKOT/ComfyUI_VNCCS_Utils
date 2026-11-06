@@ -8171,7 +8171,9 @@ class PoseStudioWidget {
     // camera. snapToCaptureCamera() is the opposite direction.
     alignCaptureCameraToView() {
         if (!this.viewer?.computeCaptureViewFromEditor || this.viewer._samProjectionCameraFrame) return false;
-        const aligned = this.viewer.computeCaptureViewFromEditor();
+        const aligned = this.viewer.computeCaptureViewFromEditor(
+            this.exportParams.view_width / this.exportParams.view_height,
+        );
         if (!aligned) return false;
         if (!this.isAnimationMode()) this.viewer.recordState?.();
         this.setExportCaptureLens({ ...this.currentCaptureLens(), ...aligned });
