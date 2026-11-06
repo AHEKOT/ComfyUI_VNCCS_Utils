@@ -8163,7 +8163,6 @@ class PoseStudioWidget {
         if (this._captureLensSamNote) this._captureLensSamNote.style.display = samLens ? "block" : "none";
         const aligned = !!this.exportParams.cam_view;
         if (this._alignCaptureViewButton) this._alignCaptureViewButton.disabled = samLens;
-        if (this._orbitCaptureViewButton) this._orbitCaptureViewButton.disabled = !aligned;
         if (this._captureViewNote) this._captureViewNote.style.display = aligned ? "block" : "none";
     }
 
@@ -8190,10 +8189,13 @@ class PoseStudioWidget {
         return true;
     }
 
-    useOrbitCaptureCamera() {
-        if (!this.exportParams.cam_view) return false;
+    resetCaptureCamera() {
         if (!this.isAnimationMode()) this.viewer?.recordState?.();
-        this.setExportCaptureLens({ ...this.currentCaptureLens(), view: null });
+        this.clearSAMCameraMode();
+        this.exportParams.cam_yaw_deg = 0;
+        this.exportParams.cam_pitch_deg = 0;
+        this.setExportCaptureLens({});
+        this._subjectSizeAnchor = null;
         this.persistActivePoseCameraParams();
         this.applyCameraToViewer(true);
         this.syncToNode(true);
@@ -8269,20 +8271,19 @@ class PoseStudioWidget {
         alignButton.innerText = "Align Camera to View";
         alignButton.title = "Copy the editor view (position, rotation, FOV and zoom) to the capture camera (Ctrl+Shift+F)";
         alignButton.addEventListener("click", () => this.alignCaptureCameraToView());
-        const orbitButton = document.createElement("button");
-        orbitButton.className = "vnccs-ps-btn";
-        orbitButton.innerText = "Orbit Camera";
-        orbitButton.title = "Return to the regular capture camera driven by Yaw, Pitch, FOV and Distance";
-        orbitButton.addEventListener("click", () => this.useOrbitCaptureCamera());
-        viewRow.append(alignButton, orbitButton);
+        const resetButton = document.createElement("button");
+        resetButton.className = "vnccs-ps-btn";
+        resetButton.innerText = "Reset Camera";
+        resetButton.title = "Reset the scene camera to Yaw 0, Pitch 0, FOV 30 and Distance 45";
+        resetButton.addEventListener("click", () => this.resetCaptureCamera());
+        viewRow.append(alignButton, resetButton);
         section.content.appendChild(viewRow);
         this._alignCaptureViewButton = alignButton;
-        this._orbitCaptureViewButton = orbitButton;
 
         const viewNote = document.createElement("div");
         viewNote.className = "vnccs-ps-label";
         viewNote.style.display = "none";
-        viewNote.innerText = "Capture camera is aligned to a saved view. Yaw and Pitch orbit it around its pivot; Orbit Camera returns to the regular camera.";
+        viewNote.innerText = "Capture camera is aligned to a saved view. Yaw and Pitch orbit it around its pivot; Reset Camera restores the default scene camera.";
         section.content.appendChild(viewNote);
         this._captureViewNote = viewNote;
         this.syncCaptureLensControls();

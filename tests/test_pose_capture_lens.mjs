@@ -857,8 +857,8 @@ test("Align fits the unchanged editor view after lens edits and Preview", () => 
     const scene = lensScene();
     const { w, viewer } = scene;
     slide(scene, "cam_yaw_deg", -14);
-    slide(scene, "cam_distance", 11.87);
     for (const fov of [62, 75, 15, 30]) {
+        slide(scene, "cam_distance", 11.87);
         slide(scene, "cam_fov_deg", fov);
         const projection = viewer.camera.projectionMatrix.toArray();
         const world = viewer.camera.matrixWorld.toArray();
@@ -867,7 +867,7 @@ test("Align fits the unchanged editor view after lens edits and Preview", () => 
         assert.deepEqual(viewer.camera.projectionMatrix.toArray(), projection);
         assert.deepEqual(viewer.camera.matrixWorld.toArray(), world);
         assertFrameComposition(meshPoints(viewer), viewer.camera, viewer.captureCamera, `FOV ${fov}`);
-        w.useOrbitCaptureCamera();
+        w.resetCaptureCamera();
     }
     moveEditor(viewer, editorView);
     w.alignCaptureCameraToView();
@@ -916,7 +916,7 @@ test("aligned view: Distance moves along the view ray, Yaw/Pitch orbit it around
     close(w.exportParams.cam_pitch_deg, -Math.asin(14 / length) * 180 / Math.PI, 1e-9);
     assert.notEqual(w.exportWidgets.cam_yaw_deg.disabled, true);
     assert.notEqual(w.exportWidgets.cam_pitch_deg.disabled, true);
-    assert.equal(findButton(scene, "Orbit Camera").disabled, false);
+    assert.notEqual(findButton(scene, "Reset Camera").disabled, true);
     assert.equal(w._captureViewNote.style.display, "block");
 
     slide(scene, "cam_distance", 80);
@@ -950,14 +950,16 @@ test("aligned view: Distance moves along the view ray, Yaw/Pitch orbit it around
     }
     assert.equal(w._captureViewNote.style.display, "block");
 
-    findButton(scene, "Orbit Camera").click();
+    findButton(scene, "Reset Camera").click();
     assert.equal(w.exportParams.cam_view, null);
     assert.notEqual(w.exportWidgets.cam_yaw_deg.disabled, true);
-    assert.equal(viewer.captureCamera.fov, 35, "orbit mode keeps the lens");
-    close(distanceToTarget(viewer), 80, 1e-9);
+    assert.equal(viewer.captureCamera.fov, 30, "Reset Camera restores the default lens");
+    close(distanceToTarget(viewer), 45, 1e-9);
+    assert.equal(w.exportParams.cam_yaw_deg, 0);
+    assert.equal(w.exportParams.cam_pitch_deg, 0);
     slide(scene, "cam_yaw_deg", 40);
     const back = viewer.captureCamera.position.clone().sub(viewer.sceneCameraTarget).normalize();
-    close(back.x, Math.sin(40 * Math.PI / 180) * Math.cos(20 * Math.PI / 180), 1e-9, "yaw drives the camera again, pitch carries over");
+    close(back.x, Math.sin(40 * Math.PI / 180), 1e-9, "yaw drives the regular camera from reset pitch");
 
     w.alignCaptureCameraToView();
     w.resetCameraParams();
@@ -980,9 +982,9 @@ test("undo and redo restore the capture camera around Align Camera to View", () 
     viewer.redo();
     assert.deepEqual(w.exportParams.cam_view.position, editorView.position);
     assertSameCamera(cameraState(viewer), aligned, "redo");
-    findButton(scene, "Orbit Camera").click();
+    findButton(scene, "Reset Camera").click();
     viewer.undo();
-    assertSameCamera(cameraState(viewer), aligned, "undo Orbit Camera");
+    assertSameCamera(cameraState(viewer), aligned, "undo Reset Camera");
 });
 
 test("pose tabs, characters, RUN and Pose Manager cards each use their own aligned view", async () => {
@@ -1148,7 +1150,7 @@ test("Ctrl+Shift+F aligns only while Pose Studio has the interaction focus", () 
     assert.deepEqual(w.exportParams.cam_view.position, editorView.position);
 
     listeners.pointerdown({ target: outside });
-    w.useOrbitCaptureCamera();
+    w.resetCaptureCamera();
     assert.equal(press({ target: outside }).prevented, false, "focus left Pose Studio");
     assert.equal(w.exportParams.cam_view, null);
     listeners.focusin({ target: inside });
@@ -1254,4 +1256,67 @@ test("animation Undo and Redo restore lens gestures and Align without changing t
     assertSameCamera(cameraState(viewer), alignedCamera, "Redo Align");
     assert.deepEqual(viewer.camera.position.toArray(), editorPosition);
     assert.equal(w.animationSnapshot(), clip);
+});
+
+
+for (const mode of ["image", "animation"]) {
+    test(`Reset Camera restores scene defaults and is undoable in ${mode} mode without moving characters`, () => {
+        const scene = lensScene();
+        const { w, viewer } = scene;
+        const defaults = cameraState(viewer);
+        Object.assign(w.exportParams, { cam_offset_x: 4, cam_offset_y: 2, cam_zoom: 1.3 });
+        w.persistActivePoseCameraParams();
+        w.setEditorMode(mode);
+        const clip = w.animationSnapshot();
+        const characters = sceneSnapshot(scene);
+        for (const aligned of [false, true]) {
+            slide(scene, "cam_yaw_deg", 25);
+            slide(scene, "cam_pitch_deg", -15);
+            slide(scene, "cam_fov_deg", 60);
+            slide(scene, "cam_distance", 80);
+            w.exportWidgets.cam_maintain_subject_size.checked = true;
+            w.exportWidgets.cam_maintain_subject_size.emit("change");
+            if (aligned) {
+                moveEditor(viewer, editorView);
+                w.alignCaptureCameraToView();
+            }
+            const previousCamera = cameraState(viewer);
+            if (mode === "image") {
+                viewer.history = [];
+                viewer.future = [];
+            } else w.resetAnimationHistory();
+            const history = mode === "image" ? viewer.history : w._animationUndoStack;
+            const depth = history.length;
+            const reset = findButton(scene, "Reset Camera");
+            assert.notEqual(reset.disabled, true);
+            reset.click();
+            assertSameCamera(cameraState(viewer), defaults, "Reset Camera");
+            assert.deepEqual(w.currentCaptureLens(), normalizeCaptureLens());
+            assert.equal(w.exportParams.cam_yaw_deg, 0);
+            assert.equal(w.exportParams.cam_pitch_deg, 0);
+            close(viewer.camera.fov, 45);
+            assert.deepEqual(sceneSnapshot(scene), characters);
+            assert.equal(history.length, depth + 1);
+            if (mode === "image") viewer.undo();
+            else w.undoAnimation();
+            assertSameCamera(cameraState(viewer), previousCamera, "Undo Reset Camera");
+            if (mode === "image") viewer.redo();
+            else w.redoAnimation();
+            assertSameCamera(cameraState(viewer), defaults, "Redo Reset Camera");
+            assert.deepEqual(sceneSnapshot(scene), characters);
+        }
+        assert.equal(w.animationSnapshot(), clip);
+    });
+}
+
+test("Reset Camera clears an applied SAM camera and restores the standard scene camera", () => {
+    const scene = lensScene();
+    const defaults = cameraState(scene.viewer);
+    const characters = sceneSnapshot(scene);
+    scene.w.applyLibrarySAMProjection({ fov: 35, cameraPosition: { x: 1, y: 12, z: 40 }, projection_zoom: 0.8 });
+    findButton(scene, "Reset Camera").click();
+    assert.equal(scene.viewer._samProjectionCameraFrame, null);
+    assert.equal(scene.w._samCameraModeActive, false);
+    assertSameCamera(cameraState(scene.viewer), defaults, "Reset SAM camera");
+    assert.deepEqual(sceneSnapshot(scene), characters);
 });
