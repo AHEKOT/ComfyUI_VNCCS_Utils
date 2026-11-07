@@ -42,6 +42,9 @@ Outputs:
 | `images` | `IMAGE` list | Rendered pose image output. In LIST mode it is one image per pose tab. In GRID mode it is a one-item list containing the grid image. |
 | `lighting_prompt` | `STRING` list | Combined lighting, per-pose, and connected camera prompt aligned with `images`. |
 
+A new node has only these two outputs. Settings > **Additional Outputs** adds more: see
+[Additional outputs](#additional-outputs).
+
 Important backend behavior:
 
 - The node requests a fresh frontend sync for every execution.
@@ -232,6 +235,61 @@ Use GRID when:
 
 - You want a single pose sheet/contact sheet.
 - You are building reference previews rather than separate generation inputs.
+
+## Additional outputs
+
+Open Settings (the gear button) and turn on what you need under **Additional Outputs**.
+The **Conditioning** group has `depth`, `normal`, `outline`, `silhouette`, `mask` and
+`character_id`. All are off by default, so a new node has only `images` and
+`lighting_prompt`.
+
+- **Unused outputs cost nothing.** A disabled output has no socket. An enabled output
+  without a link has a socket, but neither gets rendering, PNG encoding or image
+  allocation. `images` is unchanged either way.
+- **Sockets appear in the order you enable them**, after `lighting_prompt`. Turning one
+  off removes that socket and its links; links on the other outputs stay connected.
+- **Saved workflows** keep their enabled outputs and links. A workflow with links from a
+  version where these outputs were always visible keeps the linked ones and hides the
+  others.
+
+The enabled outputs are saved in socket order in `pose_data.export.additional_outputs`.
+The backend fills the slots after `lighting_prompt` in that order, so in an API-format
+prompt, slot 2 is the first name in the list, slot 3 the second, and so on. The outputs
+with a link are saved in `pose_data.export.linked_additional_outputs`, so enabling or
+linking an output re-executes the node.
+
+### Conditioning outputs
+
+- **Same camera as `images`.** Every pass is rendered right after its RGB capture
+  through that capture's camera and at the output resolution, so FOV, Distance,
+  Align Camera to View, Yaw/Pitch, Zoom and the radar placement affect all outputs
+  identically.
+- **Characters only.** The passes draw a private scene of the character meshes
+  (every character, with its own pose, position, zoom and rotation; hidden
+  characters are skipped). The grid, capture frame, bones, joint markers, reference
+  image, skydome, gizmos, imported figure overlays and any other editor helper never
+  appear. Lighting, skin texture and model colour do not affect them.
+- **Overlaps** are resolved by the depth test in every pass, exactly as in `images`.
+- **LIST / GRID.** LIST returns one image per pose tab; GRID builds the same grid as
+  `images` on a black (ID 0) background.
+- **Pose Manager.** RUN still sends the card images byte for byte; the passes are
+  rendered at RUN with the exact camera each card was captured with.
+- **Debug Mode and `pose_image`** captures produce passes for the image they output.
+- **Animation mode** is not supported yet: a linked conditioning output stops the run
+  there with an error instead of returning blank images. Turn it off or switch to Image
+  mode.
+
+| Output | Encoding |
+| --- | --- |
+| `depth` | Grayscale linear camera depth: nearest visible surface **white (255)**, farthest one gray 32, background **black (0)**. Normalized per image over all characters, so depth differences between characters stay visible. Same convention as MiDaS / ControlNet depth maps. |
+| `normal` | View-space normals, OpenGL / three.js `MeshNormalMaterial` convention: R = +X (right), G = +Y (up), B = +Z (toward the camera), `rgb = normal * 0.5 + 0.5`. A surface facing the camera is (128, 128, 255). Background is black. |
+| `outline` | **White lines on black.** A character pixel is on the outline when a neighbour is background, another character behind it, or a part of the same character behind it (an inverse-depth step of at least 1 %, e.g. an arm in front of the body). Lines lie inside the silhouette, 1 px wide up to 640 px and thicker on larger outputs. Normal creases are not drawn yet. |
+| `silhouette` | White (255) characters on black. |
+| `mask` | ComfyUI `MASK`, 1.0 on characters, 0.0 on background. |
+| `character_id` | Flat colours without anti-aliasing by character slot: Character 1 = red (255, 0, 0), Character 2 = green (0, 255, 0), Character 3 = blue (0, 0, 255), Character 4 = yellow (255, 255, 0); background = ID 0 = black. The colour follows the slot, not the selected character, so it is stable across edits, saves and reloads. One channel threshold extracts a character's mask. |
+
+The passes reuse the 3D Factory conditioning renderer
+(`web/shared/conditioning_render.mjs`).
 
 ## Camera and Framing
 

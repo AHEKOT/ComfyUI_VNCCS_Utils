@@ -19,6 +19,20 @@ import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js?v=1791
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js?v=1791754604000";
 import { installCustomSelects } from "./shared/custom_select.mjs?v=20261104-scaled-menu";
 import {
+    poseCaptureCameraFromSnapshot,
+    poseConditioningPasses,
+    snapshotPoseCaptureCamera,
+} from "./pose_studio/conditioning.mjs?v=20261105.2";
+import {
+    POSE_ADDITIONAL_OUTPUT_GROUPS,
+    POSE_BASE_OUTPUT_COUNT,
+    poseAdditionalOutputNames,
+    poseLinkedAdditionalOutputNames,
+    restorePoseAdditionalOutputs,
+    savedPoseAdditionalOutputs,
+    setPoseAdditionalOutput,
+} from "./pose_studio/additional_outputs.mjs?v=20261105.2";
+import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
     cameraFramingToCharacterTransform,
@@ -6484,6 +6498,47 @@ class PoseStudioWidget {
         if (this.host?.embedded === true && section?.el) section.el.style.display = "none";
     }
 
+    createAdditionalOutputsSection() {
+        const section = this.createSection("Additional Outputs", true);
+        const enabled = new Set(poseAdditionalOutputNames(this.node));
+        for (const group of POSE_ADDITIONAL_OUTPUT_GROUPS) {
+            const title = document.createElement("div");
+            title.style.cssText = "font-size:11px;font-weight:600;color:#aaa;margin:2px 0 8px;";
+            title.textContent = group.title;
+            section.content.appendChild(title);
+            for (const output of group.outputs) {
+                const row = document.createElement("div");
+                row.className = "vnccs-ps-field";
+                row.style.marginBottom = "8px";
+                const label = document.createElement("label");
+                label.style.cssText = "display:flex;align-items:flex-start;gap:10px;cursor:pointer;user-select:none;";
+                const checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.name = `additional_output_${output.name}`;
+                checkbox.checked = enabled.has(output.name);
+                checkbox.style.marginTop = "2px";
+                checkbox.addEventListener("change", () => this.setAdditionalOutput(output.name, checkbox.checked));
+                const text = document.createElement("span");
+                const name = document.createElement("strong");
+                name.textContent = output.name;
+                const hint = document.createElement("small");
+                hint.style.cssText = "display:block;color:#888;margin-top:3px;line-height:1.35;";
+                hint.textContent = output.hint;
+                text.append(name, hint);
+                label.append(checkbox, text);
+                row.appendChild(label);
+                section.content.appendChild(row);
+            }
+        }
+        return section;
+    }
+
+    setAdditionalOutput(name, enabled) {
+        if (!setPoseAdditionalOutput(this.node, name, enabled)) return;
+        this.node.setDirtyCanvas?.(true, true);
+        this.syncToNode(false, { skipCapture: true });
+    }
+
     createSection(title, expanded = true) {
         const section = document.createElement("div");
         section.className = "vnccs-ps-section" + (expanded ? "" : " collapsed");
@@ -7694,6 +7749,58 @@ class PoseStudioWidget {
         return true;
     }
 
+    // Auxiliary passes of the scene as currently posed, through the capture
+    // camera of the RGB image just taken (or a Pose Manager card's camera).
+    captureConditioningPasses(width, height, passes, camera = null) {
+        const images = this.viewer.captureConditioning(width, height, {
+            characters: this.characters.map(character => ({ id: character.id, slot: character.slot })),
+            activeCharacterId: this.activeCharacterId,
+            passes,
+            ...(camera ? { camera } : {}),
+        });
+        if (!images || passes.some(pass => typeof images[pass] !== "string")) {
+            throw new Error("Pose Studio auxiliary passes could not be rendered.");
+        }
+        return images;
+    }
+
+    // Pose Manager RUN sends the card bytes unchanged, so auxiliary passes reuse
+    // the exact camera each card was captured with, keyed by the card image.
+    rememberPoseCaptureCamera(capture) {
+        if (!this._poseCaptureCameras) this._poseCaptureCameras = new Map();
+        this._poseCaptureCameras.set(capture, snapshotPoseCaptureCamera(this.viewer.captureCamera));
+        if (this._poseCaptureCameras.size > (this.poses?.length || 0) + 8) {
+            const current = new Set(this.poseCaptures || []);
+            for (const key of [...this._poseCaptureCameras.keys()]) {
+                if (!current.has(key)) this._poseCaptureCameras.delete(key);
+            }
+        }
+    }
+
+    captureManagerConditioning(passes) {
+        const w = this.exportParams.view_width || 1024;
+        const h = this.exportParams.view_height || 1024;
+        const cameras = this.poses.map((_pose, index) => this._poseCaptureCameras?.get(this.poseCaptures?.[index]));
+        if (cameras.some(camera => !camera)) {
+            throw new Error("Pose Manager previews are not ready; RUN cannot render auxiliary outputs for incomplete cards.");
+        }
+        const originalPose = this.viewer.getPose();
+        const results = [];
+        try {
+            for (let i = 0; i < this.poses.length; i++) {
+                this.viewer.setPose(this.poses[i] || {}, true);
+                this.updateCharacterScene({ poseIndex: i });
+                results.push(this.captureConditioningPasses(
+                    w, h, passes, poseCaptureCameraFromSnapshot(this.viewer.THREE, cameras[i]),
+                ));
+            }
+        } finally {
+            this.viewer.setPose(originalPose, true);
+            this.updateCharacterScene({ poseIndex: this.activeTab });
+        }
+        return results;
+    }
+
     layoutPoseManager() {
         if (!this.managerStage || !this.managerGrid) return;
         const count = Math.max(1, this.poses?.length || 1);
@@ -7960,6 +8067,7 @@ class PoseStudioWidget {
                     poseCamera.pitch_deg,
                 );
                 this.setPoseCapture(i, nextCapture, true);
+                this.rememberPoseCaptureCamera(nextCapture);
                 this.lightingPrompts[i] = this.generatePromptFromLights(
                     isOriginalLighting ? [] : this.lightParams,
                     this.getPosePrompt(i)
@@ -14390,6 +14498,7 @@ class PoseStudioWidget {
         samMeshLabel.appendChild(samMeshText);
         samMeshRow.appendChild(samMeshLabel);
         debugSection.content.appendChild(samMeshRow);
+        content.appendChild(this.createAdditionalOutputsSection().el);
         content.appendChild(debugSection.el);
 
         // Skin Texture Section
@@ -15841,6 +15950,18 @@ class PoseStudioWidget {
         const outputCount = isDebugExecution
             ? 1
             : animationMode ? this.animationState.frameCount : this.poses.length;
+        // Additional outputs are rendered only for execution and only when enabled
+        // and linked; ordinary editing and unused outputs never pay for them.
+        const additionalOutputs = poseAdditionalOutputNames(this.node);
+        const linkedAdditionalOutputs = poseLinkedAdditionalOutputNames(this.node);
+        const conditioningPasses = fullCapture && options.executionCapture === true
+            ? poseConditioningPasses(linkedAdditionalOutputs)
+            : [];
+        if (conditioningPasses.length && animationMode) {
+            throw new Error("Pose Studio depth, normal, outline, silhouette, mask and character_id outputs "
+                + "are available in Image mode. Turn them off in Settings > Additional Outputs or switch to Image mode.");
+        }
+        const conditioning = conditioningPasses.length ? [] : null;
 
         if (fullCapture && captureExplicitlyRequested
             && outputCount * (this.exportParams.view_width || 1024)
@@ -15871,6 +15992,7 @@ class PoseStudioWidget {
         if (options.executionCapture === true) {
             this._executionCaptureSnapshot = null;
             this._executionLightingPromptSnapshot = null;
+            this._executionConditioningSnapshot = null;
         }
         if (reusePoseManagerCaptures) {
             const managerCapturesReady = this.poseCaptures.length === outputCount
@@ -15883,6 +16005,7 @@ class PoseStudioWidget {
             // camera fitting, or any other render-time reinterpretation.
             this._executionCaptureSnapshot = this.poseCaptures.slice();
             this._executionLightingPromptSnapshot = this.lightingPrompts.slice();
+            if (conditioning) this._executionConditioningSnapshot = this.captureManagerConditioning(conditioningPasses);
         }
 
         // Any animation edit invalidates the previous widget-rendered sequence.
@@ -15981,6 +16104,7 @@ class PoseStudioWidget {
                                 poseCamera.yaw_deg,
                                 poseCamera.pitch_deg,
                             ), true);
+                            if (conditioning) conditioning[i] = this.captureConditioningPasses(w, h, conditioningPasses);
                             this.lightingPrompts[i] = this.generatePromptFromLights(
                                 isOriginalLighting ? [] : captureLights,
                                 debugPrompt,
@@ -16016,12 +16140,14 @@ class PoseStudioWidget {
                                 poseCamera.yaw_deg,
                                 poseCamera.pitch_deg,
                             ), true);
+                            if (conditioning) conditioning[i] = this.captureConditioningPasses(w, h, conditioningPasses);
                             const framePrompt = animationMode
                                 ? String(this.animationState.basePose?.prompt ?? this.getPosePrompt(this.activeTab))
                                 : this.getPosePrompt(i);
                             this.lightingPrompts[i] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams, framePrompt);
                         }
                     }
+                    if (conditioning) this._executionConditioningSnapshot = conditioning;
                 } catch (error) {
                     this.poseCaptures = previousCaptures;
                     this.lightingPrompts = previousPrompts;
@@ -16099,6 +16225,13 @@ class PoseStudioWidget {
         const exportToSave = { ...this.exportParams };
         delete exportToSave.background_url;
         delete exportToSave.debugPortraitMode;
+        delete exportToSave.conditioning_outputs;
+        delete exportToSave.additional_outputs;
+        delete exportToSave.linked_additional_outputs;
+        if (additionalOutputs.length) {
+            exportToSave.additional_outputs = additionalOutputs;
+            exportToSave.linked_additional_outputs = linkedAdditionalOutputs;
+        }
 
         // captured_images are excluded from the widget to avoid inflating workflow size
         // (each 1024×1024 PNG is ~500KB base64; multiple poses exceed ComfyUI localStorage limit)
@@ -16783,8 +16916,10 @@ app.registerExtension({
             const capturedLightingPrompts = (widget._executionLightingPromptSnapshot
                 || widget.lightingPrompts
                 || []).slice();
+            const capturedConditioning = widget._executionConditioningSnapshot;
             widget._executionCaptureSnapshot = null;
             widget._executionLightingPromptSnapshot = null;
+            widget._executionConditioningSnapshot = null;
             const animationCacheReady = await widget.flushAnimationCacheUpload();
             assertCurrent();
             const payload = {
@@ -16798,7 +16933,8 @@ app.registerExtension({
                     ? widgetData.animation
                     : widget.buildSceneAnimationCachePayload(),
                 captured_images: capturedImages,
-                lighting_prompts: capturedLightingPrompts
+                lighting_prompts: capturedLightingPrompts,
+                ...(capturedConditioning ? { captured_conditioning: capturedConditioning } : {}),
             };
 
             return api.fetchApi('/vnccs/pose_sync/upload_capture', {
@@ -17113,6 +17249,7 @@ app.registerExtension({
             hideInternalWidget(this, "pose_data");
             ensureAnimationImageBatchWidget(this);
             hideInternalWidget(this, "animation_image_batch");
+            restorePoseAdditionalOutputs(this);
             this.setSize([900, 740]);
 
             // Create widget
@@ -17179,6 +17316,7 @@ app.registerExtension({
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (info) {
             if (onConfigure) onConfigure.apply(this, arguments);
+            restorePoseAdditionalOutputs(this, savedPoseAdditionalOutputs(this));
 
             if (this.studioWidget) {
                 syncStudioDOMWidgetWidth(this);
@@ -17194,6 +17332,17 @@ app.registerExtension({
                     this.onResize(this.size); // Force correct aspect ratio on config
                 }, 500);
             }
+        };
+
+        // Linked additional outputs are saved in pose_data, so a new link re-executes the node.
+        const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+        nodeType.prototype.onConnectionsChange = function (type, slot) {
+            const result = onConnectionsChange?.apply(this, arguments);
+            // type 2 is LiteGraph.OUTPUT.
+            if (type === 2 && slot >= POSE_BASE_OUTPUT_COUNT) {
+                this.studioWidget?.syncToNode(false, { skipCapture: true });
+            }
+            return result;
         };
 
         // Re-capture with fresh random params on each execution when Debug Mode is enabled

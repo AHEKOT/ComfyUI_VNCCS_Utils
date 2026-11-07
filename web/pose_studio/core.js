@@ -6,6 +6,7 @@
 
 
 import { normalizeCaptureLens } from "./animation.mjs?v=20261105.1";
+import { capturePoseConditioning } from "./conditioning.mjs?v=20261105.2";
 
 // Determine the extension's base URL dynamically to support varied directory names
 const EXTENSION_URL = new URL(".", import.meta.url).toString();
@@ -5905,6 +5906,14 @@ export class PoseViewerCore {
             if (ownsCaptureBatch) this.endCaptureBatch();
         }
         return dataURL;
+    }
+
+    // Auxiliary control images of the characters only, through the camera of
+    // the latest capture() (or an explicit camera snapshot). Call right after
+    // the matching capture so RGB and passes share the same pose and projection.
+    captureConditioning(width, height, options = {}) {
+        if (!this.initialized) return null;
+        return capturePoseConditioning(this, { width, height, ...options });
     }
 
     _clearImportedFigureGroup(groupName) {
