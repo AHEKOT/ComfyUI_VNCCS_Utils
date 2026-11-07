@@ -10,7 +10,7 @@ import {
     POSE_STUDIO_CAPTURE_FOV,
     PoseViewerCore,
     buildEquivalentPerspectiveProjectionFrame,
-} from "./pose_studio/core.js?v=1791754604000";
+} from "./pose_studio/core.js?v=20261107.1";
 import {
     cameraPromptToSkydomeRotation,
 } from "./camera_control/utils.mjs";
@@ -34,7 +34,9 @@ import {
     normalizePoseStudioCharacters,
     normalizeSAMProjectionFrame,
     serializePoseStudioCharacter,
-} from "./pose_studio/characters.mjs?v=20260908.14";
+} from "./pose_studio/characters.mjs?v=20261107.1";
+import { CHARACTER_POSITION_LIMITS, clampCharacterPosition, modelRotationQuaternion, wrapDegrees } from "./pose_studio/character_transform.mjs?v=20261107.1";
+import { PoseCharacterTransformController } from "./pose_studio/character_transform_controller.mjs?v=20261107.4";
 import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
@@ -91,7 +93,7 @@ import {
     serializeAnimationStateSnapshot,
     setCharacterTransformKeyframe,
     setTrackKeyframeFromEuler,
-} from "./pose_studio/animation.mjs?v=20261105.1";
+} from "./pose_studio/animation.mjs?v=20261107.1";
 
 const VNCCS_POSE_MORPH_WORKER_URL = new URL("./pose_studio/morph_worker.js", import.meta.url);
 let VNCCS_SHARED_MORPH_WORKER = null;
@@ -128,6 +130,7 @@ const LEGACY_POSE_STUDIO_MESH_PROPORTION_KEYS = Object.freeze([
     "thigh_length",
     "shin_length",
 ]);
+const CHARACTER_SLOT_OFFSETS = [0, 3, -3, 6];
 
 function getVNCCSSharedMorphWorker() {
     if (VNCCS_SHARED_MORPH_WORKER_FAILED || typeof Worker === "undefined") return null;
@@ -417,13 +420,6 @@ const STYLES = `
     letter-spacing: 0.8px;
 }
 
-.vnccs-ps-value {
-    font-size: 9px;
-    color: var(--ps-accent);
-    margin-left: auto;
-    font-family: var(--ps-font-mono);
-}
-
 .vnccs-ps-label-row {
     display: flex;
     justify-content: space-between;
@@ -500,31 +496,56 @@ const STYLES = `
     box-shadow: 0 0 6px var(--ps-accent-glow);
 }
 
-.vnccs-ps-slider-val {
-    width: 35px;
-    text-align: right;
-    font-size: 10px;
+.vnccs-pose-studio input[type="number"],
+input.vnccs-ps-value-input {
     color: var(--ps-accent);
-    background: transparent;
-    border: none;
     font-family: var(--ps-font-mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+
+:is(.vnccs-pose-studio input[type="number"], input.vnccs-ps-value-input)::-webkit-inner-spin-button,
+:is(.vnccs-pose-studio input[type="number"], input.vnccs-ps-value-input)::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.vnccs-ps-input.vnccs-ps-value-input {
+    width: 52px;
+    min-width: 0;
+    max-width: 100%;
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 1px 4px;
+    font-size: 9px;
+}
+
+input.vnccs-ps-value-input:disabled {
+    opacity: 0.55;
 }
 
 /* Input */
-.vnccs-ps-input {
+.vnccs-ps-input,
+.vnccs-pose-studio input[type="number"] {
     background: var(--ps-input-bg);
     border: 1px solid var(--ps-border);
-    color: var(--ps-text);
     border-radius: var(--ps-radius-sm);
-    padding: 5px 8px;
-    font-family: var(--ps-font);
-    font-size: 10px;
-    width: 100%;
     box-sizing: border-box;
     transition: all var(--ps-transition);
 }
 
-.vnccs-ps-input:focus {
+.vnccs-ps-input {
+    color: var(--ps-text);
+    padding: 5px 8px;
+    font-family: var(--ps-font);
+    font-size: 10px;
+    width: 100%;
+}
+
+.vnccs-ps-input:focus,
+.vnccs-pose-studio input[type="number"]:focus {
     outline: none;
     border-color: var(--ps-accent-border);
     background: rgba(255, 143, 163, 0.03);
@@ -637,6 +658,63 @@ const STYLES = `
 .vnccs-ps-row > * {
     flex: 1;
 }
+
+.vnccs-ps-radar-axes {
+    display: grid;
+    grid-template-columns: 13px minmax(0, 140px) 13px;
+    grid-template-areas: "y-label y-value ." "y pad ." ". x .";
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    max-width: 174px;
+}
+
+.vnccs-ps-radar-axes > canvas {
+    grid-area: pad;
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.vnccs-ps-radar-axis {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+}
+
+.vnccs-ps-radar-axis--x { grid-area: x; }
+
+.vnccs-ps-radar-axis--y {
+    grid-area: y;
+    align-self: stretch;
+    flex-direction: column;
+}
+
+.vnccs-ps-radar-axis .vnccs-ps-slider {
+    min-width: 0;
+    margin: 0;
+}
+
+.vnccs-ps-radar-axis--y .vnccs-ps-slider {
+    writing-mode: vertical-lr;
+    direction: rtl;
+    width: 3px;
+    height: auto;
+    min-height: 0;
+}
+
+.vnccs-ps-radar-axes input.vnccs-ps-value-input {
+    width: 46px;
+    margin-left: 0;
+}
+
+.vnccs-ps-radar-axes > .vnccs-ps-label {
+    grid-area: y-label;
+    justify-self: center;
+}
+
+.vnccs-ps-radar-axes > .vnccs-ps-value-input { grid-area: y-value; }
 
 /* Color Picker */
 .vnccs-ps-color {
@@ -1077,16 +1155,6 @@ const STYLES = `
     font-weight: 700;
     width: 10px;
 }
-.vnccs-ps-light-value {
-    width: 42px;
-    min-width: 42px;
-    box-sizing: border-box;
-    text-align: right;
-    font-size: 9px;
-    color: var(--ps-accent);
-    font-family: var(--ps-font-mono);
-}
-
 /* Light Radar */
 .vnccs-ps-light-radar-wrap {
     display: flex;
@@ -1138,12 +1206,10 @@ const STYLES = `
 .vnccs-ps-light-slider-vert::-webkit-slider-thumb {
     width: 12px; height: 12px;
 }
-.vnccs-ps-light-h-val {
-    font-size: 10px;
-    color: var(--ps-accent);
-    height: 12px;
-    line-height: 12px;
-    font-family: var(--ps-font-mono);
+.vnccs-ps-light-slider-vert-wrap input.vnccs-ps-value-input {
+    margin: 0;
+    padding-inline: 2px;
+    text-align: center;
 }
 .vnccs-ps-light-h-label {
     font-size: 9px;
@@ -3291,16 +3357,15 @@ const STYLES = `
     font-family: var(--ps-font);
 }
 
-.vnccs-ps-library-size-control input {
+.vnccs-ps-library-size-control input[type="range"] {
     width: 100%;
     height: calc(28px * var(--vnccs-ps-library-ui-scale));
     accent-color: var(--ps-accent);
 }
 
-.vnccs-ps-library-size-value {
-    width: calc(68px * var(--vnccs-ps-library-ui-scale));
-    text-align: right;
-    color: var(--ps-accent);
+.vnccs-ps-library-size-control input.vnccs-ps-value-input {
+    font-size: inherit;
+    line-height: 1.4;
 }
 
 .vnccs-ps-library-categories {
@@ -4306,6 +4371,7 @@ class PoseStudioWidget {
             cameraParams: {
                 offset_x: 0,
                 offset_y: 0,
+                offset_z: 0,
                 zoom: 1,
                 yaw_deg: 0,
                 pitch_deg: 0,
@@ -4469,7 +4535,6 @@ class PoseStudioWidget {
         this._handSliderValues = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
         this._handSliderDefaults = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
         this._handSliderRefs = {};
-        this._handSliderValRefs = {};
         this._handBiasValues = [1.0, 1.0, 1.0];
         this._activeHandSide = null;
         this._lastSAM3DPoseData = null;
@@ -4591,6 +4656,7 @@ class PoseStudioWidget {
         clearTimeout(this._characterSyncTimer);
         this._characterSyncTimer = null;
         this._closeCharacterRemoveModal?.();
+        this.characterTransform?.dispose();
         this._activeSaveLibraryClose?.(true);
         this._pendingMorphSolve = null;
         this._morphSolveInFlight = false;
@@ -4780,9 +4846,6 @@ class PoseStudioWidget {
         label.className = "vnccs-ps-label";
         label.innerText = def.label;
 
-        const value = document.createElement("span");
-        value.className = "vnccs-ps-value";
-
         const wrap = document.createElement("div");
         wrap.className = "vnccs-ps-slider-wrap";
 
@@ -4792,6 +4855,7 @@ class PoseStudioWidget {
         slider.min = def.min;
         slider.max = def.max;
         slider.step = def.step;
+        const number = this.createSliderNumber(slider, def.label, def.key === "age" ? 0 : 2);
 
         this.trackPoseGesture(slider, { recordPose: true });
         slider.addEventListener("input", () => {
@@ -4807,20 +4871,20 @@ class PoseStudioWidget {
         });
 
         labelRow.appendChild(label);
-        labelRow.appendChild(value);
+        labelRow.appendChild(number);
         wrap.appendChild(slider);
         field.appendChild(labelRow);
         field.appendChild(wrap);
 
-        this.managerControls[def.key] = { input: slider, value, group, def };
+        this.managerControls[def.key] = { input: slider, group, def };
         return field;
     }
 
     createManagerInput(def) {
-        const field = document.createElement("div");
+        const field = document.createElement("label");
         field.className = "vnccs-ps-field";
 
-        const label = document.createElement("div");
+        const label = document.createElement("span");
         label.className = "vnccs-ps-label";
         label.innerText = def.label;
 
@@ -4855,19 +4919,10 @@ class PoseStudioWidget {
         return next;
     }
 
-    formatManagerValue(key, value) {
-        return key === "age" || key === "view_width" || key === "view_height"
-            ? String(Math.round(Number(value) || 0))
-            : Number(value || 0).toFixed(2);
-    }
-
     applyManagerMeshValue(key, value, options = {}) {
         this.meshParams[key] = value;
         const main = this.sliders?.[key];
-        if (main) {
-            main.slider.value = value;
-            main.label.innerText = this.formatManagerValue(key, value);
-        }
+        if (main) this.setNumericControlValue(main.slider, value);
         this.refreshPoseManagerControls();
         if (key === "head_size") {
             const widget = this.getNodeWidget(key);
@@ -4912,10 +4967,7 @@ class PoseStudioWidget {
 
         for (const key of sourceKeys) {
             const main = this.sliders?.[key];
-            if (main) {
-                main.slider.value = this.meshParams[key];
-                main.label.innerText = this.formatManagerValue(key, this.meshParams[key]);
-            }
+            if (main) this.setNumericControlValue(main.slider, this.meshParams[key]);
         }
 
         this.updateGenderUI();
@@ -4943,7 +4995,7 @@ class PoseStudioWidget {
     applyManagerExportValue(key, value) {
         this.exportParams[key] = value;
         const main = this.exportWidgets?.[key];
-        if (main) main.value = value;
+        if (main) this.setNumericControlValue(main, value);
         const isDimension = key === "view_width" || key === "view_height";
         if (isDimension) {
             this._lastResizeW = 0;
@@ -5007,9 +5059,7 @@ class PoseStudioWidget {
         for (const [key, info] of Object.entries(this.managerControls || {})) {
             const source = info.group === "export" ? this.exportParams : this.meshParams;
             const value = source[key];
-            if (info.input && value !== undefined
-                && !(info.input.type === "number" && document.activeElement === info.input)) info.input.value = value;
-            if (info.value) info.value.innerText = this.formatManagerValue(key, value);
+            if (info.input && value !== undefined) this.setNumericControlValue(info.input, value);
         }
 
         const isFemale = this.meshParams.gender < 0.5;
@@ -5184,22 +5234,16 @@ class PoseStudioWidget {
             labelSpan.className = "vnccs-ps-label";
             labelSpan.textContent = axis.toUpperCase();
 
-            const valueSpan = document.createElement("span");
-            valueSpan.className = "vnccs-ps-value";
-            valueSpan.textContent = "0°";
-
             const resetBtn = document.createElement("button");
             resetBtn.className = "vnccs-ps-reset-btn";
             resetBtn.innerHTML = "↺";
             resetBtn.title = "Reset to 0°";
             resetBtn.onclick = (e) => {
                 e.stopPropagation();
-                slider.value = 0;
-                valueSpan.innerText = "0°";
+                this.setNumericControlValue(slider, 0);
                 if (this.viewer) {
                     if (!this.isAnimationMode()) this.viewer.recordState();
-                    this.viewer.setModelRotation(axis === 'x' ? 0 : undefined, axis === 'y' ? 0 : undefined, axis === 'z' ? 0 : undefined);
-                    this.syncToNode();
+                    this.setModelRotationAxis(axis, 0);
                 }
             };
 
@@ -5207,9 +5251,6 @@ class PoseStudioWidget {
             valueRow.style.display = "flex";
             valueRow.style.alignItems = "center";
             valueRow.style.gap = "6px";
-            valueRow.appendChild(valueSpan);
-            valueRow.appendChild(resetBtn);
-
             labelRow.appendChild(labelSpan);
             labelRow.appendChild(valueRow);
 
@@ -5223,18 +5264,14 @@ class PoseStudioWidget {
             slider.max = 180;
             slider.step = 1;
             slider.value = 0;
+            valueRow.append(this.createSliderNumber(slider, `Model Rotation ${axis.toUpperCase()}`), resetBtn);
 
             this.trackPoseGesture(slider, { recordPose: true });
             slider.addEventListener("input", () => {
-                const val = parseFloat(slider.value);
-                valueSpan.innerText = `${val}°`;
-                if (this.viewer) {
-                    this.viewer.setModelRotation(axis === 'x' ? val : undefined, axis === 'y' ? val : undefined, axis === 'z' ? val : undefined);
-                    this.syncToNode();
-                }
+                this.setModelRotationAxis(axis, Number(slider.value));
             });
 
-            this.sliders[`rot_${axis}`] = { slider, label: valueSpan };
+            this.sliders[`rot_${axis}`] = { slider };
 
             wrap.appendChild(slider);
             field.appendChild(labelRow);
@@ -5636,6 +5673,7 @@ class PoseStudioWidget {
                 this.updateRotationSliders();
             }
         }
+        this.syncPromptFieldToActiveTab();
         if (sync) this.syncToNode(false, { skipCapture: normalized === "animation" });
     }
 
@@ -6157,6 +6195,7 @@ class PoseStudioWidget {
             this._animationInitialized = true;
             this.animationTimeline?.setState(this.animationState);
             this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
+            this.syncPromptFieldToActiveTab();
             const camera = restored.editorCamera;
             if (camera) {
                 const keepView = this.viewer?.isViewAtCaptureCamera?.() === false;
@@ -6420,6 +6459,7 @@ class PoseStudioWidget {
             onViewportRender: () => {
                 this.radarRedraw?.();
                 this.host.onViewportRender?.();
+                this.characterTransform?.onViewportRender();
             },
             transparentBackground: this.host.embedded === true,
             skinMode: 'naked',
@@ -6446,10 +6486,7 @@ class PoseStudioWidget {
                     { reveal: true },
                 );
             },
-            captureHistoryContext: () => ({
-                mesh: { ...this.meshParams }, transform: { ...this.getActiveCharacter()?.transform },
-                cameraParams: this.currentCameraParams(), prompt: this.getPosePrompt(),
-            }),
+            captureHistoryContext: () => this.captureImageHistoryContext(),
             onHistoryRestore: pose => this.restoreImageHistory(pose),
             onPoseChange: (pose) => {
                 this.updateRotationSliders();
@@ -6473,6 +6510,12 @@ class PoseStudioWidget {
             theme: "pose-studio",
         });
         this.startResizeObserver();
+
+        // Viewport Pose / Move / Rotate modes and the Characters panel Transform fields.
+        this.characterTransform = new PoseCharacterTransformController(this);
+        this.characterTransform.attach(this.viewer, this.canvasContainer);
+        this._viewerInitPromise?.then(() => this.characterTransform?.onViewerReady(), () => {});
+        this.renderCharactersUI();
     }
 
     // === UI Helper Methods ===
@@ -6667,6 +6710,7 @@ class PoseStudioWidget {
                 ...character.transform,
                 x: cameraParams.offset_x,
                 y: cameraParams.offset_y,
+                z: cameraParams.offset_z,
                 zoom: cameraParams.zoom,
             });
         }
@@ -6675,6 +6719,114 @@ class PoseStudioWidget {
             character.animationState,
             targetFrame,
         );
+    }
+
+    linkedPassiveCharacters() {
+        return this.linkCharacterTransforms
+            ? this.characters.filter(character => character.id !== this.activeCharacterId)
+            : [];
+    }
+
+    passiveCharacterPosition(character) {
+        const transform = this.characterTransformForScene(character);
+        const position = this.isAnimationMode() && this.viewer?.passiveCharacters?.get(String(character.id))?.mesh.position;
+        return position ? { ...transform, x: position.x, y: position.y, z: position.z } : transform;
+    }
+
+    passiveCharacterRotation(character) {
+        const mesh = this.isAnimationMode() && this.viewer?.passiveCharacters?.get(String(character.id))?.mesh;
+        if (mesh) return ["x", "y", "z"].map(axis => mesh.rotation[axis] * 180 / Math.PI);
+        const rotation = this.characterPoseForScene(character).modelRotation;
+        return [0, 1, 2].map(index => Number(rotation?.[index]) || 0);
+    }
+
+    constrainCharacterPosition(position, members = this.linkedPassiveCharacters().map(character => this.passiveCharacterPosition(character))) {
+        const next = clampCharacterPosition(position);
+        if (!members.length) return next;
+        const active = this.getActiveCharacter().transform;
+        for (const axis of ["x", "y", "z"]) {
+            const [min, max] = CHARACTER_POSITION_LIMITS[axis];
+            const positions = [active[axis], ...members.map(member => member[axis])];
+            const delta = next[axis] - active[axis];
+            next[axis] = active[axis] + Math.max(min - Math.min(...positions), Math.min(max - Math.max(...positions), delta));
+        }
+        return next;
+    }
+
+    applyCharacterPosition(position, { link = true, beforeMove } = {}) {
+        const active = this.getActiveCharacter();
+        if (!active) return;
+        const members = link ? this.linkedPassiveCharacters() : [];
+        const transforms = members.map(character => this.passiveCharacterPosition(character));
+        const next = this.constrainCharacterPosition(position, transforms);
+        const { x, y, z } = active.transform;
+        const delta = { x: next.x - x, y: next.y - y, z: next.z - z };
+        this.pendingAgeCameraFit = false;
+        if (!delta.x && !delta.y && !delta.z) {
+            this.syncCameraWidgets();
+            return false;
+        }
+        beforeMove?.();
+        members.forEach((character, index) => {
+            const transform = transforms[index];
+            this.applyPassiveCharacterPlacement(character, { transform: {
+                ...transform, x: transform.x + delta.x, y: transform.y + delta.y, z: transform.z + delta.z,
+            } });
+        });
+        active.transform.z = next.z;
+        this.exportParams.cam_offset_x = next.x;
+        this.exportParams.cam_offset_y = next.y;
+        this.persistActivePoseCameraParams();
+        return true;
+    }
+
+    applyPassiveCharacterPlacement(character, { transform, rotation }) {
+        if (this.isAnimationMode()) {
+            const state = character.animationState;
+            const frame = this.animationState.currentFrame;
+            if (this.animationState.autoKey) {
+                if (transform) {
+                    const previous = this.passiveCharacterPosition(character);
+                    if (transform.x !== previous.x || transform.y !== previous.y) {
+                        setCharacterTransformKeyframe(state, CHARACTER_POSITION_TRACK, frame, transform, state.defaultInterpolation);
+                    }
+                }
+                if (rotation) setTrackKeyframeFromEuler(state, MODEL_ROTATION_TRACK, frame, rotation, state.defaultInterpolation);
+            }
+        } else {
+            const pose = character.poses[this.activeTab] ||= {};
+            const previous = this.characterTransformForScene(character);
+            const next = transform || previous;
+            const THREE = this.viewer?.THREE;
+            // Stored IK targets are in world space and must follow the passive rig.
+            if (THREE && (pose.ikEffectorPositions || pose.poleTargetPositions)) {
+                const from = new THREE.Vector3(previous.x, previous.y, previous.z);
+                const to = new THREE.Vector3(next.x, next.y, next.z);
+                const delta = rotation
+                    ? modelRotationQuaternion(THREE, rotation).multiply(modelRotationQuaternion(THREE, pose.modelRotation).invert())
+                    : new THREE.Quaternion();
+                for (const key of ["ikEffectorPositions", "poleTargetPositions"]) {
+                    if (!pose[key]) continue;
+                    pose[key] = Object.fromEntries(Object.entries(pose[key]).map(([name, value]) => [
+                        name, this.isValidPoseVector(value)
+                            ? new THREE.Vector3(...value.slice(0, 3).map(Number)).sub(from).applyQuaternion(delta).add(to).toArray()
+                            : value,
+                    ]));
+                }
+            }
+            if (transform) {
+                pose.cameraParams = {
+                    ...this.cameraParamsForPose(pose, character),
+                    offset_x: transform.x,
+                    offset_y: transform.y,
+                    offset_z: transform.z,
+                };
+                character.transform = transform;
+                character.animationState.baseTransform = { ...transform };
+            }
+            if (rotation) pose.modelRotation = rotation;
+        }
+        this.viewer?.setPassiveCharacterPlacement(character.id, { transform, rotation });
     }
 
     updateCharacterScene({ frame = null, poseIndex = this.activeTab, rebuildMissing = true } = {}) {
@@ -6716,10 +6868,7 @@ class PoseStudioWidget {
     syncCharacterEditorControls() {
         for (const [key, info] of Object.entries(this.sliders || {})) {
             if (key.startsWith("rot_") || !info?.def || this.meshParams[key] === undefined) continue;
-            info.slider.value = this.meshParams[key];
-            info.label.innerText = key === "age"
-                ? String(Math.round(Number(this.meshParams[key]) || 0))
-                : Number(this.meshParams[key] || 0).toFixed(2);
+            this.setNumericControlValue(info.slider, this.meshParams[key]);
         }
         this.updateGenderUI();
         this.updateGenderVisibility();
@@ -6734,7 +6883,7 @@ class PoseStudioWidget {
         const slot = nextCharacterSlot(this.characters, requestedSlot);
         if (slot < 0) return false;
         const id = nextCharacterId(this.characters);
-        const spread = [0, 3, -3, 6][slot] ?? slot * 3;
+        const spread = CHARACTER_SLOT_OFFSETS[slot];
         // Inside UniCanvas the new mannequin starts as a copy of the active one (pose, height, depth,
         // zoom) standing beside it, so both fit together and only need a small adjustment.
         const clone = this.host?.embedded === true ? this.getActiveCharacter() : null;
@@ -6748,6 +6897,7 @@ class PoseStudioWidget {
                 cameraParams: {
                     offset_x: initialTransform.x,
                     offset_y: initialTransform.y,
+                    offset_z: initialTransform.z,
                     zoom: initialTransform.zoom,
                     yaw_deg: sceneCamera.yaw_deg,
                     pitch_deg: sceneCamera.pitch_deg,
@@ -7117,6 +7267,7 @@ class PoseStudioWidget {
         remove.addEventListener("click", () => this.showCharacterRemoveConfirm(active));
         toolbar.append(colorField, remove);
         content.appendChild(toolbar);
+        this.characterTransform?.renderPanel(content);
     }
 
     showCharacterRemoveConfirm(character) {
@@ -7278,6 +7429,7 @@ class PoseStudioWidget {
         return {
             offset_x: this.exportParams.cam_offset_x,
             offset_y: this.exportParams.cam_offset_y,
+            offset_z: this.getActiveCharacter()?.transform.z ?? 0,
             zoom: this.exportParams.cam_zoom,
             yaw_deg: this.exportParams.cam_yaw_deg || 0,
             pitch_deg: this.exportParams.cam_pitch_deg || 0,
@@ -7332,6 +7484,7 @@ class PoseStudioWidget {
         return resolveCaptureCameraParams(pose?.cameraParams, {
             offset_x: transform.x,
             offset_y: transform.y,
+            offset_z: transform.z,
             zoom: transform.zoom,
             yaw_deg: this.exportParams.cam_yaw_deg || 0,
             pitch_deg: this.exportParams.cam_pitch_deg || 0,
@@ -7364,6 +7517,10 @@ class PoseStudioWidget {
                     }
                     pose.cameraParams = params;
                     character.poses[index] = pose;
+                } else if (["offset_x", "offset_y", "offset_z"].some(key => pose.cameraParams[key] == null)) {
+                    // Freeze legacy placement before the runtime transform starts following the selected tab.
+                    const { offset_x, offset_y, offset_z } = this.cameraParamsForPose(pose, character);
+                    Object.assign(pose.cameraParams, { offset_x, offset_y, offset_z });
                 }
             }
         }
@@ -7387,6 +7544,7 @@ class PoseStudioWidget {
             ...character.transform,
             x: params.offset_x,
             y: params.offset_y,
+            z: params.offset_z,
             zoom: params.zoom,
         });
         this.syncCameraWidgets();
@@ -7453,7 +7611,8 @@ class PoseStudioWidget {
     }
 
     syncPromptFieldToActiveTab() {
-        const prompt = this.getPosePrompt(this.activeTab);
+        const animationPrompt = this.isAnimationMode() ? this.animationState?.basePose?.prompt : undefined;
+        const prompt = String(animationPrompt ?? this.getPosePrompt(this.activeTab));
         this.exportParams.user_prompt = prompt;
         if (this.userPromptArea) {
             this.userPromptArea.value = prompt;
@@ -8138,12 +8297,7 @@ class PoseStudioWidget {
     syncCameraWidgets() {
         for (const key of ['cam_zoom', 'cam_offset_x', 'cam_offset_y', 'cam_yaw_deg', 'cam_pitch_deg', 'cam_fov_deg', 'cam_distance']) {
             const widget = this.exportWidgets[key];
-            if (widget) {
-                if (!(widget.type === "number" && document.activeElement === widget)) widget.value = this.exportParams[key];
-                if (widget._vnccsValueSpan) {
-                    widget._vnccsValueSpan.innerText = Number(this.exportParams[key] || 0).toFixed(2);
-                }
-            }
+            if (widget) this.setNumericControlValue(widget, this.exportParams[key]);
         }
         const maintainWidget = this.exportWidgets.cam_maintain_subject_size;
         if (maintainWidget) maintainWidget.checked = this.exportParams.cam_maintain_subject_size === true;
@@ -8159,6 +8313,7 @@ class PoseStudioWidget {
             const widget = this.exportWidgets?.[key];
             if (!widget) continue;
             widget.disabled = samLens;
+            if (widget._vnccsNumberInput) widget._vnccsNumberInput.disabled = samLens;
         }
         if (this._captureLensSamNote) this._captureLensSamNote.style.display = samLens ? "block" : "none";
         const aligned = !!this.exportParams.cam_view;
@@ -8399,6 +8554,7 @@ class PoseStudioWidget {
             this.poses[i] = {
                 ...pose,
                 cameraParams: {
+                    ...camera,
                     offset_x: camera.offset_x ?? this.exportParams.cam_offset_x ?? 0,
                     offset_y: camera.offset_y ?? this.exportParams.cam_offset_y ?? 0,
                     yaw_deg: camera.yaw_deg ?? this.exportParams.cam_yaw_deg ?? 0,
@@ -8430,6 +8586,12 @@ class PoseStudioWidget {
         let active = false;
         let pointer = false;
         let key = false;
+        let recorded = false;
+        const record = () => {
+            if (recorded || this.isAnimationMode()) return;
+            this.viewer?.recordState?.();
+            recorded = true;
+        };
         const begin = () => {
             if (active) return;
             this._finishPoseGesture?.();
@@ -8447,11 +8609,11 @@ class PoseStudioWidget {
                     return [character, JSON.stringify(character.animationState)];
                 });
             }
-            if (recordPose && !this.isAnimationMode()) this.viewer?.recordState?.();
+            if (recordPose) record();
         };
         const finish = () => {
             if (!active) return;
-            active = pointer = key = false;
+            active = pointer = key = recorded = false;
             this._poseGestureActive = false;
             this._finishPoseGesture = null;
             if (animationTiming) this._settingsTimingBaseline = null;
@@ -8473,6 +8635,67 @@ class PoseStudioWidget {
         control.addEventListener("lostpointercapture", finish);
         control.addEventListener("keyup", () => { if (key) finish(); });
         control.addEventListener("blur", finish);
+        return record;
+    }
+
+    createSliderNumber(slider, label, digits = 2) {
+        const input = document.createElement("input");
+        input.type = "number";
+        input.className = "vnccs-ps-input vnccs-ps-value-input";
+        input.min = slider.min;
+        input.max = slider.max;
+        input.step = slider.step;
+        input.setAttribute("aria-label", label);
+        slider.setAttribute("aria-label", label + " slider");
+
+        let displayValue;
+        let editing = false;
+        let changed = false;
+        const syncNumber = value => {
+            displayValue = Number(value).toFixed(digits);
+            if (!editing || document.activeElement !== input) input.value = displayValue;
+        };
+        slider._vnccsNumberInput = input;
+        slider._vnccsSyncNumber = syncNumber;
+        syncNumber(slider.value);
+        slider.addEventListener("input", () => syncNumber(slider.value));
+
+        input.addEventListener("input", () => {
+            if (input.disabled) return;
+            editing = true;
+            const value = Number(input.value);
+            if (input.value === "" || !Number.isFinite(value)) return;
+            const previous = Number(displayValue);
+            slider.value = String(Math.max(Number(slider.min), Math.min(Number(slider.max), value)));
+            if (Number(slider.value) === previous) return;
+            changed = true;
+            slider.dispatchEvent(new Event("input"));
+        });
+        const finish = () => {
+            editing = false;
+            if (changed) {
+                changed = false;
+                slider.dispatchEvent(new Event("change"));
+            }
+            input.value = displayValue;
+        };
+        input.addEventListener("blur", finish);
+        input.addEventListener("keydown", event => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            event.stopPropagation();
+            finish();
+        });
+        input.addEventListener("keyup", event => {
+            if (event.key === "ArrowUp" || event.key === "ArrowDown") finish();
+        });
+        return input;
+    }
+
+    setNumericControlValue(control, value) {
+        if (control.type === "number" && document.activeElement === control) return;
+        control.value = value;
+        control._vnccsSyncNumber?.(value);
     }
 
     createSliderField(label, key, min, max, step, defaultValue, target, isExport = false) {
@@ -8486,23 +8709,15 @@ class PoseStudioWidget {
         labelRow.style.alignItems = "center";
 
         const value = target[key];
-        const displayVal = key === 'age' ? Math.round(value) : value.toFixed(2);
         const valueRow = document.createElement("div");
         valueRow.style.display = "flex";
         valueRow.style.alignItems = "center";
         valueRow.style.gap = "6px";
 
-        const valueSpan = document.createElement("span");
-        valueSpan.className = "vnccs-ps-value";
-        valueSpan.innerText = displayVal;
-
         const resetBtn = document.createElement("button");
         resetBtn.className = "vnccs-ps-reset-btn";
         resetBtn.innerHTML = "↺";
         resetBtn.title = `Reset to ${defaultValue}`;
-
-        valueRow.appendChild(valueSpan);
-        valueRow.appendChild(resetBtn);
 
         // Label Side
         const labelEl = document.createElement("span");
@@ -8523,7 +8738,7 @@ class PoseStudioWidget {
         slider.max = max;
         slider.step = step;
         slider.value = value;
-        slider._vnccsValueSpan = valueSpan;
+        valueRow.append(this.createSliderNumber(slider, label, key === "age" ? 0 : 2), resetBtn);
         this.trackPoseGesture(slider, { recordPose: true });
         const isLiveMorphSlider = !isExport && this.isLiveMorphKey?.(key);
 
@@ -8537,7 +8752,6 @@ class PoseStudioWidget {
 
         slider.addEventListener("input", () => {
             const val = parseFloat(slider.value);
-            valueSpan.innerText = key === 'age' ? Math.round(val) : val.toFixed(2);
 
             if (isExport) {
                 const previousValue = this.exportParams[key];
@@ -8602,7 +8816,7 @@ class PoseStudioWidget {
         });
 
         if (!isExport) {
-            this.sliders[key] = { slider, label: valueSpan, def: { key, label, min, max, step } };
+            this.sliders[key] = { slider, def: { key, label, min, max, step } };
         } else {
             this.exportWidgets[key] = slider;
         }
@@ -8614,10 +8828,10 @@ class PoseStudioWidget {
     }
 
     createInputField(label, key, type, min, max, step) {
-        const field = document.createElement("div");
+        const field = document.createElement("label");
         field.className = "vnccs-ps-field";
 
-        const labelEl = document.createElement("div");
+        const labelEl = document.createElement("span");
         labelEl.className = "vnccs-ps-label";
         labelEl.innerText = label;
 
@@ -8775,15 +8989,62 @@ class PoseStudioWidget {
         const size = 140;
         canvas.width = size;
         canvas.height = size;
-        canvas.style.width = "140px";
-        canvas.style.height = "140px";
         canvas.style.cursor = "crosshair";
         canvas.style.touchAction = "none";
+
+        const axes = document.createElement("div");
+        axes.className = "vnccs-ps-radar-axes";
+        axes.appendChild(canvas);
+        for (const axis of ["x", "y"]) {
+            const key = `cam_offset_${axis}`;
+            const control = document.createElement("div");
+            control.className = `vnccs-ps-radar-axis vnccs-ps-radar-axis--${axis}`;
+            const label = document.createElement("span");
+            label.className = "vnccs-ps-label";
+            label.textContent = axis.toUpperCase();
+            const slider = document.createElement("input");
+            slider.type = "range";
+            slider.className = "vnccs-ps-slider";
+            const [min, max] = CHARACTER_POSITION_LIMITS[axis];
+            slider.min = String(min);
+            slider.max = String(max);
+            slider.step = "0.01";
+            slider.value = this.exportParams[key];
+            if (axis === "y") slider.setAttribute("aria-orientation", "vertical");
+
+            const number = this.createSliderNumber(slider, `Camera ${label.textContent}`);
+            const record = this.trackPoseGesture(slider);
+            slider.addEventListener("input", () => {
+                const moved = this.applyCharacterPosition({
+                    x: this.exportParams.cam_offset_x, y: this.exportParams.cam_offset_y,
+                    z: this.getActiveCharacter()?.transform.z, [axis]: Number(slider.value),
+                }, { beforeMove: record });
+                if (!moved) return;
+                this.applyCameraToViewer(true);
+                this.syncToNode(false, { skipCapture: true });
+            });
+            this.exportWidgets[key] = slider;
+            if (axis === "x") {
+                control.append(label, slider, number);
+            } else {
+                axes.append(label, number);
+                control.appendChild(slider);
+            }
+            axes.appendChild(control);
+        }
 
         const ctx = canvas.getContext("2d");
 
         // Interaction State
-        let isDragging = false;
+        let drag = null;
+        const beforeDragMove = () => {
+            if (drag.moved) return;
+            drag.moved = true;
+            this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
+            if (!this.isAnimationMode() && this.linkedPassiveCharacters().length) {
+                this.viewer?.recordState?.();
+            }
+        };
 
         const updateFromMouse = (e) => {
             const pointer = this.getCanvasPointerPoint(canvas, e);
@@ -8836,41 +9097,35 @@ class PoseStudioWidget {
 
             const next = this.viewer?.characterTranslationForFramePoint(normX, -normY);
             if (!next) return;
-            this.pendingAgeCameraFit = false;
-            this.getActiveCharacter().transform.z = next.z;
-            this.exportParams.cam_offset_x = next.x;
-            this.exportParams.cam_offset_y = next.y;
-
-            // The existing camera positioning widget controls whichever
-            // character is selected in Characters.
-            this.persistActivePoseCameraParams();
-            draw();
-
-            // Sync Viewport
-            this.applyCameraToViewer(true);
+            if (this.applyCharacterPosition(next, { beforeMove: beforeDragMove })) this.applyCameraToViewer(true);
         };
 
+        const finishDrag = (event) => {
+            if (!drag || (event && event.pointerId !== drag.pointerId)) return;
+            const { pointerId, moved, restoreToken } = drag;
+            drag = null;
+            this._finishPoseGesture = null;
+            if (canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId);
+            if (moved && !this._disposed && restoreToken === this._poseDataRestoreToken) this.syncToNode(false);
+        };
         canvas.addEventListener("pointerdown", (e) => {
+            if (e.button !== 0 || drag) return;
+            this._finishPoseGesture?.();
+            drag = { pointerId: e.pointerId, moved: false, restoreToken: this._poseDataRestoreToken };
             canvas.setPointerCapture(e.pointerId);
-            isDragging = true;
+            this._finishPoseGesture = finishDrag;
             updateFromMouse(e);
         });
 
         canvas.addEventListener("pointermove", (e) => {
-            if (isDragging) updateFromMouse(e);
+            if (!drag || e.pointerId !== drag.pointerId) return;
+            if (drag.restoreToken !== this._poseDataRestoreToken) finishDrag(e);
+            else updateFromMouse(e);
         });
 
-        const finishDrag = (e) => {
-            if (isDragging) {
-                if (e && canvas.hasPointerCapture(e.pointerId)) {
-                    canvas.releasePointerCapture(e.pointerId);
-                }
-                isDragging = false;
-                this.syncToNode(false);
-            }
-        };
         canvas.addEventListener("pointerup", finishDrag);
         canvas.addEventListener("pointercancel", finishDrag);
+        canvas.addEventListener("lostpointercapture", finishDrag);
 
         const draw = () => {
             // Clear
@@ -8964,13 +9219,23 @@ class PoseStudioWidget {
             const next = this.viewer?.characterTranslationForFramePoint(0, 0);
             if (!next) return;
             if (!this.isAnimationMode()) this.viewer?.recordState?.();
-            this.pendingAgeCameraFit = false;
-            this.getActiveCharacter().transform.z = next.z;
-            this.exportParams.cam_offset_x = next.x;
-            this.exportParams.cam_offset_y = next.y;
-            this.persistActivePoseCameraParams();
-            this.syncCameraWidgets();
+            this.applyCharacterPosition(next);
             this.syncToNode(false);
+        };
+
+        const linkBtn = document.createElement("button");
+        linkBtn.type = "button";
+        linkBtn.className = "vnccs-ps-btn";
+        linkBtn.style.marginTop = "6px";
+        linkBtn.style.width = "100%";
+        linkBtn.textContent = "Move & Rotate All";
+        linkBtn.title = "Move all characters together and link the Model Rotation controls";
+        linkBtn.setAttribute("aria-pressed", "false");
+        linkBtn.onclick = () => {
+            this._finishPoseGesture?.();
+            this.linkCharacterTransforms = !this.linkCharacterTransforms;
+            linkBtn.setAttribute("aria-pressed", String(this.linkCharacterTransforms));
+            linkBtn.classList.toggle("primary", this.linkCharacterTransforms);
         };
 
         // Sync Tabs Button
@@ -9000,8 +9265,9 @@ class PoseStudioWidget {
         };
         this.syncTabsBtn = syncTabsBtn;
 
-        wrap.appendChild(canvas);
+        wrap.appendChild(axes);
         wrap.appendChild(recenterBtn);
+        wrap.appendChild(linkBtn);
         wrap.appendChild(syncTabsBtn);
         section.content.appendChild(wrap);
 
@@ -9182,8 +9448,8 @@ class PoseStudioWidget {
         const defaults = this._handSliderDefaults || { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
         for (const [key, value] of Object.entries(defaults)) {
             this._handSliderValues[key] = value;
-            if (this._handSliderRefs[key]) this._handSliderRefs[key].value = String(value);
-            if (this._handSliderValRefs[key]) this._handSliderValRefs[key].textContent = value.toFixed(2);
+            const slider = this._handSliderRefs[key];
+            if (slider) this.setNumericControlValue(slider, value);
         }
     }
 
@@ -9332,23 +9598,20 @@ class PoseStudioWidget {
             slider.value = "0";
             slider.className = "vnccs-ps-slider";
 
-            const value = document.createElement("span");
-            value.style.cssText = "font-size:10px;color:var(--ps-accent);text-align:right;font-family:var(--ps-font-mono);";
-            value.textContent = "0.00";
+            const value = this.createSliderNumber(slider, label);
 
             this.trackPoseGesture(slider, { recordPose: true });
             slider.addEventListener("input", () => {
                 const numericValue = parseFloat(slider.value);
-                value.textContent = numericValue.toFixed(2);
                 onInput(numericValue);
             });
 
             row.append(lbl, slider, value);
-            return { row, slider, value };
+            return { row, slider };
         };
 
         const mkTrackedHandSlider = (label, key, initialValue) => {
-            const { row, slider, value } = mkSliderRow(label, (numericValue) => {
+            const { row, slider } = mkSliderRow(label, (numericValue) => {
                 if (key === "grasp") {
                     const oldGrasp = this._handSliderValues.grasp;
                     this._handSliderValues.grasp = numericValue;
@@ -9364,8 +9627,8 @@ class PoseStudioWidget {
                         }
                         nextValue = Math.max(0, Math.min(1, nextValue));
                         this._handSliderValues[prefix] = nextValue;
-                        if (this._handSliderRefs[prefix]) this._handSliderRefs[prefix].value = String(nextValue);
-                        if (this._handSliderValRefs[prefix]) this._handSliderValRefs[prefix].textContent = nextValue.toFixed(2);
+                        const control = this._handSliderRefs[prefix];
+                        if (control) this.setNumericControlValue(control, nextValue);
                     }
                 } else {
                     this._handSliderValues[key] = numericValue;
@@ -9373,10 +9636,8 @@ class PoseStudioWidget {
                 this.applyActiveHandSliders();
             });
 
-            slider.value = String(initialValue);
-            value.textContent = initialValue.toFixed(2);
+            this.setNumericControlValue(slider, initialValue);
             this._handSliderRefs[key] = slider;
-            this._handSliderValRefs[key] = value;
             return row;
         };
 
@@ -9433,7 +9694,7 @@ class PoseStudioWidget {
     }
 
     _handleDocumentPointerUp(event) {
-        this._finishPoseGesture?.();
+        this._finishPoseGesture?.(event);
         const pending = this._pendingHandPopoverOutsideClick;
         this._pendingHandPopoverOutsideClick = null;
 
@@ -9452,8 +9713,8 @@ class PoseStudioWidget {
         this.hideHandControlPopover();
     }
 
-    _handleDocumentPointerCancel() {
-        this._finishPoseGesture?.();
+    _handleDocumentPointerCancel(event) {
+        this._finishPoseGesture?.(event);
         this._pendingHandPopoverOutsideClick = null;
     }
 
@@ -9722,6 +9983,20 @@ class PoseStudioWidget {
         }
     }
 
+    captureImageHistoryContext() {
+        return {
+            mesh: { ...this.meshParams }, transform: { ...this.getActiveCharacter()?.transform },
+            cameraParams: this.currentCameraParams(), prompt: this.getPosePrompt(),
+            animationBaseTransform: { ...this.animationState.baseTransform },
+            passivePlacements: this.characters.filter(character => character.id !== this.activeCharacterId).map(character => ({
+                id: character.id,
+                transform: this.characterTransformForScene(character),
+                rotation: this.passiveCharacterRotation(character),
+                animationBaseTransform: { ...character.animationState.baseTransform },
+            })),
+        };
+    }
+
     restoreImageHistory(pose) {
         this.pendingAgeCameraFit = false;
         const context = pose.editorState;
@@ -9739,10 +10014,23 @@ class PoseStudioWidget {
             this.exportParams.cam_pitch_deg = camera.pitch_deg || 0;
             this.setExportCaptureLens(camera);
             if (character && context?.transform) character.transform = { ...context.transform };
+            if (character && camera.offset_z != null) character.transform.z = camera.offset_z;
             this.persistActivePoseCameraParams();
             this.applyCameraToViewer(false);
             this.viewer.restoreEditorLens?.();
             this.syncCameraWidgets();
+        }
+        if (context?.animationBaseTransform) this.animationState.baseTransform = context.animationBaseTransform;
+        for (const placement of context?.passivePlacements || []) {
+            const passive = this.characters.find(character => character.id === placement.id);
+            if (!passive) continue;
+            const current = this.characterTransformForScene(passive);
+            const currentRotation = this.passiveCharacterRotation(passive);
+            const transform = Object.entries(placement.transform).some(([axis, value]) => value !== current[axis])
+                ? placement.transform : null;
+            const rotation = placement.rotation.some((value, index) => value !== currentRotation[index]) ? placement.rotation : null;
+            if (transform || rotation) this.applyPassiveCharacterPlacement(passive, { transform, rotation });
+            if (placement.animationBaseTransform) passive.animationState.baseTransform = placement.animationBaseTransform;
         }
         if (context?.prompt !== undefined) this.setPosePrompt(this.activeTab, context.prompt);
         this.syncCharacterEditorControls();
@@ -9806,6 +10094,7 @@ class PoseStudioWidget {
             this.syncToNode(false);
         }
 
+        const active = this.getActiveCharacter();
         const previousPoseCount = this.poses.length;
         for (const character of this.characters) {
             if (!Array.isArray(character.poses)) character.poses = [];
@@ -9813,19 +10102,21 @@ class PoseStudioWidget {
             const transform = normalizeCharacterTransform(character.transform || {});
             character.poses.push({
                 cameraParams: {
-                    offset_x: transform.x,
-                    offset_y: transform.y,
+                    offset_x: CHARACTER_SLOT_OFFSETS[character.slot] - CHARACTER_SLOT_OFFSETS[active.slot],
+                    offset_y: 0,
+                    offset_z: 0,
                     zoom: transform.zoom,
                     yaw_deg: 0,
                     pitch_deg: 0,
                 },
             });
         }
-        this.poses = this.getActiveCharacter().poses;
+        this.poses = active.poses;
         this.posePrompts.push("");
         this.activeTab = this.poses.length - 1;
         this.updateTabs();
         this.clearSAMCameraMode();
+        active.transform.z = 0;
         this.resetCameraParams();
         this.syncPromptFieldToActiveTab();
 
@@ -9975,10 +10266,7 @@ class PoseStudioWidget {
         for (const key of Object.keys(DEFAULT_POSE_STUDIO_MESH_PROPORTIONS)) {
             const value = this.meshParams[key];
             const slider = this.sliders?.[key];
-            if (slider) {
-                slider.slider.value = value;
-                slider.label.innerText = this.formatManagerValue(key, value);
-            }
+            if (slider) this.setNumericControlValue(slider.slider, value);
             const widget = this.getNodeWidget(key);
             if (widget) widget.value = value;
         }
@@ -11939,7 +12227,7 @@ class PoseStudioWidget {
         const size = this.libraryThumbSize || this.getLibraryThumbnailBounds().defaultSize;
         target.style.setProperty("--vnccs-ps-library-thumb-size", `${size}px`);
         target.style.setProperty("--vnccs-ps-library-thumb-height", `${Math.round(size * 1.3125)}px`);
-        if (this.librarySizeValue) this.librarySizeValue.textContent = `${Math.round(size)}`;
+        if (this.librarySizeInput) this.setNumericControlValue(this.librarySizeInput, size);
     }
 
     showLibraryModal() {
@@ -11962,11 +12250,10 @@ class PoseStudioWidget {
             </div>
             <div class="vnccs-ps-library-toolbar">
                 <input class="vnccs-ps-library-search" type="search" placeholder="Search poses, animations, and tags...">
-                <label class="vnccs-ps-library-size-control" title="Preview size">
+                <div class="vnccs-ps-library-size-control" title="Preview size">
                     <span>Preview</span>
                     <input class="vnccs-ps-library-size-slider" type="range" min="160" max="520" step="10">
-                    <span class="vnccs-ps-library-size-value"></span>
-                </label>
+                </div>
                 <button class="vnccs-ps-library-menu-btn" title="Pose library settings">⚙️</button>
             </div>
             <div class="vnccs-ps-library-categories"></div>
@@ -11983,15 +12270,15 @@ class PoseStudioWidget {
         this.libraryWorkspace = modal.querySelector('.vnccs-ps-library-workspace');
         this.librarySearchInput = modal.querySelector('.vnccs-ps-library-search');
         this.librarySizeInput = modal.querySelector('.vnccs-ps-library-size-slider');
-        this.librarySizeValue = modal.querySelector('.vnccs-ps-library-size-value');
         this.libraryCategoriesEl = modal.querySelector('.vnccs-ps-library-categories');
         this.librarySettingsEl = modal.querySelector('.vnccs-ps-library-settings');
         this.librarySettingsMode = false;
         this.librarySelectedName = null;
         this.libraryActiveCategory = "All";
         if (this.librarySizeInput) {
-            this.librarySizeInput.value = String(this.libraryThumbSize);
-            this.librarySizeInput.addEventListener('input', () => this.saveLibraryThumbnailSize(this.librarySizeInput.value));
+            const slider = this.librarySizeInput;
+            slider.parentElement.appendChild(this.createSliderNumber(slider, "Preview Size (px)", 0));
+            slider.addEventListener('input', () => this.saveLibraryThumbnailSize(slider.value));
         }
         this.applyLibraryThumbnailSize(this.libraryWorkspace);
 
@@ -12013,7 +12300,7 @@ class PoseStudioWidget {
             }
             this.libraryModal = null;
             this.libraryGrid = this.libraryInspector = this.libraryWorkspace = null;
-            this.librarySearchInput = this.librarySizeInput = this.librarySizeValue = null;
+            this.librarySearchInput = this.librarySizeInput = null;
             this.libraryCategoriesEl = this.librarySettingsEl = null;
             this._libraryInspectorLoadToken = (this._libraryInspectorLoadToken || 0) + 1;
             this._closeLibraryModal = null;
@@ -13401,6 +13688,7 @@ class PoseStudioWidget {
             // scene contains several characters. Pose sets are exported
             // separately with the explicit `type: "pose_set"` format.
             if (!animationMode) {
+                serialized.transform = this.characterTransformForScene(character);
                 const selectedPose = serialized.poses[this.activeTab]
                     || serialized.poses[0]
                     || {};
@@ -13604,23 +13892,26 @@ class PoseStudioWidget {
         this._animationCacheUploadTimer = null;
     }
 
-    validateImportedPose(pose) {
-        if (!pose || typeof pose !== "object" || Array.isArray(pose)) {
-            throw new TypeError("Invalid pose: expected an object.");
-        }
-        const validVector = value => Array.isArray(value) && value.length >= 3
+    isValidPoseVector(value) {
+        return Array.isArray(value) && value.length >= 3
             && value.slice(0, 3).every(component => (
                 (typeof component === "number" || typeof component === "string" && component.trim() !== "")
                 && Number.isFinite(Number(component))
             ));
-        if (pose.modelRotation != null && !validVector(pose.modelRotation)) {
+    }
+
+    validateImportedPose(pose) {
+        if (!pose || typeof pose !== "object" || Array.isArray(pose)) {
+            throw new TypeError("Invalid pose: expected an object.");
+        }
+        if (pose.modelRotation != null && !this.isValidPoseVector(pose.modelRotation)) {
             throw new TypeError("Invalid pose model rotation.");
         }
         for (const key of ["bones", "bonePositions", "ikEffectorPositions", "poleTargetPositions", "hipBonePosition"]) {
             const coordinates = pose[key];
             if (coordinates == null) continue;
             if (typeof coordinates !== "object" || Array.isArray(coordinates)
-                || !Object.values(coordinates).every(validVector)) {
+                || !Object.values(coordinates).every(value => this.isValidPoseVector(value))) {
                 throw new TypeError(`Invalid pose coordinates in ${key}.`);
             }
         }
@@ -13742,7 +14033,7 @@ class PoseStudioWidget {
         this.syncToNode(false, { skipCapture: true, skipAnimationHistory: true });
     }
 
-    loadPoseSetAsset(asset) {
+    loadPoseSetAsset(asset, { fallbackPrompt } = {}) {
         const sourcePoses = Array.isArray(asset) ? asset : asset?.poses;
         if (!Array.isArray(sourcePoses) || !sourcePoses.length) {
             throw new Error("Pose set does not contain poses.");
@@ -13750,11 +14041,15 @@ class PoseStudioWidget {
         sourcePoses.forEach(pose => this.validateImportedPose(pose));
         this._poseDataRestoreError = null;
 
+        this._finishPoseGesture?.();
         this.setEditorMode("image", { sync: false });
         this.clearSAMCameraMode();
         const activeCharacter = this.getActiveCharacter();
-        this.poses = sourcePoses.map(sourcePose => {
+        this.poses = sourcePoses.map((sourcePose, index) => {
             const pose = JSON.parse(JSON.stringify(sourcePose || {}));
+            if (index === 0 && fallbackPrompt !== undefined && !(typeof pose.prompt === "string" && pose.prompt.trim())) {
+                pose.prompt = fallbackPrompt;
+            }
             const savedCamera = pose.cameraParams;
             this.stripSceneCameraFromPose(pose);
             pose.cameraParams = resolveCaptureCameraParams(
@@ -13774,6 +14069,7 @@ class PoseStudioWidget {
         this.poseCaptures = [];
         this.lightingPrompts = [];
         this.activeTab = 0;
+        this.syncPromptFieldToActiveTab();
         this.ensurePoseCameraParams();
         this.restoreActivePoseCameraParams({ updateViewer: false });
         this.updateTabs();
@@ -13856,13 +14152,13 @@ class PoseStudioWidget {
                     ? extractActivePoseFromSceneAsset(data.pose)
                     : null;
                 const activeSceneTransform = activeScenePose
-                    ? extractActiveCharacterTransformFromSceneAsset(data.pose)
+                    ? extractActiveCharacterTransformFromSceneAsset(data.pose, activeScenePose)
                     : null;
                 if (isPoseSet) {
                     if (!data.pose.poses.length) throw new Error("Pose set does not contain poses.");
                     data.pose.poses.forEach(pose => this.validateImportedPose(pose));
                     if (!this.isAnimationMode()) this.viewer?.recordState?.();
-                    this.loadPoseSetAsset(data.pose);
+                    this.loadPoseSetAsset(data.pose, { fallbackPrompt: this.getPosePrompt() });
                 } else if (
                     assetType === "animation"
                     && Array.isArray(data.pose.characters)
@@ -13923,10 +14219,9 @@ class PoseStudioWidget {
                     if (savedSAMProjection && this.host?.embedded !== true) {
                         this.applyLibrarySAMProjection(savedSAMProjection);
                     }
-                    if (this.isAnimationMode()) {
-                        this.animationState.basePose.prompt = pose.prompt ?? this.animationState.basePose.prompt ?? "";
-                    } else {
-                        this.setPosePrompt(this.activeTab, pose.prompt ?? "");
+                    if (typeof pose.prompt === "string" && pose.prompt.trim()) {
+                        if (this.isAnimationMode()) this.animationState.basePose.prompt = pose.prompt;
+                        else this.setPosePrompt(this.activeTab, pose.prompt);
                     }
                     this.syncPromptFieldToActiveTab();
                     this.updateRotationSliders();
@@ -14989,7 +15284,7 @@ class PoseStudioWidget {
 
         const isOverridden = this.exportParams.keepOriginalLighting;
         this.lightListContainer.style.opacity = isOverridden ? "0.3" : "1.0";
-        this.lightListContainer.style.pointerEvents = isOverridden ? "none" : "auto";
+        this.lightListContainer.inert = isOverridden;
         this.lightListContainer.title = isOverridden ? "Lighting is overridden by 'Keep Original Lighting' mode" : "";
 
         this.lightParams.forEach((light, index) => {
@@ -15079,13 +15374,10 @@ class PoseStudioWidget {
             intSlider.step = isAmbient ? 0.01 : 0.1;
             intSlider.value = light.intensity ?? (isAmbient ? 0.5 : 1);
 
-            const intValue = document.createElement('span');
-            intValue.className = 'vnccs-ps-light-value';
-            intValue.innerText = parseFloat(intSlider.value).toFixed(2);
+            const intValue = this.createSliderNumber(intSlider, `Light ${index + 1} Intensity`);
 
             intSlider.oninput = () => {
                 light.intensity = parseFloat(intSlider.value);
-                intValue.innerText = light.intensity.toFixed(2);
                 this.applyLighting();
             };
 
@@ -15109,13 +15401,10 @@ class PoseStudioWidget {
                 radSlider.min = 5; radSlider.max = 300; radSlider.step = 1;
                 radSlider.value = light.radius ?? 100;
 
-                const radValue = document.createElement('span');
-                radValue.className = 'vnccs-ps-light-value';
-                radValue.innerText = radSlider.value;
+                const radValue = this.createSliderNumber(radSlider, `Light ${index + 1} Radius`, 0);
 
                 radSlider.oninput = () => {
                     light.radius = parseFloat(radSlider.value);
-                    radValue.innerText = radSlider.value;
                     this.applyLighting();
                 };
 
@@ -15145,10 +15434,6 @@ class PoseStudioWidget {
                 hLabel.className = 'vnccs-ps-light-h-label';
                 hLabel.innerText = "Y-HGT";
 
-                const hVal = document.createElement('span');
-                hVal.className = 'vnccs-ps-light-h-val';
-                hVal.innerText = light.y || 0;
-
                 const hSlider = document.createElement('input');
                 hSlider.type = 'range';
                 hSlider.className = 'vnccs-ps-light-slider-vert';
@@ -15158,10 +15443,10 @@ class PoseStudioWidget {
                 hSlider.max = isPoint ? 10 : 100;
                 hSlider.step = isPoint ? 0.1 : 1;
                 hSlider.value = light.y || 0;
+                const hVal = this.createSliderNumber(hSlider, `Light ${index + 1} Height`, isPoint ? 1 : 0);
 
                 hSlider.oninput = () => {
                     light.y = parseFloat(hSlider.value);
-                    hVal.innerText = hSlider.value;
                     this.applyLighting();
                 };
 
@@ -15230,16 +15515,27 @@ class PoseStudioWidget {
         this.lightingSyncTimeout = null;
     }
 
+    setModelRotationAxis(axis, value) {
+        if (!this.viewer) return;
+        const delta = value - this.viewer.modelRotation[axis];
+        if (delta) {
+            const index = ["x", "y", "z"].indexOf(axis);
+            for (const character of this.linkedPassiveCharacters()) {
+                const rotation = this.passiveCharacterRotation(character);
+                rotation[index] = wrapDegrees(rotation[index] + delta);
+                this.applyPassiveCharacterPlacement(character, { rotation });
+            }
+        }
+        this.viewer.setModelRotation(...["x", "y", "z"].map(key => key === axis ? value : undefined));
+        this.syncToNode();
+    }
+
     updateRotationSliders() {
         if (!this.viewer) return;
-        const rArray = this.viewer.isInitialized() ? this.viewer.getPose().modelRotation : [0, 0, 0];
-        const r = { x: rArray[0], y: rArray[1], z: rArray[2] };
+        const rotation = this.viewer.isInitialized() ? this.viewer.modelRotation : null;
         ['x', 'y', 'z'].forEach(axis => {
             const info = this.sliders[`rot_${axis}`];
-            if (info) {
-                info.slider.value = r[axis];
-                info.label.innerText = `${r[axis]}°`;
-            }
+            if (info) this.setNumericControlValue(info.slider, rotation?.[axis] ?? 0);
         });
     }
 
@@ -15715,8 +16011,7 @@ class PoseStudioWidget {
             if (!Number.isFinite(Number(value))) continue;
             this.meshParams[sliderKey] = Number(value);
             const info = this.sliders?.[sliderKey];
-            if (info?.slider) info.slider.value = value;
-            if (info?.label) info.label.innerText = Number(value).toFixed(2);
+            if (info?.slider) this.setNumericControlValue(info.slider, value);
         }
     }
 
@@ -15946,7 +16241,7 @@ class PoseStudioWidget {
                             const savedFraming = pose.cameraParams && typeof pose.cameraParams === "object"
                                 ? pose.cameraParams : null;
                             const sceneTransform = scenePose
-                                ? extractActiveCharacterTransformFromSceneAsset(asset) : null;
+                                ? extractActiveCharacterTransformFromSceneAsset(asset, scenePose) : null;
                             const transform = sceneTransform || (savedFraming
                                 ? cameraFramingToCharacterTransform(savedFraming, this.viewer.sceneCameraTarget)
                                 : null);
@@ -16148,6 +16443,7 @@ class PoseStudioWidget {
                 : null;
             if (animationSnapshot?.basePose) this.stripSceneCameraFromPose(animationSnapshot.basePose);
             const serialized = serializePoseStudioCharacter(character, animationSnapshot);
+            if (!animationMode) serialized.transform = this.characterTransformForScene(character);
             if (this._deferredAnimationReference) {
                 serialized.animation = character.animation ? JSON.parse(JSON.stringify(character.animation)) : null;
             } else if (animationToSave) {
@@ -16341,9 +16637,7 @@ class PoseStudioWidget {
                 for (const [key, info] of Object.entries(this.sliders)) {
                     if (key.startsWith('rot_')) continue; // Skip rotation sliders here
                     if (info.def && this.meshParams[key] !== undefined) {
-                        info.slider.value = this.meshParams[key];
-                        const val = this.meshParams[key];
-                        info.label.innerText = key === 'age' ? Math.round(val) : val.toFixed(2);
+                        this.setNumericControlValue(info.slider, this.meshParams[key]);
                     }
                 }
                 // Update gender switch
@@ -16432,7 +16726,7 @@ class PoseStudioWidget {
                         if (widget.update) {
                             widget.update(this.exportParams[key]);
                         } else {
-                            widget.value = this.exportParams[key];
+                            this.setNumericControlValue(widget, this.exportParams[key]);
                         }
                     }
                 }

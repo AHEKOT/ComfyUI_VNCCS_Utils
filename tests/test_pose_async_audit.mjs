@@ -67,6 +67,56 @@ test("a successfully loaded library pose clears the previous SAM camera", async 
     assert.equal(w.getPosePrompt(), "loaded pose");
 });
 
+test("a library pose applies a nonblank saved prompt only to the current editor mode", async () => {
+    for (const mode of ["image", "animation"]) {
+        const { w, context } = createScene();
+        w.setEditorMode(mode, { sync: false });
+        w.setPosePrompt(w.activeTab, "current prompt");
+        if (mode === "animation") w.resetAnimationHistory();
+        w.userPromptArea = { value: "", style: {}, scrollHeight: 0 };
+        for (const prompt of [undefined, "", " \n\t", "  saved prompt\n"]) {
+            context.fetch = async () => ({
+                ok: true, json: async () => ({ pose: { bones: {}, prompt } }),
+            });
+            await w.loadFromLibrary("Library pose");
+            const expected = prompt?.trim() ? prompt : "current prompt";
+            assert.equal(w.getPosePrompt(), mode === "image" ? expected : "current prompt");
+            assert.equal(w.userPromptArea.value, expected);
+            if (mode === "animation") assert.equal(w.animationState.basePose.prompt, expected);
+        }
+        if (mode === "animation") {
+            w.undoAnimation();
+            assert.equal(w.userPromptArea.value, "current prompt");
+            w.redoAnimation();
+            assert.equal(w.userPromptArea.value, "  saved prompt\n");
+            w.setEditorMode("image", { sync: false });
+            assert.equal(w.userPromptArea.value, "current prompt");
+            assert.equal(w.poses[w.activeTab].prompt, "current prompt");
+        }
+    }
+});
+
+test("a library pose set keeps the active prompt when its first pose has no prompt", async () => {
+    const { w, context } = createScene();
+    w.userPromptArea = { value: "", style: {}, scrollHeight: 0 };
+    for (const prompt of [undefined, "", " \n\t", "saved prompt"]) {
+        w.addTab();
+        w.setPosePrompt(w.activeTab, "current prompt");
+        context.fetch = async () => ({
+            ok: true,
+            json: async () => ({
+                pose: { type: "pose_set", poses: [{ bones: {}, prompt }, { bones: {}, prompt: "second pose" }] },
+            }),
+        });
+        await w.loadFromLibrary("Library pose set");
+        const expected = prompt?.trim() ? prompt : "current prompt";
+        assert.equal(w.activeTab, 0);
+        assert.equal(w.getPosePrompt(), expected);
+        assert.equal(w.userPromptArea.value, expected);
+        assert.equal(w.getPosePrompt(1), "second pose");
+    }
+});
+
 for (const format of ["FBX", "HMR2", "OpenPose"]) {
     test(`failed ${format} file import preserves SAM view and character placement`, async () => {
         const { w, viewer, node, context } = createScene();

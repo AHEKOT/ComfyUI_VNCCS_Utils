@@ -147,7 +147,7 @@ test("finite legacy mesh, background and light strings restore as numbers while 
     assert.equal(w._poseDataRestoreError, null);
     assert.equal(w.meshParams.weight, 0.8);
     assert.equal(w.meshParams.arm_length, 0.6);
-    assert.equal(w.sliders.weight.label.innerText, "0.80");
+    assert.equal(w.sliders.weight.slider._vnccsNumberInput.value, "0.80");
     assert.equal(JSON.stringify(w.meshParams.future_setting), '{"retained":true}');
     assert.equal(JSON.stringify(w.exportParams.bg_color), "[40,50,60]");
     assert.equal(w.lightParams[0].intensity, 0.7);

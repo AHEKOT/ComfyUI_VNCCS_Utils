@@ -1898,6 +1898,8 @@ export class PoseViewerCore {
 
         if (this.transform.dragging) return;
         if (this.transform.axis) return;
+        // Move / Rotate character modes take priority over bone manipulation.
+        if (this.characterGizmo?.handleViewerPointerDown?.(e)) return;
 
         const rect = this.canvas.getBoundingClientRect();
         const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -2144,7 +2146,7 @@ export class PoseViewerCore {
         }
 
         if (!this.directDrag?.active && e.buttons !== 0) return;
-        if (!this.directDrag?.active && this.transform.dragging) {
+        if (!this.directDrag?.active && (this.transform.dragging || this.characterGizmo?.suppressesBoneInput?.())) {
             if (this.hoveredBoneName || this._hoveredHandSide) {
                 this.hoveredBoneName = null;
                 this._updateHoveredHand(null);
@@ -4551,6 +4553,14 @@ export class PoseViewerCore {
         this.passiveCharacters.set(key, entry);
         this.setPassiveCharacterState(key, { pose, color, transform });
         return true;
+    }
+
+    setPassiveCharacterPlacement(id, { transform, rotation }) {
+        const mesh = this.passiveCharacters?.get(String(id))?.mesh;
+        if (!mesh) return;
+        if (rotation) mesh.rotation.set(...rotation.map(value => value * Math.PI / 180));
+        if (transform) this._applyCharacterTransform(mesh, transform);
+        this.requestRender();
     }
 
     setPassiveCharacterState(id, { pose = {}, color, transform } = {}) {

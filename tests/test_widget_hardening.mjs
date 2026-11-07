@@ -180,13 +180,13 @@ test("loading a scene-format pose preserves Pose Manager while animations open S
     );
     assert.match(
         dispatchMethod,
-        /data\.pose\?\.type === "pose_set"[\s\S]*this\.loadPoseSetAsset\(data\.pose\)/,
+        /data\.pose\?\.type === "pose_set"[\s\S]*this\.loadPoseSetAsset\(data\.pose, \{ fallbackPrompt: this\.getPosePrompt\(\) \}\)/,
     );
 });
 
 
 test("only explicit pose-set assets replace the Pose Manager pose list", () => {
-    const setStart = poseStudioSource.indexOf("loadPoseSetAsset(asset)");
+    const setStart = poseStudioSource.indexOf("\n    loadPoseSetAsset(asset,");
     const setEnd = poseStudioSource.indexOf("\n    loadAnimationLibraryAsset", setStart);
     const setMethod = poseStudioSource.slice(setStart, setEnd);
     assert.match(setMethod, /this\.poses = sourcePoses\.map/);
@@ -531,9 +531,12 @@ test("the original camera positioning widget controls the selected character", (
     const radarStart = poseStudioSource.indexOf("createCameraRadar(section)");
     const radarEnd = poseStudioSource.indexOf("\n    createLightRadar", radarStart);
     const radarMethod = poseStudioSource.slice(radarStart, radarEnd);
-    const yUpdate = radarMethod.indexOf("this.exportParams.cam_offset_y = next.y");
-    const selectedCharacterUpdate = radarMethod.indexOf("this.persistActivePoseCameraParams()", yUpdate);
-    assert.ok(yUpdate >= 0 && selectedCharacterUpdate > yUpdate);
+    assert.match(radarMethod, /this\.applyCharacterPosition\(next\)/);
+
+    const positionStart = poseStudioSource.indexOf("\n    applyCharacterPosition(position,");
+    const positionEnd = poseStudioSource.indexOf("\n    applyPassiveCharacterPlacement(", positionStart);
+    const positionMethod = poseStudioSource.slice(positionStart, positionEnd);
+    assert.match(positionMethod, /this\.exportParams\.cam_offset_y = next\.y;\s*this\.persistActivePoseCameraParams\(\)/);
 });
 
 

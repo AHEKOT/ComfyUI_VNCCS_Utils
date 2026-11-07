@@ -1,3 +1,31 @@
+# Version 0.7.4
+
+## Pose Studio
+
+### Whole-Character Editing
+
+* **Pose, Move, and Rotate modes.** Use the viewport gizmo to move a whole character along an axis, across a plane, or freely in the camera plane. Rotate around the pelvis while preserving the joint pose. Click another character in the viewport to select it.
+* **Responsive viewport toolbar.** The centered controls scale with the widget, and the highlight slides between modes. In Move and Rotate, the **World / Local** button appears centered below the mode row and switches between scene and character axes.
+* **Exact transforms.** Enter XYZ position and rotation in the Characters panel or reset them separately. The fields and gizmo update together during edits. Pressing Enter shows the final value after applying position limits. The gizmo is available in Image mode and stays out of captures.
+* **Independent placement per pose.** Each character has its own XYZ position on each pose tab. New tabs start with default positions. Older scenes use their saved shared depth as the starting depth on each tab.
+
+### Camera, Numeric Controls, and Multiple Characters
+
+* **Editable slider values.** Type values directly in controls for body shape, proportions, camera, model rotation, hands, and lighting. The numeric fields share a consistent style and stay in sync with their sliders, including FOV and Distance.
+* **Radar axis controls.** Edit X below the radar and Y along its left edge, with the Y value above it. Both axes support dragging and direct numeric entry, and stay in sync with the radar and viewport.
+* **Move & Rotate All.** Enable the toggle below **Re-center** to move characters together and link the **Model Rotation** controls on the current tab. Group movement preserves relative spacing at position limits. Turn the toggle off to edit characters independently.
+
+### Fixes
+
+* **Undo and Redo.** Grouped transforms restore each character's placement, including its original animation base position. A radar drag ends when the pose changes. Entering a coordinate that cannot move the group preserves Redo.
+* **Gizmo movement and rotation.** Move stops at the first position limit while preserving the drag direction. Rotate uses the last applied angles to avoid sudden jumps between equivalent angle values.
+* **Legacy IK coordinates.** IK targets with coordinates saved as numeric strings follow characters during linked transforms.
+* **Pose Library prompts.** Loading a pose or pose set keeps the current prompt when the incoming pose has no text. Loading a pose with a prompt in Animation updates the animation prompt and preserves the Image tab's prompt.
+
+### Contributors
+
+Thank you to [@IwahanaFuku](https://github.com/IwahanaFuku) for the whole-character Move and Rotate gizmos, World / Local axes, and precise Transform controls incorporated from [PR #114](https://github.com/AHEKOT/ComfyUI_VNCCS_Utils/pull/114).
+
 # Version 0.7.3
 
 ## Pose Studio: Camera Controls

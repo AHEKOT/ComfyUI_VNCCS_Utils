@@ -150,6 +150,7 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
     const api = { addEventListener() {}, removeEventListener() {} };
     const globals = {
         AbortController,
+        addEventListener() {},
         Blob,
         console,
         crypto: globalThis.crypto,
@@ -169,6 +170,7 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
             GRID_SHAPE: 6,
         },
         requestAnimationFrame() { return 1; },
+        removeEventListener() {},
         cancelAnimationFrame() {},
         setInterval() { return 1; },
         clearInterval() {},
@@ -200,7 +202,8 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
                     meta.url = `file://${absolutePath}`;
                 },
             });
-            await module.link(async (specifier, referencingModule) => {
+            await module.link(async (importPath, referencingModule) => {
+                const specifier = importPath.split(/[?#]/, 1)[0];
                 if (specifier === "../../scripts/app.js") {
                     return syntheticModule(context, specifier, { app });
                 }
@@ -210,6 +213,7 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
                 if (specifier === "./pose_studio/core.js") {
                     class FakePoseViewerCore {
                         constructor() {
+                            this.THREE = null;
                             return new Proxy(this, {
                                 get(target, property) {
                                     if (property in target) return target[property];
@@ -223,7 +227,9 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
                         }
                     }
                     return syntheticModule(context, specifier, {
+                        POSE_STUDIO_CAPTURE_FOV: 30,
                         PoseViewerCore: FakePoseViewerCore,
+                        buildEquivalentPerspectiveProjectionFrame: () => null,
                     });
                 }
                 if (specifier === "./pose_studio/imports/mixamo.js") {
@@ -238,8 +244,7 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
                         roundTripTest: value => value,
                     });
                 }
-                const relativePath = specifier.split(/[?#]/, 1)[0];
-                const resolved = path.resolve(path.dirname(referencingModule.identifier), relativePath);
+                const resolved = path.resolve(path.dirname(referencingModule.identifier), specifier);
                 return loadSourceModule(resolved);
             });
             return module;
