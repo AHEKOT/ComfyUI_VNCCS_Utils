@@ -45,6 +45,7 @@ def load_routes(tmp_path):
         app = SimpleNamespace(router=router)
         load("api.pose_library").register_routes(app)
         load("api.pose_capture_sync").register_routes(app)
+        load("api.pose_reference_assets").register_routes(router)
         caches = load("api.pose_unicanvas_caches")
         caches._vnccs_register_capture_cache()
         caches._vnccs_register_pose_animation_cache()
@@ -58,6 +59,8 @@ def test_all_original_urls_methods_and_handler_registration_survive(tmp_path):
     assert sorted(handlers) == sorted([tuple(entry) for entry in expected] + [
         ("POST", "/vnccs/unicanvas_state_delete"),
         ("POST", "/api/vnccs/pose_sync/upload_capture"),
+        ("POST", "/vnccs/pose_reference_asset"),
+        ("GET", "/vnccs/pose_reference_asset/{asset_id}"),
     ])
     assert all(inspect.iscoroutinefunction(handler) for handler in handlers.values())
 

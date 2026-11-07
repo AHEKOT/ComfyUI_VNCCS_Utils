@@ -74,6 +74,17 @@ def _vnccs_register_pose_sync():
 
 _vnccs_register_pose_sync()
 
+# Register Pose Studio reference layer image storage API
+def _vnccs_register_pose_reference_assets():
+    try:
+        from server import PromptServer
+        from .api.pose_reference_assets import register_routes
+        register_routes(PromptServer.instance.routes)
+    except Exception as e:
+        print(f"[VNCCS] Failed to register Pose Studio reference image API: {e}")
+
+_vnccs_register_pose_reference_assets()
+
 def _vnccs_register_prompt_designer():
     try:
         from server import PromptServer

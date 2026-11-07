@@ -126,6 +126,7 @@ The left side contains precision controls:
 - Shared camera dimensions and angle controls, plus the existing Zoom/radar
   positioning widget for the selected character.
 - Export mode controls.
+- Reference Layers (editor-only tracing images, see below).
 - Debug/render options.
 
 Exact UI grouping may change as the web panel evolves, but all values are saved
@@ -390,6 +391,44 @@ Lighting behavior is controlled separately:
 - `Keeping Original Lighting` takes precedence and is preserved as part of the
   manual lighting state.
 
+## Reference Layers
+
+**Reference Layers** (left panel, collapsed by default) show sample images over the
+viewport while you pose, for tracing or matching a reference picture. They are
+editor-only: they are never part of `images`, captures, Pose Manager previews or any
+other output. The **Background** button is different: its image is rendered into the
+output behind the character.
+
+- **+ Add Image** (or drop image files on the viewport) adds up to 8 layers. Images
+  are downscaled once to at most 1024 px on the long side and stored as WebP in
+  `user/vnccs/pose_reference_layers`. If storing an image fails, a message gives the
+  reason and the layers stay as they were.
+- The list shows the stack top first, with a thumbnail, Show/Hide, Lock, Move up/down
+  and Delete. Double-click a layer name to rename it (Enter saves, Escape cancels).
+- The selected layer has Opacity, Position (output pixels from the frame centre, Y
+  down), Scale (layer height relative to the frame height), Rotation and Flip
+  Horizontal. Each field has a reset button; sliders and numbers stay in sync.
+- **Edit in View** enables direct manipulation of the selected layer: drag inside it
+  to move, drag a corner (or Alt+drag) to scale around its centre, drag the round
+  handle (or Ctrl+drag) to rotate; Shift snaps rotation to 15°. Only pointers on the
+  selected layer are taken; bone picking, right-drag orbit and wheel zoom work as
+  before everywhere else, and always when Edit in View is off.
+
+Layers live in capture-frame space (units of the frame height, origin at the frame
+centre), so they stay aligned with the orange frame when the editor view orbits or
+zooms, and keep their place relative to the character when the output width or
+height changes. Each node saves its layers in `pose_data.reference_layers` as compact
+asset names and transforms, without image bytes; workflows without the key load with
+no layers. Every layer edit is one Undo step. A locked layer keeps its transform: its
+fields, Flip and reset buttons are disabled until it is unlocked.
+
+Assets are named by the hash of their content, survive restarts and temporary-folder
+cleanup, and are not pruned automatically, because any saved workflow may reference
+them. Back up that directory with your workflows. A workflow opened on a machine
+without the asset keeps the layer and reports the missing image. Inline images from
+workflows saved by earlier builds of this feature are moved to storage when the
+workflow loads; if that fails they stay embedded and a message says so.
+
 ## Pose Library
 
 Pose Studio includes a local and repository-backed pose library.
@@ -463,6 +502,8 @@ The web UI and backend communicate through local ComfyUI routes:
 | --- | --- |
 | `/vnccs/pose_captures_upload` | Upload frontend-rendered captures for backend execution. |
 | `/vnccs/pose_captures/{capture_id}` | Fetch cached captures. |
+| `/vnccs/pose_reference_asset` | Store a reference layer image (raw body, WebP, PNG or JPEG). |
+| `/vnccs/pose_reference_asset/{asset_id}` | Fetch a stored reference layer image. |
 | Pose Library API routes under `/vnccs/pose_library/...` | Repository, save, load, delete, refresh, and progress operations. Publishing requests return 403. |
 
 Animation tracks referenced by saved workflows live in `user/vnccs/pose_animation_cache`.

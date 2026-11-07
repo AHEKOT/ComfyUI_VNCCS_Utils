@@ -1048,6 +1048,10 @@ class IKController {
 }
 
 
+// Objects on this render layer (reference image layers) are seen only by the
+// editor camera, never by the capture camera, so they never reach outputs.
+export const POSE_STUDIO_EDITOR_ONLY_LAYER = 1;
+
 export class PoseViewerCore {
     constructor(canvas, options = {}) {
         this.canvas = canvas;
@@ -1482,6 +1486,7 @@ export class PoseViewerCore {
 
         this.camera = new THREE.PerspectiveCamera(POSE_STUDIO_EDITOR_FOV, this.width / this.height, 0.1, 1000);
         this.camera.position.set(0, 10, 30);
+        this.camera.layers.enable(POSE_STUDIO_EDITOR_ONLY_LAYER);
         this.scene.add(this.camera);
 
         this.renderer = new THREE.WebGLRenderer({
@@ -1868,6 +1873,7 @@ export class PoseViewerCore {
         if (this._needsRender || dampingChanged) {
             this._needsRender = false;
             if (this.renderer) {
+                this.options.onBeforeViewportRender?.();
                 this.renderer.render(this.scene, this.camera);
                 this.options.onViewportRender?.();
             }
@@ -5790,13 +5796,16 @@ export class PoseViewerCore {
             ...Array.from(this.passiveCharacters?.values?.() || [], entry => entry.mesh)];
         const visibility = hidden.map(item => item?.visible);
         const background = this.scene.background;
+        const cameraLayers = this.camera.layers.mask;
         try {
             hidden.forEach(item => { if (item) item.visible = false; });
             this.scene.background = null;
+            this.camera.layers.disable(POSE_STUDIO_EDITOR_ONLY_LAYER);
             this.renderer.render(this.scene, this.camera);
         } finally {
             hidden.forEach((item, index) => { if (item) item.visible = visibility[index]; });
             this.scene.background = background;
+            this.camera.layers.mask = cameraLayers;
         }
     }
 
@@ -5864,11 +5873,13 @@ export class PoseViewerCore {
 
         let dataURL = null;
         const ownsCaptureBatch = !this._captureBatch;
+        const camera = options.viewport ? this.camera : this.captureCamera;
+        const cameraLayers = camera.layers.mask;
 
         try {
             this.beginCaptureBatch(width, height);
-            // Render with Fixed Camera
-            const camera = options.viewport ? this.camera : this.captureCamera;
+            // Render with Fixed Camera; editor-only objects never reach a capture.
+            camera.layers.disable(POSE_STUDIO_EDITOR_ONLY_LAYER);
             this.renderer.render(this.scene, camera);
             if (options.targetCanvas) {
                 const target = options.targetCanvas;
@@ -5885,6 +5896,7 @@ export class PoseViewerCore {
             console.error("Capture failed:", e);
         } finally {
             // Restore state
+            camera.layers.mask = cameraLayers;
             this.scene.background = oldBg;
 
             this.jointMarkers.forEach(m => m.visible = markersVisible && this._shouldMarkerBeVisible(m));
