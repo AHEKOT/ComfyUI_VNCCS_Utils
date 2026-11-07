@@ -35,6 +35,7 @@ import {
     normalizeSAMProjectionFrame,
     serializePoseStudioCharacter,
 } from "./pose_studio/characters.mjs?v=20260908.14";
+import { PoseCharacterTransformController } from "./pose_studio/character_transform_controller.mjs?v=20261105.2";
 import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
@@ -4591,6 +4592,7 @@ class PoseStudioWidget {
         clearTimeout(this._characterSyncTimer);
         this._characterSyncTimer = null;
         this._closeCharacterRemoveModal?.();
+        this.characterTransform?.dispose();
         this._activeSaveLibraryClose?.(true);
         this._pendingMorphSolve = null;
         this._morphSolveInFlight = false;
@@ -6420,6 +6422,7 @@ class PoseStudioWidget {
             onViewportRender: () => {
                 this.radarRedraw?.();
                 this.host.onViewportRender?.();
+                this.characterTransform?.onViewportRender();
             },
             transparentBackground: this.host.embedded === true,
             skinMode: 'naked',
@@ -6473,6 +6476,12 @@ class PoseStudioWidget {
             theme: "pose-studio",
         });
         this.startResizeObserver();
+
+        // Viewport Pose / Move / Rotate modes and the Characters panel Transform fields.
+        this.characterTransform = new PoseCharacterTransformController(this);
+        this.characterTransform.attach(this.viewer, this.canvasContainer);
+        this._viewerInitPromise?.then(() => this.characterTransform?.onViewerReady(), () => {});
+        this.renderCharactersUI();
     }
 
     // === UI Helper Methods ===
@@ -7117,6 +7126,7 @@ class PoseStudioWidget {
         remove.addEventListener("click", () => this.showCharacterRemoveConfirm(active));
         toolbar.append(colorField, remove);
         content.appendChild(toolbar);
+        this.characterTransform?.renderPanel(content);
     }
 
     showCharacterRemoveConfirm(character) {
@@ -9433,7 +9443,7 @@ class PoseStudioWidget {
     }
 
     _handleDocumentPointerUp(event) {
-        this._finishPoseGesture?.();
+        this._finishPoseGesture?.(event);
         const pending = this._pendingHandPopoverOutsideClick;
         this._pendingHandPopoverOutsideClick = null;
 
@@ -9452,8 +9462,8 @@ class PoseStudioWidget {
         this.hideHandControlPopover();
     }
 
-    _handleDocumentPointerCancel() {
-        this._finishPoseGesture?.();
+    _handleDocumentPointerCancel(event) {
+        this._finishPoseGesture?.(event);
         this._pendingHandPopoverOutsideClick = null;
     }
 
@@ -15232,13 +15242,13 @@ class PoseStudioWidget {
 
     updateRotationSliders() {
         if (!this.viewer) return;
-        const rArray = this.viewer.isInitialized() ? this.viewer.getPose().modelRotation : [0, 0, 0];
-        const r = { x: rArray[0], y: rArray[1], z: rArray[2] };
+        const rotation = this.viewer.isInitialized() ? this.viewer.modelRotation : null;
         ['x', 'y', 'z'].forEach(axis => {
             const info = this.sliders[`rot_${axis}`];
             if (info) {
-                info.slider.value = r[axis];
-                info.label.innerText = `${r[axis]}°`;
+                const value = rotation?.[axis] ?? 0;
+                info.slider.value = value;
+                info.label.innerText = `${value}°`;
             }
         });
     }

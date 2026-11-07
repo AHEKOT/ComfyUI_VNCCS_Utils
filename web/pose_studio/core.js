@@ -1898,6 +1898,8 @@ export class PoseViewerCore {
 
         if (this.transform.dragging) return;
         if (this.transform.axis) return;
+        // Move / Rotate character modes take priority over bone manipulation.
+        if (this.characterGizmo?.handleViewerPointerDown?.(e)) return;
 
         const rect = this.canvas.getBoundingClientRect();
         const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -2144,7 +2146,7 @@ export class PoseViewerCore {
         }
 
         if (!this.directDrag?.active && e.buttons !== 0) return;
-        if (!this.directDrag?.active && this.transform.dragging) {
+        if (!this.directDrag?.active && (this.transform.dragging || this.characterGizmo?.suppressesBoneInput?.())) {
             if (this.hoveredBoneName || this._hoveredHandSide) {
                 this.hoveredBoneName = null;
                 this._updateHoveredHand(null);
