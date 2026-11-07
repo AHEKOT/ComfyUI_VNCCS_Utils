@@ -13,8 +13,11 @@ function coherent(scene) {
 
     }
     close(Number(w.exportWidgets.cam_zoom.value), current.zoom, "zoom control");
-    assert.equal(w.exportWidgets.cam_offset_x, undefined);
-    assert.equal(w.exportWidgets.cam_offset_y, undefined);
+    for (const axis of ["x", "y"]) {
+        const slider = w.exportWidgets[`cam_offset_${axis}`];
+        close(Number(slider.value), current[`offset_${axis}`], `${axis} slider`);
+        assert.equal(slider._vnccsNumberInput.value, current[`offset_${axis}`].toFixed(2));
+    }
     close(viewer.skinnedMesh.scale.x, current.zoom, "actual mesh scale");
     close(viewer.skinnedMesh.position.y, current.offset_y, "actual mesh position");
     const saved = JSON.parse(node.widgets[0].value).characters.find(item => item.id === active.id);
@@ -273,9 +276,118 @@ test("a delayed Age fit is part of the same animation gesture", () => {
     scene.w.redoAnimation(); close(scene.w.meshParams.age, 61);
 });
 
-test("position UI retains the existing pad and buttons without added input fields", () => {
-    const { pad } = createScene();
-    assert.deepEqual(pad.parentElement.children.map(child => child.tagName), ["CANVAS", "BUTTON", "BUTTON"]);
+test("camera axis sliders and editable values follow the radar in both directions", () => {
+    const scene = createScene();
+    const { w, viewer, pad } = scene;
+    const x = w.exportWidgets.cam_offset_x;
+    const y = w.exportWidgets.cam_offset_y;
+    const xNumber = x._vnccsNumberInput;
+    const history = viewer.history.length;
+    for (const value of ["2", "2.35"]) {
+        xNumber.value = value;
+        xNumber.emit("input");
+        close(viewer.skinnedMesh.position.x, Number(value));
+        close(Number(x.value), Number(value));
+    }
+    xNumber.emit("blur");
+    assert.equal(viewer.history.length, history + 1);
+    viewer.undo();
+    assert.equal(xNumber.value, "0.00");
+
+    const dot = () => pad.drawCommands.findLast(command => command.method === "arc").args;
+    const previous = dot();
+    y.emit("pointerdown");
+    y.value = "2.5";
+    y.emit("input");
+    close(viewer.skinnedMesh.position.y, 2.5);
+    assert.equal(y._vnccsNumberInput.value, "2.50");
+    assert.ok(dot()[1] < previous[1], "positive Y moves the radar dot up");
+    y.emit("pointerup");
+
+    pad.emit("pointerdown", { clientX: 70, clientY: 70 });
+    pad.emit("pointermove", { clientX: 83, clientY: 60 });
+    for (const [axis, slider] of [["x", x], ["y", y]]) {
+        const position = viewer.skinnedMesh.position[axis];
+        assert.notEqual(position, 0);
+        close(Number(slider.value), position);
+        assert.equal(slider._vnccsNumberInput.value, position.toFixed(2));
+    }
+    pad.emit("pointerup");
+    coherent(scene);
+});
+
+test("Move & Rotate All preserves each character's offsets and undoes grouped edits", async () => {
+    const { w, viewer, node, radar } = createScene({ skinned: true });
+    const first = w.getActiveCharacter();
+    w.applyCharacterPosition({ x: -6, y: 2, z: -1 });
+    w.setModelRotationAxis("y", -20);
+    await w.addCharacter();
+    w.applyCharacterPosition({ x: 4, y: -1, z: 2 });
+    w.setModelRotationAxis("y", 15);
+    const passive = viewer.passiveCharacters.get(first.id).mesh;
+    const toggle = radar.children.find(child => child.textContent === "Move & Rotate All");
+    toggle.click();
+
+    const x = w.exportWidgets.cam_offset_x;
+    x.emit("pointerdown");
+    for (const value of [7, 10]) {
+        x.value = String(value);
+        x.emit("input");
+        close(viewer.skinnedMesh.position.x, value);
+        close(passive.position.x, value - 10);
+    }
+    x.emit("pointerup");
+    const saved = JSON.parse(node.widgets[0].value).characters.find(character => character.id === first.id);
+    close(saved.poses[w.activeTab].cameraParams.offset_x, 0);
+    toggle.click();
+    viewer.undo();
+    close(viewer.skinnedMesh.position.x, 4);
+    close(passive.position.x, -6);
+    viewer.redo();
+    close(passive.position.x, 0);
+
+    toggle.click();
+    viewer.recordState();
+    w.setModelRotationAxis("y", 40);
+    close(viewer.modelRotation.y, 40);
+    close(passive.rotation.y * 180 / Math.PI, 5);
+    viewer.undo();
+    close(passive.rotation.y * 180 / Math.PI, -20);
+    viewer.redo();
+    close(passive.rotation.y * 180 / Math.PI, 5);
+
+    w.applyCharacterPosition({ x: -50, y: -1, z: 2 });
+    close(viewer.skinnedMesh.position.x, -40);
+    close(passive.position.x, -50);
+    toggle.click();
+    w.applyCharacterPosition({ x: 0, y: 0, z: 0 });
+    w.setModelRotationAxis("y", 60);
+    close(passive.position.x, -50);
+    close(passive.rotation.y * 180 / Math.PI, 5);
+});
+
+test("Move & Rotate All uses the existing animation Auto-Key and Undo", async () => {
+    const { w, viewer, radar } = createScene({ skinned: true });
+    const first = w.getActiveCharacter();
+    await w.addCharacter();
+    w.setEditorMode("animation");
+    w.animationState.autoKey = true;
+    w.resetAnimationHistory();
+    radar.children.find(child => child.textContent === "Move & Rotate All").click();
+    const passive = viewer.passiveCharacters.get(first.id).mesh;
+    const y = passive.position.y;
+    const active = w.getActiveCharacter();
+    w.applyCharacterPosition({ ...active.transform, y: active.transform.y + 3 });
+    w.syncToNode();
+    close(passive.position.y, y + 3);
+    assert.equal(first.animationState.tracks["@characterPosition"].keys.length, 1);
+    w.setModelRotationAxis("y", 30);
+    close(passive.rotation.y * 180 / Math.PI, 30);
+    assert.equal(first.animationState.tracks["@modelRotation"].keys.length, 1);
+    w.undoAnimation();
+    close(passive.rotation.y, 0);
+    w.undoAnimation();
+    close(passive.position.y, y);
 });
 
 test("capture applies the export background only while rendering the output", () => {
@@ -297,7 +409,7 @@ test("capture applies the export background only while rendering the output", ()
 
 test("Re-center centers visible geometry after Age without changing model zoom", () => {
     const scene = createScene();
-    const recenter = scene.pad.parentElement.children.find(child => child.tagName === "BUTTON");
+    const recenter = scene.radar.children.find(child => child.tagName === "BUTTON");
     for (const age of [25, 1, 61, 8]) {
         scene.morph({ age });
         scene.w.applyAgeCameraFit();
@@ -322,7 +434,7 @@ test("Re-center centers visible geometry after Age without changing model zoom",
 
 test("Re-center uses camera screen axes at side and elevated angles", () => {
     const scene = createScene();
-    const recenter = scene.pad.parentElement.children.find(child => child.tagName === "BUTTON");
+    const recenter = scene.radar.children.find(child => child.tagName === "BUTTON");
     scene.morph({ age: 1 });
     zoom(scene, 3.51);
     for (const [yaw, pitch] of [[90, 0], [-90, 30], [45, -30], [180, 0]]) {
@@ -340,7 +452,7 @@ test("Re-center uses camera screen axes at side and elevated angles", () => {
 
 test("Re-center measures the rendered MakeHuman triangles after Age", () => {
     const scene = createScene({ skinned: true });
-    const recenter = scene.pad.parentElement.children.find(child => child.tagName === "BUTTON");
+    const recenter = scene.radar.children.find(child => child.tagName === "BUTTON");
     for (const age of [25, 1, 61]) {
         scene.morph({ age });
         scene.w.applyAgeCameraFit();
@@ -355,7 +467,7 @@ test("Re-center measures the rendered MakeHuman triangles after Age", () => {
 
 test("pad point and visible model center agree before release and after Re-center", () => {
     const scene = createScene({ skinned: true });
-    const recenter = scene.pad.parentElement.children.find(child => child.tagName === "BUTTON");
+    const recenter = scene.radar.children.find(child => child.tagName === "BUTTON");
     const verify = (x, y, halfW, halfH) => {
         const b = scene.projection();
         close((b.minX + b.maxX) / 2, x);

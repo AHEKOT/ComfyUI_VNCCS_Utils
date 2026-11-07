@@ -103,7 +103,16 @@ function libraryScene() {
         element.style.setProperty = noop;
         const fields = new Map();
         element.querySelector = selector => {
-            if (!fields.has(selector)) fields.set(selector, scene.document.createElement("div"));
+            if (!fields.has(selector)) {
+                if (selector === ".vnccs-ps-library-size-slider") {
+                    const slider = scene.document.createElement("input");
+                    Object.assign(slider, { type: "range", min: "160", max: "520", step: "10" });
+                    element.querySelector(".vnccs-ps-library-size-control").appendChild(slider);
+                    fields.set(selector, slider);
+                } else {
+                    fields.set(selector, scene.document.createElement("div"));
+                }
+            }
             return fields.get(selector);
         };
         element.setAttribute = (key, value) => { (element.attributes ||= {})[key] = value; };

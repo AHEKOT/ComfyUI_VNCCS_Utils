@@ -257,6 +257,25 @@ test("Move gizmo drags update state, fields and Radar data live; one undo per dr
     close(w.getActiveCharacter().transform.x, seen.at(-1), "redo");
 });
 
+test("Move gizmo preserves the distance between linked characters during the drag", async () => {
+    const scene = gizmoScene();
+    const { w, viewer, controller, radar } = scene;
+    const first = w.getActiveCharacter().id;
+    assert.equal(await w.addCharacter(), true);
+    const passive = viewer.passiveCharacters.get(first).mesh;
+    const start = viewer.skinnedMesh.position.x;
+    const otherStart = passive.position.x;
+    radar.children.find(child => child.textContent === "Move & Rotate All").click();
+    controller.setMode("move");
+    drag(scene, "X", [[0.05, 0], [0.12, 0]], {
+        onStep: () => close(passive.position.x - otherStart, viewer.skinnedMesh.position.x - start, "same live delta"),
+    });
+    assert.ok(viewer.skinnedMesh.position.x > start);
+    viewer.undo();
+    close(passive.position.x, otherStart, "passive character undone");
+    close(viewer.skinnedMesh.position.x, start, "active character undone");
+});
+
 test("Move along Z changes depth, persists, and survives a tab switch", () => {
     const scene = gizmoScene();
     const { w, controller } = scene;

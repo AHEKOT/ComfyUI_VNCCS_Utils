@@ -531,9 +531,12 @@ test("the original camera positioning widget controls the selected character", (
     const radarStart = poseStudioSource.indexOf("createCameraRadar(section)");
     const radarEnd = poseStudioSource.indexOf("\n    createLightRadar", radarStart);
     const radarMethod = poseStudioSource.slice(radarStart, radarEnd);
-    const yUpdate = radarMethod.indexOf("this.exportParams.cam_offset_y = next.y");
-    const selectedCharacterUpdate = radarMethod.indexOf("this.persistActivePoseCameraParams()", yUpdate);
-    assert.ok(yUpdate >= 0 && selectedCharacterUpdate > yUpdate);
+    assert.match(radarMethod, /this\.applyCharacterPosition\(next\)/);
+
+    const positionStart = poseStudioSource.indexOf("\n    applyCharacterPosition(position,");
+    const positionEnd = poseStudioSource.indexOf("\n    applyPassiveCharacterPlacement(", positionStart);
+    const positionMethod = poseStudioSource.slice(positionStart, positionEnd);
+    assert.match(positionMethod, /this\.exportParams\.cam_offset_y = next\.y;\s*this\.persistActivePoseCameraParams\(\)/);
 });
 
 

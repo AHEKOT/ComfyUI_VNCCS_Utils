@@ -67,6 +67,25 @@ test("a successfully loaded library pose clears the previous SAM camera", async 
     assert.equal(w.getPosePrompt(), "loaded pose");
 });
 
+test("a library pose only replaces the active prompt with a nonblank saved prompt", async () => {
+    for (const mode of ["image", "animation"]) {
+        const { w, context } = createScene();
+        w.setEditorMode(mode);
+        w.setPosePrompt(w.activeTab, "current prompt");
+        w.userPromptArea = { value: "", style: {}, scrollHeight: 0 };
+        for (const prompt of [undefined, "", " \n\t", "  saved prompt\n"]) {
+            context.fetch = async () => ({
+                ok: true, json: async () => ({ pose: { bones: {}, prompt } }),
+            });
+            await w.loadFromLibrary("Library pose");
+            const expected = prompt?.trim() ? prompt : "current prompt";
+            assert.equal(w.getPosePrompt(), expected);
+            assert.equal(w.userPromptArea.value, expected);
+            if (mode === "animation") assert.equal(w.animationState.basePose.prompt, expected);
+        }
+    }
+});
+
 for (const format of ["FBX", "HMR2", "OpenPose"]) {
     test(`failed ${format} file import preserves SAM view and character placement`, async () => {
         const { w, viewer, node, context } = createScene();

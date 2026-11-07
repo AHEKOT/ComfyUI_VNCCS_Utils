@@ -4555,6 +4555,14 @@ export class PoseViewerCore {
         return true;
     }
 
+    setPassiveCharacterPlacement(id, { transform, rotation }) {
+        const mesh = this.passiveCharacters?.get(String(id))?.mesh;
+        if (!mesh) return;
+        if (rotation) mesh.rotation.set(...rotation.map(value => value * Math.PI / 180));
+        if (transform) this._applyCharacterTransform(mesh, transform);
+        this.requestRender();
+    }
+
     setPassiveCharacterState(id, { pose = {}, color, transform } = {}) {
         const entry = this.passiveCharacters?.get(String(id || ""));
         if (!entry) return false;

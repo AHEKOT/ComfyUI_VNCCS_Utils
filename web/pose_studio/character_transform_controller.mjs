@@ -30,16 +30,24 @@ export const CHARACTER_GIZMO_EDITOR_LAYER = 2;
 const STYLE_ID = "vnccs-ps-character-transform-style";
 const STYLE = `
 .vnccs-ps-transform-toolbar {
-    position: absolute; top: 8px; left: 8px; z-index: 40;
-    display: flex; align-items: center; gap: 6px;
-    padding: 3px; border-radius: var(--ps-radius-sm, 8px);
+    position: absolute; top: 12px; left: 50%; z-index: 40;
+    transform: translateX(-50%);
+    width: max-content; max-width: calc(100% - 24px); box-sizing: border-box;
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px;
+    padding: 6px; border-radius: var(--ps-radius-sm, 8px);
     background: rgba(10, 10, 16, 0.78); border: 1px solid var(--ps-border, rgba(255,255,255,0.06));
     backdrop-filter: blur(6px);
 }
-.vnccs-ps-transform-toolbar .vnccs-ps-toggle { background: transparent; border: none; padding: 0; }
-.vnccs-ps-transform-toolbar .vnccs-ps-toggle-btn { flex: 0 0 auto; min-width: 46px; padding: 4px 9px; }
+.vnccs-ps-sam-cam-banner.vnccs-sam-visible ~ .vnccs-ps-transform-toolbar { top: 48px; }
+.vnccs-ps-transform-toolbar .vnccs-ps-toggle {
+    flex-wrap: wrap; justify-content: center; gap: 4px;
+    background: transparent; border: none; padding: 0;
+}
+.vnccs-ps-transform-toolbar .vnccs-ps-toggle-btn {
+    flex: 0 0 auto; min-width: 92px; padding: 8px 18px; font-size: 20px; border-radius: 12px;
+}
 .vnccs-ps-transform-toolbar .vnccs-ps-toggle-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.vnccs-ps-transform-space { min-width: 48px; }
+.vnccs-ps-transform-toolbar .vnccs-ps-transform-space { min-width: 96px; }
 .vnccs-ps-transform-space[hidden] { display: none; }
 .vnccs-ps-character-transform { margin-top: 8px; display: flex; flex-direction: column; gap: 5px; }
 .vnccs-ps-character-transform-title {
@@ -375,12 +383,7 @@ export class PoseCharacterTransformController {
             widget.updateRotationSliders?.();
         }
         if (position) {
-            const next = clampCharacterPosition(position);
-            widget.pendingAgeCameraFit = false;
-            character.transform = { ...character.transform, z: next.z };
-            widget.exportParams.cam_offset_x = next.x;
-            widget.exportParams.cam_offset_y = next.y;
-            widget.persistActivePoseCameraParams();
+            widget.applyCharacterPosition(position, { link: !rotation });
         }
         mesh.updateMatrixWorld(true);
         const rigid = mesh.matrixWorld.clone().multiply(new THREE.Matrix4().copy(base.matrix).invert());
@@ -466,7 +469,7 @@ export class PoseCharacterTransformController {
         const THREE = this.viewer.THREE;
         if (drag.mode === "move") {
             const delta = this.proxy.position.clone().sub(drag.pivot);
-            const position = translateCharacterPosition(drag.position, delta);
+            const position = this.widget.constrainCharacterPosition(translateCharacterPosition(drag.position, delta));
             if (drag.changed || !samePosition(position, drag.position)) {
                 this.beginDragEdit(drag);
                 this.applyPlacement({ position }, { poleBase: drag.poleBase });
@@ -742,7 +745,7 @@ export class PoseCharacterTransformController {
         if (rawValue === "" || !Number.isFinite(value)) return;
         const position = this.currentPosition();
         if (kind === "position") {
-            const next = clampCharacterPosition({ ...position, [axis]: value });
+            const next = this.widget.constrainCharacterPosition({ ...position, [axis]: value });
             if (samePosition(next, position)) return;
             this.beginFieldEdit();
             this.applyPlacement({ position: next });
@@ -764,10 +767,11 @@ export class PoseCharacterTransformController {
 
     resetPosition() {
         if (!this.isAvailable() || this._drag) return false;
-        if (samePosition(this.currentPosition(), { x: 0, y: 0, z: 0 })) return false;
+        const position = this.widget.constrainCharacterPosition({ x: 0, y: 0, z: 0 });
+        if (samePosition(this.currentPosition(), position)) return false;
         this.widget._finishPoseGesture?.();
         this.viewer.recordState?.();
-        this.applyPlacement({ position: { x: 0, y: 0, z: 0 } });
+        this.applyPlacement({ position });
         this.commit();
         return true;
     }

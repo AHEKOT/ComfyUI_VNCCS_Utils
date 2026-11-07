@@ -10,7 +10,7 @@ import {
     POSE_STUDIO_CAPTURE_FOV,
     PoseViewerCore,
     buildEquivalentPerspectiveProjectionFrame,
-} from "./pose_studio/core.js?v=1791754604000";
+} from "./pose_studio/core.js?v=20261107.1";
 import {
     cameraPromptToSkydomeRotation,
 } from "./camera_control/utils.mjs";
@@ -35,7 +35,8 @@ import {
     normalizeSAMProjectionFrame,
     serializePoseStudioCharacter,
 } from "./pose_studio/characters.mjs?v=20260908.14";
-import { PoseCharacterTransformController } from "./pose_studio/character_transform_controller.mjs?v=20261105.2";
+import { CHARACTER_POSITION_LIMITS, clampCharacterPosition, modelRotationQuaternion, wrapDegrees } from "./pose_studio/character_transform.mjs?v=20261102.2";
+import { PoseCharacterTransformController } from "./pose_studio/character_transform_controller.mjs?v=20261105.4";
 import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
@@ -656,6 +657,63 @@ input.vnccs-ps-value-input:disabled {
 .vnccs-ps-row > * {
     flex: 1;
 }
+
+.vnccs-ps-radar-axes {
+    display: grid;
+    grid-template-columns: 13px minmax(0, 140px) 13px;
+    grid-template-areas: "y-label y-value ." "y pad ." ". x .";
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    max-width: 174px;
+}
+
+.vnccs-ps-radar-axes > canvas {
+    grid-area: pad;
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.vnccs-ps-radar-axis {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+}
+
+.vnccs-ps-radar-axis--x { grid-area: x; }
+
+.vnccs-ps-radar-axis--y {
+    grid-area: y;
+    align-self: stretch;
+    flex-direction: column;
+}
+
+.vnccs-ps-radar-axis .vnccs-ps-slider {
+    min-width: 0;
+    margin: 0;
+}
+
+.vnccs-ps-radar-axis--y .vnccs-ps-slider {
+    writing-mode: vertical-lr;
+    direction: rtl;
+    width: 3px;
+    height: auto;
+    min-height: 0;
+}
+
+.vnccs-ps-radar-axes input.vnccs-ps-value-input {
+    width: 46px;
+    margin-left: 0;
+}
+
+.vnccs-ps-radar-axes > .vnccs-ps-label {
+    grid-area: y-label;
+    justify-self: center;
+}
+
+.vnccs-ps-radar-axes > .vnccs-ps-value-input { grid-area: y-value; }
 
 /* Color Picker */
 .vnccs-ps-color {
@@ -5183,8 +5241,7 @@ class PoseStudioWidget {
                 this.setNumericControlValue(slider, 0);
                 if (this.viewer) {
                     if (!this.isAnimationMode()) this.viewer.recordState();
-                    this.viewer.setModelRotation(axis === 'x' ? 0 : undefined, axis === 'y' ? 0 : undefined, axis === 'z' ? 0 : undefined);
-                    this.syncToNode();
+                    this.setModelRotationAxis(axis, 0);
                 }
             };
 
@@ -5209,11 +5266,7 @@ class PoseStudioWidget {
 
             this.trackPoseGesture(slider, { recordPose: true });
             slider.addEventListener("input", () => {
-                const val = parseFloat(slider.value);
-                if (this.viewer) {
-                    this.viewer.setModelRotation(axis === 'x' ? val : undefined, axis === 'y' ? val : undefined, axis === 'z' ? val : undefined);
-                    this.syncToNode();
-                }
+                this.setModelRotationAxis(axis, Number(slider.value));
             });
 
             this.sliders[`rot_${axis}`] = { slider };
@@ -6429,10 +6482,7 @@ class PoseStudioWidget {
                     { reveal: true },
                 );
             },
-            captureHistoryContext: () => ({
-                mesh: { ...this.meshParams }, transform: { ...this.getActiveCharacter()?.transform },
-                cameraParams: this.currentCameraParams(), prompt: this.getPosePrompt(),
-            }),
+            captureHistoryContext: () => this.captureImageHistoryContext(),
             onHistoryRestore: pose => this.restoreImageHistory(pose),
             onPoseChange: (pose) => {
                 this.updateRotationSliders();
@@ -6664,6 +6714,107 @@ class PoseStudioWidget {
             character.animationState,
             targetFrame,
         );
+    }
+
+    linkedPassiveCharacters() {
+        return this.linkCharacterTransforms
+            ? this.characters.filter(character => character.id !== this.activeCharacterId)
+            : [];
+    }
+
+    passiveCharacterPosition(character) {
+        const transform = this.characterTransformForScene(character);
+        const position = this.isAnimationMode() && this.viewer?.passiveCharacters?.get(String(character.id))?.mesh.position;
+        return position ? { ...transform, x: position.x, y: position.y, z: position.z } : transform;
+    }
+
+    passiveCharacterRotation(character) {
+        const mesh = this.isAnimationMode() && this.viewer?.passiveCharacters?.get(String(character.id))?.mesh;
+        if (mesh) return ["x", "y", "z"].map(axis => mesh.rotation[axis] * 180 / Math.PI);
+        const rotation = this.characterPoseForScene(character).modelRotation;
+        return [0, 1, 2].map(index => Number(rotation?.[index]) || 0);
+    }
+
+    constrainCharacterPosition(position, members = this.linkedPassiveCharacters().map(character => this.passiveCharacterPosition(character))) {
+        const next = clampCharacterPosition(position);
+        if (!members.length) return next;
+        const active = this.getActiveCharacter().transform;
+        for (const axis of ["x", "y", "z"]) {
+            const [min, max] = CHARACTER_POSITION_LIMITS[axis];
+            const positions = [active[axis], ...members.map(member => member[axis])];
+            const delta = next[axis] - active[axis];
+            next[axis] = active[axis] + Math.max(min - Math.min(...positions), Math.min(max - Math.max(...positions), delta));
+        }
+        return next;
+    }
+
+    applyCharacterPosition(position, { link = true } = {}) {
+        const active = this.getActiveCharacter();
+        if (!active) return;
+        const members = link ? this.linkedPassiveCharacters() : [];
+        const transforms = members.map(character => this.passiveCharacterPosition(character));
+        const next = this.constrainCharacterPosition(position, transforms);
+        const { x, y, z } = active.transform;
+        const delta = { x: next.x - x, y: next.y - y, z: next.z - z };
+        if (delta.x || delta.y || delta.z) {
+            members.forEach((character, index) => {
+                const transform = transforms[index];
+                this.applyPassiveCharacterPlacement(character, { transform: {
+                    ...transform, x: transform.x + delta.x, y: transform.y + delta.y, z: transform.z + delta.z,
+                } });
+            });
+        }
+        this.pendingAgeCameraFit = false;
+        active.transform.z = next.z;
+        this.exportParams.cam_offset_x = next.x;
+        this.exportParams.cam_offset_y = next.y;
+        this.persistActivePoseCameraParams();
+    }
+
+    applyPassiveCharacterPlacement(character, { transform, rotation }) {
+        if (this.isAnimationMode()) {
+            const state = character.animationState;
+            const frame = this.animationState.currentFrame;
+            if (this.animationState.autoKey) {
+                if (transform) {
+                    const previous = this.passiveCharacterPosition(character);
+                    if (transform.x !== previous.x || transform.y !== previous.y) {
+                        setCharacterTransformKeyframe(state, CHARACTER_POSITION_TRACK, frame, transform, state.defaultInterpolation);
+                    }
+                }
+                if (rotation) setTrackKeyframeFromEuler(state, MODEL_ROTATION_TRACK, frame, rotation, state.defaultInterpolation);
+            }
+        } else {
+            const pose = character.poses[this.activeTab] ||= {};
+            const previous = this.characterTransformForScene(character);
+            const next = transform || previous;
+            const THREE = this.viewer?.THREE;
+            // Stored IK targets are in world space and must follow the passive rig.
+            if (THREE && (pose.ikEffectorPositions || pose.poleTargetPositions)) {
+                const from = new THREE.Vector3(previous.x, previous.y, previous.z);
+                const to = new THREE.Vector3(next.x, next.y, next.z);
+                const delta = rotation
+                    ? modelRotationQuaternion(THREE, rotation).multiply(modelRotationQuaternion(THREE, pose.modelRotation).invert())
+                    : new THREE.Quaternion();
+                for (const key of ["ikEffectorPositions", "poleTargetPositions"]) {
+                    if (!pose[key]) continue;
+                    pose[key] = Object.fromEntries(Object.entries(pose[key]).map(([name, value]) => [
+                        name, Array.isArray(value) && value.length >= 3 && value.slice(0, 3).every(Number.isFinite)
+                            ? new THREE.Vector3(...value).sub(from).applyQuaternion(delta).add(to).toArray()
+                            : value,
+                    ]));
+                }
+            }
+            if (transform) {
+                pose.cameraParams = {
+                    ...this.cameraParamsForPose(pose, character), offset_x: transform.x, offset_y: transform.y,
+                };
+                character.transform = transform;
+                character.animationState.baseTransform = { ...transform };
+            }
+            if (rotation) pose.modelRotation = rotation;
+        }
+        this.viewer?.setPassiveCharacterPlacement(character.id, { transform, rotation });
     }
 
     updateCharacterScene({ frame = null, poseIndex = this.activeTab, rebuildMissing = true } = {}) {
@@ -8809,10 +8960,48 @@ class PoseStudioWidget {
         const size = 140;
         canvas.width = size;
         canvas.height = size;
-        canvas.style.width = "140px";
-        canvas.style.height = "140px";
         canvas.style.cursor = "crosshair";
         canvas.style.touchAction = "none";
+
+        const axes = document.createElement("div");
+        axes.className = "vnccs-ps-radar-axes";
+        axes.appendChild(canvas);
+        for (const axis of ["x", "y"]) {
+            const key = `cam_offset_${axis}`;
+            const control = document.createElement("div");
+            control.className = `vnccs-ps-radar-axis vnccs-ps-radar-axis--${axis}`;
+            const label = document.createElement("span");
+            label.className = "vnccs-ps-label";
+            label.textContent = axis.toUpperCase();
+            const slider = document.createElement("input");
+            slider.type = "range";
+            slider.className = "vnccs-ps-slider";
+            const [min, max] = CHARACTER_POSITION_LIMITS[axis];
+            slider.min = String(min);
+            slider.max = String(max);
+            slider.step = "0.01";
+            slider.value = this.exportParams[key];
+            if (axis === "y") slider.setAttribute("aria-orientation", "vertical");
+
+            const number = this.createSliderNumber(slider, `Camera ${label.textContent}`);
+            this.trackPoseGesture(slider, { recordPose: true });
+            slider.addEventListener("input", () => {
+                this.applyCharacterPosition({
+                    x: this.exportParams.cam_offset_x, y: this.exportParams.cam_offset_y,
+                    z: this.getActiveCharacter()?.transform.z, [axis]: Number(slider.value),
+                });
+                this.applyCameraToViewer(true);
+                this.syncToNode(false, { skipCapture: true });
+            });
+            this.exportWidgets[key] = slider;
+            if (axis === "x") {
+                control.append(label, slider, number);
+            } else {
+                axes.append(label, number);
+                control.appendChild(slider);
+            }
+            axes.appendChild(control);
+        }
 
         const ctx = canvas.getContext("2d");
 
@@ -8870,21 +9059,17 @@ class PoseStudioWidget {
 
             const next = this.viewer?.characterTranslationForFramePoint(normX, -normY);
             if (!next) return;
-            this.pendingAgeCameraFit = false;
-            this.getActiveCharacter().transform.z = next.z;
-            this.exportParams.cam_offset_x = next.x;
-            this.exportParams.cam_offset_y = next.y;
-
-            // The existing camera positioning widget controls whichever
-            // character is selected in Characters.
-            this.persistActivePoseCameraParams();
-            draw();
+            this.applyCharacterPosition(next);
 
             // Sync Viewport
             this.applyCameraToViewer(true);
         };
 
         canvas.addEventListener("pointerdown", (e) => {
+            if (!isDragging && !this.isAnimationMode() && this.linkedPassiveCharacters().length) {
+                this._finishPoseGesture?.();
+                this.viewer?.recordState?.();
+            }
             canvas.setPointerCapture(e.pointerId);
             isDragging = true;
             updateFromMouse(e);
@@ -8998,13 +9183,24 @@ class PoseStudioWidget {
             const next = this.viewer?.characterTranslationForFramePoint(0, 0);
             if (!next) return;
             if (!this.isAnimationMode()) this.viewer?.recordState?.();
-            this.pendingAgeCameraFit = false;
-            this.getActiveCharacter().transform.z = next.z;
-            this.exportParams.cam_offset_x = next.x;
-            this.exportParams.cam_offset_y = next.y;
-            this.persistActivePoseCameraParams();
-            this.syncCameraWidgets();
+            this.applyCharacterPosition(next);
             this.syncToNode(false);
+        };
+
+        const linkBtn = document.createElement("button");
+        linkBtn.type = "button";
+        linkBtn.className = "vnccs-ps-btn";
+        linkBtn.style.marginTop = "6px";
+        linkBtn.style.width = "100%";
+        linkBtn.textContent = "Move & Rotate All";
+        linkBtn.title = "Move all characters together and link the Model Rotation controls";
+        linkBtn.setAttribute("aria-pressed", "false");
+        linkBtn.onclick = () => {
+            finishDrag();
+            this._finishPoseGesture?.();
+            this.linkCharacterTransforms = !this.linkCharacterTransforms;
+            linkBtn.setAttribute("aria-pressed", String(this.linkCharacterTransforms));
+            linkBtn.classList.toggle("primary", this.linkCharacterTransforms);
         };
 
         // Sync Tabs Button
@@ -9034,8 +9230,9 @@ class PoseStudioWidget {
         };
         this.syncTabsBtn = syncTabsBtn;
 
-        wrap.appendChild(canvas);
+        wrap.appendChild(axes);
         wrap.appendChild(recenterBtn);
+        wrap.appendChild(linkBtn);
         wrap.appendChild(syncTabsBtn);
         section.content.appendChild(wrap);
 
@@ -9751,6 +9948,18 @@ class PoseStudioWidget {
         }
     }
 
+    captureImageHistoryContext() {
+        return {
+            mesh: { ...this.meshParams }, transform: { ...this.getActiveCharacter()?.transform },
+            cameraParams: this.currentCameraParams(), prompt: this.getPosePrompt(),
+            passivePlacements: this.characters.filter(character => character.id !== this.activeCharacterId).map(character => ({
+                id: character.id,
+                transform: this.characterTransformForScene(character),
+                rotation: this.passiveCharacterRotation(character),
+            })),
+        };
+    }
+
     restoreImageHistory(pose) {
         this.pendingAgeCameraFit = false;
         const context = pose.editorState;
@@ -9772,6 +9981,16 @@ class PoseStudioWidget {
             this.applyCameraToViewer(false);
             this.viewer.restoreEditorLens?.();
             this.syncCameraWidgets();
+        }
+        for (const placement of context?.passivePlacements || []) {
+            const passive = this.characters.find(character => character.id === placement.id);
+            if (!passive) continue;
+            const current = this.characterTransformForScene(passive);
+            const currentRotation = this.passiveCharacterRotation(passive);
+            const transform = Object.entries(placement.transform).some(([axis, value]) => value !== current[axis])
+                ? placement.transform : null;
+            const rotation = placement.rotation.some((value, index) => value !== currentRotation[index]) ? placement.rotation : null;
+            if (transform || rotation) this.applyPassiveCharacterPlacement(passive, { transform, rotation });
         }
         if (context?.prompt !== undefined) this.setPosePrompt(this.activeTab, context.prompt);
         this.syncCharacterEditorControls();
@@ -13948,10 +14167,8 @@ class PoseStudioWidget {
                     if (savedSAMProjection && this.host?.embedded !== true) {
                         this.applyLibrarySAMProjection(savedSAMProjection);
                     }
-                    if (this.isAnimationMode()) {
-                        this.animationState.basePose.prompt = pose.prompt ?? this.animationState.basePose.prompt ?? "";
-                    } else {
-                        this.setPosePrompt(this.activeTab, pose.prompt ?? "");
+                    if (typeof pose.prompt === "string" && pose.prompt.trim()) {
+                        this.setPosePrompt(this.activeTab, pose.prompt);
                     }
                     this.syncPromptFieldToActiveTab();
                     this.updateRotationSliders();
@@ -15243,6 +15460,21 @@ class PoseStudioWidget {
         // and a full capture repeats that work for every pose.
         clearTimeout(this.lightingSyncTimeout);
         this.lightingSyncTimeout = null;
+    }
+
+    setModelRotationAxis(axis, value) {
+        if (!this.viewer) return;
+        const delta = value - this.viewer.modelRotation[axis];
+        if (delta) {
+            const index = ["x", "y", "z"].indexOf(axis);
+            for (const character of this.linkedPassiveCharacters()) {
+                const rotation = this.passiveCharacterRotation(character);
+                rotation[index] = wrapDegrees(rotation[index] + delta);
+                this.applyPassiveCharacterPlacement(character, { rotation });
+            }
+        }
+        this.viewer.setModelRotation(...["x", "y", "z"].map(key => key === axis ? value : undefined));
+        this.syncToNode();
     }
 
     updateRotationSliders() {
