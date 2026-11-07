@@ -183,6 +183,55 @@ same usable timeline boundary.
 Removing a character also removes that character's poses and animation after
 confirmation. At least one character always remains in the scene.
 
+### Moving and Rotating a Whole Character
+
+The bar at the top center of the viewport switches what a left drag edits.
+
+- **Pose** (default) - the existing joint FK/IK editing. Nothing changes for
+  workflows that never leave this mode.
+- **Move** - a gizmo on the selected character's pelvis moves the whole
+  character: drag an arrow for one axis (X/Y/Z), a square for a plane
+  (XY/YZ/XZ), or the center to move in the camera plane.
+- **Rotate** - drag a ring to rotate the whole character about its pelvis
+  around X, Y, or Z; the outer ring rotates about the view axis. The pelvis stays
+  where it is, and every joint keeps its local pose.
+
+**World / Local** (shown in Move and Rotate) aligns the gizmo with the scene axes
+or with the character's own facing. The character follows the pointer while the
+mouse is held, camera orbit is paused for the drag, and each drag is one Undo
+step. Right/middle drags and the mouse wheel still orbit, pan, and zoom the
+view. In Move and Rotate, joint markers do not react. A click on another
+character selects it, and a click on empty space hides the gizmo until you click
+a character or select one in the Characters panel. A click on a handle without
+moving it changes nothing, and Redo stays available. If the pen or touch input
+is interrupted during a drag, the character stays where it was and the drag
+counts as one Undo step. The gizmo is editor-only: it never appears in output
+images.
+
+The Characters panel shows the same values under **Transform**:
+
+- **Position (units)** - X/Y are the values the positioning radar edits; Z is
+  depth toward (+) or away from (-) the default front camera. World units; the
+  adult figure is about 14 units tall. X/Y are limited to ±50 and Z to ±40.
+- **Rotation (°, XYZ)** - the existing Model Rotation, in degrees, applied in
+  Three.js Euler order XYZ. Typed rotations also turn about the pelvis. The Model
+  Rotation sliders still turn about the model origin, as before.
+- **Reset Position** returns X/Y/Z to 0. **Reset Rotation** returns the
+  rotation to 0° and keeps the pelvis in place.
+
+The fields update while you drag, and typing in a field updates the viewport
+and gizmo immediately. Pressing Enter or leaving the field records one Undo
+step. Nothing new is saved: position X/Y and rotation are stored per pose tab,
+like the radar and Model Rotation. Depth Z belongs to the character and is
+shared by its pose tabs. Workflows, the Pose Library, LIST/GRID captures, and
+older workflows use the same data as before.
+
+Move and Rotate are available in image mode only. In animation mode the bar
+returns to **Pose**, and the Transform fields are read-only. This leaves
+animation keys unchanged; use the Model Rotation and position keys on the
+timeline there. The gizmo is not shown when Pose Studio is embedded in
+UniCanvas, which places the mannequin itself.
+
 ## Pose Tabs
 
 Pose Studio can manage more than one pose in a single node.
@@ -246,11 +295,61 @@ Common settings:
 | --- | --- |
 | `view_width` / `view_height` | Output resolution. |
 | camera yaw/pitch | Shared viewing direction for the whole scene. |
+| FOV / Distance | Shared capture lens in **Camera Angle**: vertical field of view (15–75°, default 30°) and camera distance (10–250, default 45). Wide angles exaggerate perspective; narrow angles flatten it. |
+| Maintain Subject Size | When on, changing FOV moves the camera so the subject keeps its size and only the perspective changes (`distance * tan(FOV / 2)` stays constant). |
+| Align Camera to View | Moves the capture camera to the current viewport camera (position, rotation, zoom), like Unity's Align With View, and captures what the orange frame covers. Shortcut: `Ctrl+Shift+F` while Pose Studio has focus. **Orbit Camera** returns to the regular camera. While aligned, Yaw and Pitch orbit around the aligned pivot. |
 | Camera positioning radar | Moves the selected character; every character keeps its own X/Y. |
 | Camera Zoom | Scales the selected character; every character keeps its own zoom. |
 | model rotation | Rotate the mannequin without changing the viewport UI state. |
 | background color | Used for final render and grid background. |
 | `directional_skydome_enabled` | Show/export the directional skydome and expose the `camera_prompt` input. |
+
+Type an exact value in the number beside the FOV or Distance label. The number and
+the slider both step by 0.1 and update together while you drag or type; one edit is one
+Undo step, and Undo restores the viewport camera along with the capture lens.
+
+FOV alone keeps the camera where it is, so it changes how much of the scene fits in the
+frame, like a zoom: near and far figures keep their proportions. To change those
+proportions, change Distance, or turn on **Maintain Subject Size** and change FOV: the
+subject keeps its size while near figures grow and far figures shrink at a wide FOV, and
+the reverse at a narrow one. The viewport and RUN output show the same perspective.
+
+The SAM standard-camera fit measures through the current FOV and Distance and keeps
+them. It uses the regular front camera, so a saved **Align Camera to View** is cleared
+when the fit succeeds.
+
+The lens is stored with each pose tab's `cameraParams` (`fov_deg`, `distance`,
+`maintain_subject_size`), mirrored on every character like yaw/pitch, and in the
+library asset's `camera` block. Poses and workflows saved without these fields load
+with the original 30° / 45 camera. When the view snaps to the capture camera, the
+viewport shows the capture perspective while the orange frame keeps its size. After you
+orbit, pan or zoom the view, FOV and Distance apply to that view instead of moving it back:
+it keeps its direction and pivot, shows the capture perspective, and Distance moves it along
+its line of sight by the same ratio. **Preview** snaps back to the capture camera. While an applied SAM camera is active its
+projection sets the lens, so FOV and Distance are disabled until it is paused or
+cleared; the stored manual lens is not overwritten.
+
+**Align Camera to View** is the reverse of the automatic snap from the capture camera
+to the viewport. The capture camera takes the viewport camera's exact position and
+rotation; characters, their placement and their joints do not change. Framing rules:
+
+- The capture covers what the orange frame covers in the viewport. The viewport always
+  shows the frame with a margin around it, so the image is the centre of the view at
+  the frame's height, and the FOV you set is kept: aligning right after a FOV change or
+  **Preview** leaves the camera unchanged. When the output aspect differs, a wider output
+  shows more at the sides and a narrower one crops the sides.
+- FOV outside 15–75° is stored as the nearest lens value plus a matching zoom, and a
+  pivot closer than 10 or farther than 250 is moved along the view ray. Neither changes
+  the image.
+- While aligned, Yaw and Pitch show the aligned direction and orbit the camera around the
+  aligned pivot; FOV and Distance still work (Distance moves the camera along its view ray).
+  **Orbit Camera** returns to the regular camera with the same Yaw, Pitch and lens; the
+  camera reset returns to the default camera.
+- The view is stored per pose tab as `cameraParams.view` (and `export.cam_view`), shared
+  by every character, saved to the Pose Library and workflows, and used by RUN captures.
+  Pose Manager cards keep fitting each pose into the card, through the aligned angle and
+  lens. An applied SAM camera takes precedence; the aligned view returns when SAM is
+  paused or cleared.
 
 Tips:
 

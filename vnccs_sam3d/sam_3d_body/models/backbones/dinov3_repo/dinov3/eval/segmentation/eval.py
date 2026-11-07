@@ -96,7 +96,7 @@ def test_segmentation(backbone, config):
             autocast_dtype=config.model_dtype.autocast_dtype,
             dropout=config.decoder_head.dropout,
         )
-        state_dict = torch.load(config.load_from, map_location="cpu")["model"]
+        state_dict = torch.load(config.load_from, map_location="cpu", weights_only=True)["model"]
         _, _ = segmentation_model.load_state_dict(state_dict, strict=False)
     device = distributed.get_rank()
     segmentation_model = torch.nn.parallel.DistributedDataParallel(segmentation_model.to(device), device_ids=[device])

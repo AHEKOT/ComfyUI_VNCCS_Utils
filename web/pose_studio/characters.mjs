@@ -90,13 +90,13 @@ export function cameraFramingToCharacterTransform(cameraParams, pivot) {
     const transform = {
         x: (1 - zoom) * pivotX + zoom * offsetX,
         y: (1 - zoom) * pivotY + zoom * offsetY,
-        z: (1 - zoom) * pivotZ,
+        z: Number(cameraParams?.offset_z ?? (1 - zoom) * pivotZ),
         zoom,
     };
     if (
         transform.x < -50 || transform.x > 50
         || transform.y < -50 || transform.y > 50
-        || transform.z < -40 || transform.z > 40
+        || !Number.isFinite(transform.z) || transform.z < -40 || transform.z > 40
         || transform.zoom < 0.1 || transform.zoom > 7
     ) {
         throw new RangeError("Pose framing is outside the supported character transform range.");
@@ -214,14 +214,17 @@ function activeCharacterFromSceneAsset(data = {}) {
     )) || data.characters[0];
 }
 
-export function extractActiveCharacterTransformFromSceneAsset(data = {}) {
+export function extractActiveCharacterTransformFromSceneAsset(data = {}, pose = extractActivePoseFromSceneAsset(data)) {
     const sourceCharacter = activeCharacterFromSceneAsset(data);
     if (
         !sourceCharacter?.transform
         || typeof sourceCharacter.transform !== "object"
         || Array.isArray(sourceCharacter.transform)
     ) return null;
-    return normalizeCharacterTransform(sourceCharacter.transform);
+    return normalizeCharacterTransform({
+        ...sourceCharacter.transform,
+        z: pose?.cameraParams?.offset_z ?? sourceCharacter.transform.z,
+    });
 }
 
 export function extractActivePoseFromSceneAsset(data = {}) {

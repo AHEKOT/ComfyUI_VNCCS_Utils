@@ -309,6 +309,7 @@ class VNCCS_PoseStudio:
         start_time,
         timeout=15.0,
         sync_token=None,
+        interrupt_check=None,
     ):
         import time
         import folder_paths
@@ -319,6 +320,8 @@ class VNCCS_PoseStudio:
         filepath = os.path.join(temp_dir, f"vnccs_debug_{file_id}.json")
 
         while time.time() - start_time < timeout:
+            if interrupt_check is not None:
+                interrupt_check()
             if os.path.exists(filepath) and os.path.getmtime(filepath) > start_time - 1.0:
                 try:
                     with open(filepath, "r", encoding="utf-8") as f:
@@ -340,22 +343,41 @@ class VNCCS_PoseStudio:
         camera_prompt="",
         apply_mode="pose",
         image_size=None,
+        keep_models_loaded=False,
     ):
         if pose_image is None:
             return None
         if not unique_id:
             raise RuntimeError("Pose image analysis requires an active browser widget.")
 
+        sync_token = uuid.uuid4().hex
+        model_session_id = None
+        client_id = None
+
+        def notify_progress(active):
+            if client_id is None:
+                return
+            try:
+                server.send_sync("vnccs_pose_image_progress", {
+                    "node_id": unique_id, "sync_token": sync_token, "active": active,
+                }, client_id)
+            except Exception as exc:
+                print(f"[VNCCS Pose Studio] Could not report pose image progress: {exc}")
+
         try:
             from server import PromptServer
             import time
             from ..vnccs_sam3d import process_image_to_pose_json, progress
+            from ..vnccs_sam3d.pose_import import close_pose_model_session, open_pose_model_session
 
-            task_id = f"node-{unique_id}-pose-image"
-            progress.start_task(task_id)
-            with progress.task_context(task_id):
+            server = PromptServer.instance
+            client_id = getattr(server, "client_id", None)
+            progress.start_task(sync_token)
+            notify_progress(True)
+            with progress.task_context(sync_token):
                 progress.update("Step 1/6: Pose image input received. Preparing SAM 3D Body import...", 2)
-                pose_json = process_image_to_pose_json(pose_image[:1])
+                model_session_id = open_pose_model_session(keep_models_loaded)
+                pose_json = process_image_to_pose_json(pose_image[:1], model_session_id=model_session_id)
             try:
                 pose_payload = json.loads(pose_json)
             except Exception:
@@ -363,7 +385,6 @@ class VNCCS_PoseStudio:
             if not pose_payload:
                 raise RuntimeError("SAM import returned empty pose data.")
 
-            sync_token = uuid.uuid4().hex
             start_time = time.time()
             event_payload = {
                 "node_id": unique_id,
@@ -371,13 +392,11 @@ class VNCCS_PoseStudio:
                 "camera_prompt": camera_prompt or "",
                 "apply_mode": apply_mode,
                 "sync_token": sync_token,
+                "model_session_id": model_session_id,
             }
             if image_size is not None:
                 event_payload["image_width"], event_payload["image_height"] = image_size
-            PromptServer.instance.send_sync(
-                "vnccs_apply_sam3d_pose", event_payload,
-                getattr(PromptServer.instance, "client_id", None),
-            )
+            server.send_sync("vnccs_apply_sam3d_pose", event_payload, client_id)
             synced = self._wait_for_frontend_sync(
                 unique_id,
                 start_time,
@@ -397,6 +416,10 @@ class VNCCS_PoseStudio:
             raise RuntimeError("Pose image frontend sync timed out.")
         except Exception as e:
             raise RuntimeError(f"Pose image SAM import failed: {e}") from e
+        finally:
+            notify_progress(False)
+            if model_session_id is not None:
+                close_pose_model_session(model_session_id)
     
     def generate(
         self,
@@ -436,6 +459,7 @@ class VNCCS_PoseStudio:
                     camera_prompt,
                     pose_image_analysis_mode,
                     image_size,
+                    isinstance(export_settings, dict) and export_settings.get("keep_models_loaded") is True,
                 )
                 if isinstance(synced, dict):
                     if synced.get("sync_error"):

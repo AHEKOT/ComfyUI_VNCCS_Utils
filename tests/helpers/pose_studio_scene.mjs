@@ -4,6 +4,7 @@ import { gunzipSync } from "node:zlib";
 import * as THREE from "../../web/vendor/three/three.module.js";
 import { PoseViewerCore } from "../../web/pose_studio/core.js";
 import * as characters from "../../web/pose_studio/characters.mjs";
+import { CHARACTER_POSITION_LIMITS, clampCharacterPosition, modelRotationQuaternion, wrapDegrees } from "../../web/pose_studio/character_transform.mjs";
 import * as animation from "../../web/pose_studio/animation.mjs";
 import { HAND_PRESETS } from "../../web/pose_studio/hand_presets.js";
 import * as openpose from "../../web/pose_studio/imports/openpose.js";
@@ -24,6 +25,12 @@ export class Element {
     appendChild(child) { this.children.push(child); child.parentElement = this; return child; }
     append(...children) { children.forEach(child => this.appendChild(child)); }
     replaceChildren(...children) { this.children = []; this.append(...children); }
+    replaceWith(element) {
+        const siblings = this.parentElement.children;
+        siblings[siblings.indexOf(this)] = element;
+        element.parentElement = this.parentElement;
+        this.parentElement = null;
+    }
     addEventListener(type, fn) { (this.events[type] ||= []).push(fn); }
     removeEventListener() {}
     dispatchEvent(event) { for (const fn of this.events[event.type] || []) fn(event); this[`on${event.type}`]?.(event); }
@@ -52,7 +59,8 @@ export class Element {
 export function createScene({ skinned = false } = {}) {
     const frames = new Map(), timers = new Map(); let id = 0;
     const document = { createElement: tag => new Element(tag), createDocumentFragment: () => new Element(), body: new Element(), activeElement: null };
-    const context = { ...characters, ...animation, ...openpose, isLikelyVideoFile, HAND_PRESETS, console, document, window: {}, Blob,
+    const context = { ...characters, ...animation, ...openpose, CHARACTER_POSITION_LIMITS, clampCharacterPosition,
+        modelRotationQuaternion, wrapDegrees, isLikelyVideoFile, HAND_PRESETS, console, document, window: {}, Blob,
         getComputedStyle: element => ({ width: `${element.width}px`, height: `${element.height}px` }),
         localStorage: { getItem: () => null, setItem: noop },
         requestAnimationFrame: fn => { frames.set(++id, fn); return id; }, cancelAnimationFrame: id => frames.delete(id),
@@ -102,13 +110,14 @@ export function createScene({ skinned = false } = {}) {
     }
     morph();
     viewer.options.onViewportRender = () => w.radarRedraw?.();
-    viewer.options.captureHistoryContext = () => ({ mesh: { ...w.meshParams }, transform: { ...w.getActiveCharacter().transform }, cameraParams: w.currentCameraParams(), prompt: w.getPosePrompt() });
+    viewer.options.captureHistoryContext = () => w.captureImageHistoryContext();
     viewer.options.onHistoryRestore = pose => w.restoreImageHistory(pose);
     viewer.options.onPoseChange = () => { w.updateRotationSliders(); w.syncToNode(); };
     w.createSliderField("Zoom", "cam_zoom", 0.1, 7, 0.01, 1, w.exportParams, true);
     for (const key of ["cam_yaw_deg", "cam_pitch_deg"]) w.createSliderField(key, key, -180, 180, 1, 0, w.exportParams, true);
     const pan = new Element(); w.createCameraRadar({ content: pan });
-    const pad = pan.children[0].children.find(child => child.tagName === "CANVAS");
+    const [radar] = pan.children;
+    const pad = radar.children[0].children[0];
     w.applyCameraToViewer(true);
     w.syncToNode(false);
     const assertable = () => ({ transform: { ...w.getActiveCharacter().transform }, runtime: { ...viewer.activeCharacterAppearance.transform }, controls: w.currentCameraParams(), saved: JSON.parse(node.widgets[0].value) });
@@ -127,5 +136,5 @@ export function createScene({ skinned = false } = {}) {
         }
         return { minX, maxX, minY, maxY };
     };
-    return { w, viewer, node, morph, pad, frames, timers, context, document, assertable, projection, THREE };
+    return { w, viewer, node, morph, radar, pad, frames, timers, context, document, assertable, projection, THREE };
 }

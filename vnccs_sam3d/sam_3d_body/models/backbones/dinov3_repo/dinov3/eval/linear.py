@@ -442,7 +442,7 @@ def setup_linear_training(
         last_checkpoint_dir := find_latest_checkpoint(config.classifier_fpath or checkpoint_output_dir)
     ):
         logger.info(f"Checkpoint found {last_checkpoint_dir}")
-        checkpoint = torch.load(last_checkpoint_dir / "checkpoint.pth")
+        checkpoint = torch.load(last_checkpoint_dir / "checkpoint.pth", weights_only=True)
         start_iter = checkpoint.get("iteration", -1) + 1
         best_accuracy = checkpoint.get("best_accuracy", -1)
         linear_classifiers.load_state_dict(checkpoint["linear_classifiers"])

@@ -276,7 +276,7 @@ def init_fsdp_model_from_checkpoint(
 ):
     if not Path(checkpoint_path).is_dir():  # PyTorch standard checkpoint
         logger.info(f"Loading pretrained weights from {checkpoint_path}")
-        chkpt = torch.load(checkpoint_path, map_location="cpu")["teacher"]
+        chkpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)["teacher"]
         from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 
         if process_group is None:
@@ -310,7 +310,7 @@ def init_fsdp_model_from_checkpoint(
 def init_model_from_checkpoint_for_evals(
     model: torch.nn.Module, pretrained_weights: str | Path, checkpoint_key: str = None
 ):
-    state_dict = torch.load(pretrained_weights, map_location="cpu")
+    state_dict = torch.load(pretrained_weights, map_location="cpu", weights_only=True)
     if checkpoint_key is not None and checkpoint_key in state_dict:
         logger.info(f"Take key {checkpoint_key} in provided checkpoint dict")
         state_dict = state_dict[checkpoint_key]

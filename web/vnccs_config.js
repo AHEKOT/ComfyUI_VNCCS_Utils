@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { installCustomSelects } from "./shared/custom_select.mjs";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=20261104-scaled-menu";
 import {
   ensureConfigStyles,
   createCollapsibleSection,

@@ -15,16 +15,20 @@ def bundled():
 
 def test_packaged_cards_parse_as_complete_variants_and_include_all_categories(bundled):
     assert {path.name for path in bundled.defaults_path().glob("*.json")} == {
-        "clothing.json", "anima_styles.json", "colors.json", "hairstyles.json", "backgrounds.json"}
+        "clothing.json", "anima_styles.json", "colors.json", "hairstyles.json", "backgrounds.json", "poses.json"}
     result = bundled.list_default_cards()
     counts = {"Headwear": 101, "Tops": 62, "Outerwear": 40, "Bottoms": 101, "Footwear": 101,
-              "Accessories": 101, "Anima styles": 174, "Colors": 72, "Hairstyles": 121, "Backgrounds": 99}
+              "Accessories": 101, "Anima styles": 174, "Colors": 72, "Hairstyles": 121, "Backgrounds": 99,
+              "Male poses": 100, "Female poses": 100}
     assert result["total"] == len(counts)
     assert {card["name"] for card in result["cards"]} == set(counts)
     for card in result["cards"]:
         options = card["text"][2:-1].split("|")
         assert len(options) == counts[card["name"]]
         assert len(set(options)) == len(options)
+        if card["name"] in {"Male poses", "Female poses"}:
+            assert card["category"] == "Poses"
+            assert all(option and option.isascii() and "pose" not in option.split() for option in options)
         raw = json.dumps({"version": 1, "blocks": [card], "parts": [{"blockId": card["id"]}], "seed": "17"})
         preview = preview_block(raw, card["id"])
         assert not preview["truncated"]

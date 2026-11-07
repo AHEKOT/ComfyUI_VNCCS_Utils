@@ -8,6 +8,8 @@ import time
 import hashlib
 import tempfile
 import threading
+import re
+import stat
 from fractions import Fraction
 from urllib.parse import unquote, urlparse
 from PIL import Image
@@ -158,7 +160,7 @@ def load_default_repositories():
     return out or fallbacks
 
 
-def load_user_repositories():
+def load_pose_repository_settings():
     path = get_user_repositories_path()
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -166,12 +168,18 @@ def load_user_repositories():
         repos = data.get("repositories", []) if isinstance(data, dict) else None
         if not isinstance(repos, list) or any(not isinstance(repo, dict) for repo in repos):
             raise ValueError("repository settings must contain a list of objects")
+        if "local_repository" in data and not isinstance(data["local_repository"], dict):
+            raise ValueError("local repository settings must be an object")
     except FileNotFoundError:
-        return []
+        return {"schema_version": 1, "repositories": []}
     except (OSError, ValueError) as exc:
         raise ValueError(f"Cannot read pose repository settings; original file preserved: {exc}") from exc
+    return data
+
+
+def load_user_repositories():
     out = []
-    for repo in repos:
+    for repo in load_pose_repository_settings().get("repositories", []):
         repo_id = normalize_repo_id(repo.get("repo_id"))
         if not repo_id:
             continue
@@ -189,7 +197,7 @@ def load_user_repositories():
 
 def save_user_repositories(repositories):
     with _REPOSITORY_SETTINGS_LOCK:
-        load_user_repositories()  # Never replace settings that could not be read.
+        settings = load_pose_repository_settings()
         path = get_user_repositories_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         user_repos = [
@@ -197,7 +205,24 @@ def save_user_repositories(repositories):
             for repo in repositories
             if not repo.get("builtin")
         ]
-        write_private_json(path, {"schema_version": 1, "repositories": user_repos})
+        settings.update({"schema_version": 1, "repositories": user_repos})
+        write_private_json(path, settings)
+
+
+def load_local_repository_settings():
+    with _REPOSITORY_SETTINGS_LOCK:
+        settings = load_pose_repository_settings()
+        if "local_repository" not in settings:
+            legacy = get_vnccs_user_config()
+            if isinstance(legacy, dict) and legacy.get("pose_library_publish_repo_id"):
+                # Keep the publish link beside its library, independent of the shared ComfyUI config.
+                settings["local_repository"] = {
+                    "publish_repo_id": legacy["pose_library_publish_repo_id"],
+                    "last_publish": legacy.get("pose_library_last_publish"),
+                    "last_publish_result": legacy.get("pose_library_last_publish_result"),
+                }
+                write_private_json(get_user_repositories_path(), settings)
+        return settings.get("local_repository", {})
 
 
 def load_pose_repositories():
@@ -218,6 +243,48 @@ def load_pose_repositories():
     return list(merged.values())
 
 
+class _PoseCloneProgress:
+    def __init__(self, task_id):
+        self.task_id = task_id
+
+    def write(self, data):
+        message = data.decode("utf-8", errors="replace").strip().replace("\r", " ")
+        if message:
+            repository_progress_update(self.task_id, message=f"Cloning repository: {message[-200:]}", progress=5)
+        return len(data)
+
+
+def clone_pose_repository(repo_id, target, task_id=None):
+    from dulwich import porcelain
+    from dulwich.config import ConfigDict
+
+    if not re.fullmatch(r"[\w-][\w.-]*/[\w-][\w.-]*", repo_id, flags=re.ASCII):
+        raise ValueError("Invalid Hugging Face repository id")
+    config = ConfigDict()
+    config.set((b"http",), b"timeout", b"60")
+    repository_progress_update(task_id, message=f"Cloning {repo_id}...", progress=3, transport="git")
+    # Import blobs directly: no checkout filters, hooks, submodules or user Git configuration.
+    return porcelain.clone(
+        f"https://huggingface.co/{repo_id}", target, bare=True, checkout=False,
+        depth=1, config=config, env={}, errstream=_PoseCloneProgress(task_id),
+    )
+
+
+def read_git_repository_file(repository, path_in_repo):
+    from dulwich.object_store import tree_lookup_path
+
+    path = str(path_in_repo).replace("\\", "/")
+    if any(part in {"", ".", ".."} for part in path.split("/")):
+        raise ValueError(f"Unsafe repository path: {path_in_repo}")
+    mode, object_id = tree_lookup_path(repository.__getitem__, repository[repository.head()].tree, path.encode("utf-8"))
+    if not stat.S_ISREG(mode):
+        raise ValueError(f"Repository asset is not a regular file: {path_in_repo}")
+    data = repository[object_id].data
+    if len(data) > MAX_POSE_REPOSITORY_FILE_BYTES:
+        raise ValueError(f"{path_in_repo} exceeds the per-file size limit")
+    return data
+
+
 def refresh_pose_repository(repo, task_id=None):
     repo_id = repo["repo_id"]
     manifest_path = repo.get("manifest_path") or "pose_library.json"
@@ -233,26 +300,13 @@ def refresh_pose_repository(repo, task_id=None):
         "transport": "",
     }
     try:
-        from huggingface_hub import HfApi
-        token = False
-        api = HfApi()
-        repository_progress_update(task_id, message=f"Reading repository info for {repo_id}...", progress=2)
-        info = api.repo_info(repo_id=repo_id, repo_type="model", token=token)
-        result["sha"] = getattr(info, "sha", "") or ""
-        repository_progress_update(task_id, message=f"Downloading manifest for {repo_id}...", progress=5, transport="http")
-        manifest_file = None
-        try:
-            manifest_file = download_hf_file_with_progress(
-                repo_id=repo_id, path_in_repo=manifest_path, token=token,
-                task_id=task_id, file_index=0, total_files=1,
-            )
-            with open(manifest_file, "r", encoding="utf-8") as f:
-                manifest = json.load(f)
-        finally:
-            if manifest_file:
-                os.remove(manifest_file)
-        sync_result = sync_pose_repository_files(repo, manifest, token, task_id=task_id)
-        transport = "http"
+        validate_repository_directory(repo_id)
+        with tempfile.TemporaryDirectory(prefix="vnccs_pose_repository_") as temporary:
+            with clone_pose_repository(repo_id, os.path.join(temporary, "repository"), task_id) as repository:
+                result["sha"] = repository.head().decode("ascii")
+                manifest = json.loads(read_git_repository_file(repository, manifest_path))
+                sync_result = sync_pose_repository_files(repo, manifest, False, task_id=task_id, source_repository=repository)
+        transport = "git+lfs" if sync_result["lfs_count"] else "git"
         poses = manifest.get("poses") or []
         result["animation_count"] = sum(
             1 for item in poses
@@ -329,49 +383,7 @@ def _pose_download_temp_path(path_in_repo):
     return path
 
 
-def download_hf_file_with_progress(repo_id, path_in_repo, token=None, task_id=None, file_index=0, total_files=1):
-    from huggingface_hub import hf_hub_download
-
-    tmp_path = _pose_download_temp_path(path_in_repo)
-    try:
-        repository_progress_update(
-            task_id,
-            message=f"Downloading {path_in_repo}...",
-            current_file=path_in_repo,
-            file_index=file_index + 1,
-            total_files=total_files,
-            progress=(file_index / max(total_files, 1)) * 100,
-        )
-        cached_path = hf_hub_download(
-            repo_id=repo_id,
-            filename=path_in_repo,
-            repo_type="model",
-            token=False,
-        )
-        total_bytes = os.path.getsize(cached_path)
-        if total_bytes > MAX_POSE_REPOSITORY_FILE_BYTES:
-            raise ValueError(f"{path_in_repo} is too large ({human_bytes(total_bytes)} > {human_bytes(MAX_POSE_REPOSITORY_FILE_BYTES)})")
-        shutil.copyfile(cached_path, tmp_path)
-        repository_progress_update(
-            task_id,
-            message=f"Downloaded {path_in_repo} ({human_bytes(total_bytes)})",
-            current_file=path_in_repo,
-            file_index=file_index + 1,
-            total_files=total_files,
-            bytes_done=total_bytes,
-            bytes_total=total_bytes,
-            progress=((file_index + 1) / max(total_files, 1)) * 100,
-        )
-        return tmp_path
-    except Exception:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-        raise
-
-
-def download_hf_file(repo_id, path_in_repo, token=None):
+def download_hf_file(repo_id, path_in_repo, token=None, revision=None):
     from huggingface_hub import hf_hub_download
 
     tmp_path = _pose_download_temp_path(path_in_repo)
@@ -380,6 +392,7 @@ def download_hf_file(repo_id, path_in_repo, token=None):
             repo_id=repo_id,
             filename=path_in_repo,
             repo_type="model",
+            revision=revision,
             token=False,
         )
         total_bytes = os.path.getsize(cached_path)
@@ -437,7 +450,7 @@ def collect_local_pose_files():
 
 
 def get_local_repository_info():
-    config = get_vnccs_user_config()
+    config = load_local_repository_settings()
     poses = collect_local_pose_files()
     animation_count = sum(1 for item in poses if item.get("asset_type") == ANIMATION_ASSET_TYPE)
     return {
@@ -447,10 +460,10 @@ def get_local_repository_info():
         "asset_count": len(poses),
         "pose_count": len(poses) - animation_count,
         "animation_count": animation_count,
-        "publish_repo_id": config.get("pose_library_publish_repo_id") or "",
-        "publishing_enabled": False,
-        "last_publish": config.get("pose_library_last_publish") or None,
-        "last_publish_result": config.get("pose_library_last_publish_result") or None,
+        "publish_repo_id": config.get("publish_repo_id") or "",
+        "publishing_enabled": True,
+        "last_publish": config.get("last_publish") or None,
+        "last_publish_result": config.get("last_publish_result") or None,
     }
 
 
@@ -567,7 +580,7 @@ def remove_local_repository_cache(repo_id):
     return removed_count
 
 
-def sync_pose_repository_files(repo, manifest, token, task_id=None):
+def sync_pose_repository_files(repo, manifest, token, task_id=None, source_repository=None):
     """Validate the complete manifest before importing public Hugging Face assets."""
     repo_id = repo["repo_id"]
     validate_repository_directory(repo_id)
@@ -580,6 +593,7 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
     expected_json_paths = set()
     expected_preview_paths = set()
     errors = []
+    lfs_count = 0
 
     for index, pose in enumerate(poses):
         if not isinstance(pose, dict):
@@ -660,11 +674,12 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
 
     if download_jobs:
         downloaded_bytes = 0
-        progress_start = 2
-        progress_span = 94
+        progress_start = 8
+        progress_span = 88
+        operation = "Importing" if source_repository is not None else "Downloading"
         repository_progress_update(
             task_id,
-            message=f"Downloading {len(download_jobs)} changed files...",
+            message=f"{operation} {len(download_jobs)} changed files...",
             current_file="",
             file_index=0,
             total_files=len(download_jobs),
@@ -673,7 +688,18 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
         for completed, job in enumerate(download_jobs, start=1):
             tmp_path = None
             try:
-                tmp_path = download_hf_file(repo_id, job["hub_path"], token=token)
+                if source_repository is None:
+                    tmp_path = download_hf_file(repo_id, job["hub_path"], token=token)
+                else:
+                    data = read_git_repository_file(source_repository, job["hub_path"])
+                    if data.startswith(b"version https://git-lfs.github.com/spec/v1\n"):
+                        repository_progress_update(task_id, message=f"Downloading Git LFS asset: {job['hub_path']}", transport="git+lfs")
+                        tmp_path = download_hf_file(repo_id, job["hub_path"], revision=source_repository.head().decode("ascii"))
+                        lfs_count += 1
+                    else:
+                        tmp_path = _pose_download_temp_path(job["hub_path"])
+                        with open(tmp_path, "wb") as staged:
+                            staged.write(data)
                 if job["expected_kind"] == "json" and not isinstance(read_pose_json(tmp_path), dict):
                     raise ValueError("Library asset JSON must be an object")
                 file_bytes = os.path.getsize(tmp_path)
@@ -698,7 +724,7 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
                         pass
             repository_progress_update(
                 task_id,
-                message=f"Downloaded {completed}/{len(download_jobs)} changed files...",
+                message=f"{operation} {completed}/{len(download_jobs)} changed files...",
                 current_file=job["hub_path"],
                 file_index=completed,
                 total_files=len(download_jobs),
@@ -728,12 +754,101 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
         "skipped": skipped,
         "removed": removed,
         "errors": errors,
+        "lfs_count": lfs_count,
     }
 
 
 def publish_local_repository_to_hf(repo_id, token=None, create=False, private=False, task_id=None):
-    repository_progress_fail(task_id, "Remote publishing is disabled by the VNCCS security policy")
-    raise PermissionError("Remote publishing is disabled by the VNCCS security policy")
+    repo_id = normalize_repo_id(repo_id)
+    if not repo_id:
+        raise ValueError("Invalid Hugging Face repo id")
+    if not isinstance(token, str) or not token.strip():
+        raise ValueError("A Hugging Face write token is required")
+    token = token.strip()
+    repository_progress_start(task_id, f"Publishing local pose library to {repo_id}...")
+    try:
+        from huggingface_hub import HfApi, CommitOperationAdd
+        from huggingface_hub.utils import validate_repo_id
+        validate_repo_id(repo_id)
+        api = HfApi(endpoint="https://huggingface.co", token=token)
+        with tempfile.TemporaryDirectory(prefix="vnccs_pose_publish_") as snapshot:
+            operations, entries = [], []
+            total_bytes = 0
+            with _LIBRARY_SAVE_LOCK:
+                local_poses = collect_local_pose_files()
+                local_root = os.path.realpath(os.path.join(get_library_path(), LOCAL_USER_REPOSITORY))
+                source_paths = {
+                    os.path.join(root, filename)
+                    for root, _dirs, files in os.walk(local_root)
+                    for filename in files if filename.endswith(".json")
+                    and not (root == local_root and filename in RESERVED_LIBRARY_JSON)
+                }
+                if source_paths != {os.path.realpath(pose["json_path"]) for pose in local_poses}:
+                    raise ValueError("Local library contains unreadable pose files. Repair them before publishing.")
+                destinations = set()
+                for pose in local_poses:
+                    entry = {key: pose[key] for key in ("name", "category", "tags", "asset_type")}
+                    for kind in ("json", "preview"):
+                        path = pose[f"{kind}_path"]
+                        if not path:
+                            continue
+                        if os.path.commonpath((local_root, os.path.realpath(path))) != local_root:
+                            raise ValueError("Publishing files outside the local pose library is not allowed")
+                        hub_path = pose[f"hub_{kind}_path"]
+                        if hub_path in destinations:
+                            raise ValueError(f"Duplicate library destination: {hub_path}")
+                        destinations.add(hub_path)
+                        size = os.path.getsize(path)
+                        total_bytes += size
+                        if size > MAX_POSE_REPOSITORY_FILE_BYTES or total_bytes > MAX_POSE_REPOSITORY_SYNC_BYTES:
+                            raise ValueError("Pose library exceeds the repository transfer size limit")
+                        target = os.path.join(snapshot, str(len(operations)))
+                        shutil.copyfile(path, target)
+                        entry[f"{kind}_path"] = hub_path
+                        entry[f"{kind}_sha256"] = sha256_file(target)
+                        operations.append(CommitOperationAdd(path_in_repo=hub_path, path_or_fileobj=target))
+                    if pose["preview_type"]:
+                        entry["preview_type"] = pose["preview_type"]
+                    entries.append(entry)
+            if not entries:
+                raise ValueError("Save at least one local pose or animation before publishing")
+            manifest = {
+                "schema_version": 1, "title": repository_manifest_title(repo_id),
+                "description": "Poses and animations published from Pose Studio.",
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "poses": entries,
+            }
+            operations.append(CommitOperationAdd(path_in_repo="pose_library.json",
+                path_or_fileobj=json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")))
+            repository_progress_update(task_id, progress=20, message=f"Checking {repo_id}...")
+            if create:
+                api.create_repo(repo_id=repo_id, repo_type="model", private=bool(private), exist_ok=False, token=token)
+            info = api.repo_info(repo_id=repo_id, repo_type="model", token=token)
+            repository_progress_update(task_id, progress=30, message=f"Uploading {len(operations)} library files...")
+            # Commit the manifest and its immutable file snapshots together; keep unrelated remote files.
+            api.create_commit(repo_id=repo_id, repo_type="model", token=token, operations=operations,
+                parent_commit=info.sha, commit_message="Publish Pose Studio library")
+            result = {
+                "repo_id": repo_id, "asset_count": len(entries),
+                "pose_count": sum(entry["asset_type"] != ANIMATION_ASSET_TYPE for entry in entries),
+                "animation_count": sum(entry["asset_type"] == ANIMATION_ASSET_TYPE for entry in entries),
+                "uploaded_count": len(operations), "deleted_count": 0, "skipped_count": 0,
+            }
+        try:
+            with _REPOSITORY_SETTINGS_LOCK:
+                settings = load_pose_repository_settings()
+                settings["local_repository"] = {
+                    **settings.get("local_repository", {}),
+                    "publish_repo_id": repo_id, "last_publish": time.time(), "last_publish_result": result,
+                }
+                write_private_json(get_user_repositories_path(), settings)
+        except Exception as exc:
+            raise RuntimeError(f"Library was published, but its target could not be saved locally: {exc}") from None
+        repository_progress_finish(task_id, f"Published {len(entries)} library items to {repo_id}.")
+        return result
+    except Exception as exc:
+        message = str(exc).replace(token, "[redacted]")
+        repository_progress_fail(task_id, message)
+        raise RuntimeError(message) from None
 
 
 def persist_refreshed_repositories(refreshed):

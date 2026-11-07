@@ -1,7 +1,7 @@
 import { PARAMETRIC_PARTS, PRIMITIVE_KINDS, primitiveLabel } from "./factory3d/geometry/parametric_parts.mjs";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { installCustomSelects } from "./shared/custom_select.mjs";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=20261104-scaled-menu";
 import { Factory3DViewer } from "./factory3d/viewer.js?v=20260908.4";
 import { hasRenderableFactoryScene } from "./factory3d/scene_content.mjs?v=20260905.1";
 import {

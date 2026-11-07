@@ -94,6 +94,12 @@ def _load_model():
         return model, device
 
 
+def _release_model():
+    global _MODEL, _DEVICE
+    with _MODEL_LOCK:
+        _MODEL = _DEVICE = None
+
+
 def _bbox_from_mask(mask_2d):
     rows = np.any(mask_2d > 0, axis=1)
     cols = np.any(mask_2d > 0, axis=0)
@@ -112,6 +118,7 @@ def _largest_component(mask_2d):
     return (labels == best).astype(np.uint8)
 
 
+@progress.model_operation
 def auto_mask_bgr(img_bgr, confidence_threshold=0.5):
     import torch
     from torchvision import transforms

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 
 
 const uniCanvasSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
@@ -131,8 +132,14 @@ test("adding a Pose Library repository downloads it and refreshes the library in
     const addEnd = poseStudioSource.indexOf("\n    createRepositoryTaskId", addStart);
     const normalizeMethod = poseStudioSource.slice(normalizeStart, addStart);
     const addMethod = poseStudioSource.slice(addStart, addEnd);
-    assert.match(normalizeMethod, /\['huggingface\.co', 'www\.huggingface\.co'\]/);
-    assert.match(normalizeMethod, /return `\$\{parts\[0\]\}\/\$\{parts\[1\]\}`;/);
+    const parser = runInNewContext(`({ ${normalizeMethod} })`, { URL });
+    for (const value of ["owner/library", "https://huggingface.co/owner/library/tree/main", "https://www.huggingface.co/owner/library"]) {
+        assert.equal(parser.normalizePoseRepositoryInput(value), "owner/library");
+    }
+    for (const value of ["", "owner", "owner/bad name", "https://example.com/owner/library",
+        "https://huggingface.co/datasets/owner/library", "https://huggingface.co/spaces/owner/library"]) {
+        assert.equal(parser.normalizePoseRepositoryInput(value), "");
+    }
     assert.match(addMethod, /this\.normalizePoseRepositoryInput\(input\?\.value\)/);
     assert.match(addMethod, /const taskId = this\.createRepositoryTaskId\("repo-add"\);/);
     assert.match(addMethod, /JSON\.stringify\(\{ repo_id: repoId, task_id: taskId \}\)/);
@@ -173,13 +180,13 @@ test("loading a scene-format pose preserves Pose Manager while animations open S
     );
     assert.match(
         dispatchMethod,
-        /data\.pose\?\.type === "pose_set"[\s\S]*this\.loadPoseSetAsset\(data\.pose\)/,
+        /data\.pose\?\.type === "pose_set"[\s\S]*this\.loadPoseSetAsset\(data\.pose, \{ fallbackPrompt: this\.getPosePrompt\(\) \}\)/,
     );
 });
 
 
 test("only explicit pose-set assets replace the Pose Manager pose list", () => {
-    const setStart = poseStudioSource.indexOf("loadPoseSetAsset(asset)");
+    const setStart = poseStudioSource.indexOf("\n    loadPoseSetAsset(asset,");
     const setEnd = poseStudioSource.indexOf("\n    loadAnimationLibraryAsset", setStart);
     const setMethod = poseStudioSource.slice(setStart, setEnd);
     assert.match(setMethod, /this\.poses = sourcePoses\.map/);
@@ -194,7 +201,7 @@ test("only explicit pose-set assets replace the Pose Manager pose list", () => {
 
 
 test("saving a current library pose does not serialize the whole Pose Manager set", () => {
-    const saveStart = poseStudioSource.indexOf("async saveToLibrary(name, includePreview = true, metadata = {})");
+    const saveStart = poseStudioSource.indexOf("buildLibraryAsset(prompt = this.getPosePrompt(this.activeTab))");
     const saveEnd = poseStudioSource.indexOf("\n    applyLibraryPoseFraming", saveStart);
     const saveMethod = poseStudioSource.slice(saveStart, saveEnd);
     assert.match(saveMethod, /type: animationMode \? "pose_animation" : "scene_pose"/);
@@ -245,7 +252,7 @@ test("Pose Manager keeps the pose image input and gates automatic proportion ana
 
 
 test("Pose Manager SAM input applies proportions without replacing managed poses", () => {
-    const managerStart = poseStudioSource.indexOf("async applySAM3DProportionsToPoseManager(poseData)");
+    const managerStart = poseStudioSource.indexOf("async applySAM3DProportionsToPoseManager(");
     const managerEnd = poseStudioSource.indexOf("\n    applySAM3DMeshOverlayFit", managerStart);
     const managerMethod = poseStudioSource.slice(managerStart, managerEnd);
     assert.match(managerMethod, /manager_auto_analyze_proportions === false/);
@@ -277,9 +284,12 @@ test("Pose Manager SAM input applies proportions without replacing managed poses
     const eventEnd = poseStudioSource.indexOf("\n    },\n\n    async beforeRegisterNodeDef", eventStart);
     const eventMethod = poseStudioSource.slice(eventStart, eventEnd);
     assert.match(eventMethod, /applyMode === "manager_proportions"/);
-    assert.match(eventMethod, /applySAM3DProportionsToPoseManager\(poseData\)/);
+    assert.match(eventMethod, /applySAM3DProportionsToPoseManager\(poseData, modelSessionId\)/);
     assert.match(eventMethod, /widget\.syncToNode\(true, \{[\s\S]*executionCapture: true/);
-    assert.match(eventMethod, /viewer\.applySAM3DImport\(/, "ordinary Pose Studio import must remain intact");
+    assert.match(eventMethod, /widget\.applySAM3DPoseForCapture\(poseData, assertCurrent, null, modelSessionId\)/);
+    const captureMethod = poseStudioSource.slice(poseStudioSource.indexOf("async applySAM3DPoseForCapture("),
+        poseStudioSource.indexOf("async applySAM3DProportionsToPoseManager("));
+    assert.match(captureMethod, /viewer\.applySAM3DImport\(/, "ordinary Pose Studio import must remain intact");
 
     const coreImportStart = poseStudioCoreSource.indexOf("applySAM3DImport(data, shoulderYOffset = 0, options = {})");
     const coreImportEnd = poseStudioCoreSource.indexOf("\n    applyHMR2v1Import", coreImportStart);
@@ -521,9 +531,12 @@ test("the original camera positioning widget controls the selected character", (
     const radarStart = poseStudioSource.indexOf("createCameraRadar(section)");
     const radarEnd = poseStudioSource.indexOf("\n    createLightRadar", radarStart);
     const radarMethod = poseStudioSource.slice(radarStart, radarEnd);
-    const yUpdate = radarMethod.indexOf("this.exportParams.cam_offset_y = next.y");
-    const selectedCharacterUpdate = radarMethod.indexOf("this.persistActivePoseCameraParams()", yUpdate);
-    assert.ok(yUpdate >= 0 && selectedCharacterUpdate > yUpdate);
+    assert.match(radarMethod, /this\.applyCharacterPosition\(next\)/);
+
+    const positionStart = poseStudioSource.indexOf("\n    applyCharacterPosition(position,");
+    const positionEnd = poseStudioSource.indexOf("\n    applyPassiveCharacterPlacement(", positionStart);
+    const positionMethod = poseStudioSource.slice(positionStart, positionEnd);
+    assert.match(positionMethod, /this\.exportParams\.cam_offset_y = next\.y;\s*this\.persistActivePoseCameraParams\(\)/);
 });
 
 

@@ -25,6 +25,18 @@ test("custom select keyboard navigation wraps and skips unavailable options", ()
     assert.equal(findNextEnabledOptionIndex([{ disabled: true }], 0, 1), -1);
 });
 
+test("all widgets load one current selector module instead of cached older instances", async () => {
+    const root = new URL("../web/", import.meta.url);
+    const files = await readdir(root, { recursive: true });
+    const imports = [];
+    for (const file of files.filter(file => /\.(?:js|mjs)$/.test(file) && !file.startsWith("vendor/"))) {
+        const source = await readFile(new URL(file, root), "utf8");
+        for (const match of source.matchAll(/from ["'][^"']*shared\/custom_select\.mjs([^"']*)["']/g)) imports.push(match[1]);
+    }
+    assert.ok(imports.length >= 8);
+    assert.deepEqual([...new Set(imports)], ["?v=20261104-scaled-menu"]);
+});
+
 
 test("every first-party native select is covered by the shared custom selector", async () => {
     const webDirectory = new URL("../web/", import.meta.url);

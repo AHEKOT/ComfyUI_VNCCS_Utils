@@ -20,7 +20,7 @@ def unwrap_ddp_state_dict(model_state_dict):
 
 
 def load_checkpoint(checkpoint_path):
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     state_dicts = {}
     iteration = None
     if "iteration" in checkpoint.keys():

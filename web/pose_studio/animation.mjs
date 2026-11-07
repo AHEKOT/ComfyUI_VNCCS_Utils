@@ -8,7 +8,7 @@
  */
 
 
-import { installCustomSelects } from "../shared/custom_select.mjs";
+import { installCustomSelects } from "../shared/custom_select.mjs?v=20261104-scaled-menu";
 
 export const POSE_ANIMATION_SCHEMA_VERSION = 2;
 export const MODEL_ROTATION_TRACK = "@modelRotation";
@@ -994,6 +994,76 @@ export function playbackFrameForElapsed(elapsedMilliseconds, fpsValue) {
     return Math.floor((Math.max(0, finiteNumber(elapsedMilliseconds)) / 1000) * fps);
 }
 
+// Capture lens defaults reproduce the fixed camera used before FOV became
+// editable, so poses and workflows without lens fields render unchanged.
+export const DEFAULT_CAPTURE_FOV_DEG = 30;
+export const MIN_CAPTURE_FOV_DEG = 15;
+export const MAX_CAPTURE_FOV_DEG = 75;
+export const DEFAULT_CAPTURE_DISTANCE = 45;
+// The capture camera clips at 0.1..500 and a default mannequin is about 20
+// units tall; this range keeps it in front of the camera and inside the far plane.
+export const MIN_CAPTURE_DISTANCE = 10;
+export const MAX_CAPTURE_DISTANCE = 250;
+export const CAPTURE_LENS_STEP = 0.1;
+
+export function normalizeCaptureLens(source = {}) {
+    // null, "" and booleans coerce to finite numbers; treat them as missing.
+    const lensNumber = (value, fallback) => (
+        typeof value === "number" || typeof value === "string" && value.trim() !== ""
+            ? finiteNumber(value, fallback)
+            : fallback
+    );
+    return {
+        fov_deg: clamp(
+            lensNumber(source?.fov_deg, DEFAULT_CAPTURE_FOV_DEG),
+            MIN_CAPTURE_FOV_DEG,
+            MAX_CAPTURE_FOV_DEG,
+        ),
+        distance: clamp(
+            lensNumber(source?.distance, DEFAULT_CAPTURE_DISTANCE),
+            MIN_CAPTURE_DISTANCE,
+            MAX_CAPTURE_DISTANCE,
+        ),
+        maintain_subject_size: source?.maintain_subject_size === true,
+        view: normalizeCaptureView(source?.view),
+    };
+}
+
+// Capture camera pose copied by Align Camera to View. Missing or degenerate
+// data means the regular yaw/pitch camera.
+export function normalizeCaptureView(source) {
+    if (!source || typeof source !== "object") return null;
+    const vector = (value, length) => (
+        Array.isArray(value) && value.length === length && value.every(item => typeof item === "number" && Number.isFinite(item))
+            ? [...value]
+            : null
+    );
+    const position = vector(source.position, 3);
+    const target = vector(source.target, 3);
+    const quaternion = vector(source.quaternion, 4);
+    if (!position || !target || !quaternion) return null;
+    const length = Math.hypot(...quaternion);
+    const reach = Math.hypot(position[0] - target[0], position[1] - target[1], position[2] - target[2]);
+    if (length < 1e-6 || reach < 1e-6) return null;
+    return {
+        position,
+        target,
+        quaternion: quaternion.map(value => value / length),
+        zoom: clamp(typeof source.zoom === "number" ? finiteNumber(source.zoom, 1) : 1, 0.05, 20),
+    };
+}
+
+// Distance that keeps the reference plane's on-screen size when the vertical
+// FOV changes: distance * tan(fov / 2) is held constant.
+export function computeSubjectSizeDistance(baseDistance, baseFovDeg, nextFovDeg) {
+    const base = normalizeCaptureLens({ fov_deg: baseFovDeg, distance: baseDistance });
+    const next = normalizeCaptureLens({ fov_deg: nextFovDeg }).fov_deg;
+    const halfAngle = degrees => Math.tan(degrees * Math.PI / 360);
+    return normalizeCaptureLens({
+        distance: base.distance * halfAngle(base.fov_deg) / halfAngle(next),
+    }).distance;
+}
+
 export function resolveCaptureCameraParams(poseParams = {}, currentParams = {}, animationMode = false) {
     const source = animationMode
         ? currentParams
@@ -1002,12 +1072,15 @@ export function resolveCaptureCameraParams(poseParams = {}, currentParams = {}, 
         const parsed = Number(value);
         return Number.isFinite(parsed) ? parsed : fallback;
     };
+    const depth = source.offset_z ?? currentParams?.offset_z;
     return {
         zoom: number(source.zoom, 1),
         offset_x: number(source.offset_x, 0),
         offset_y: number(source.offset_y, 0),
+        ...(depth == null ? {} : { offset_z: clamp(number(depth, 0), -40, 40) }),
         yaw_deg: number(source.yaw_deg, 0),
         pitch_deg: number(source.pitch_deg, 0),
+        ...normalizeCaptureLens(source),
     };
 }
 
