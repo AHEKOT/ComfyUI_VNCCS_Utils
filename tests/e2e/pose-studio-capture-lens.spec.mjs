@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
 
-// Pose Studio capture lens on a real ComfyUI graph node: native number input and range
+// Pose Studio capture lens on a real ComfyUI graph node: standard slider and value-label
 // behaviour, the Camera Angle controls, editor camera Undo, and geometry at three depths
 // measured in the viewport cameras and in real RUN output. RUN uses only Pose Studio's CPU
 // capture path; nothing downloads models.
@@ -56,11 +56,10 @@ const lens = page => page.evaluate(() => {
       key,
       param: w.exportParams[key],
       slider: slider.value,
-      number: slider._vnccsNumberInput.value,
+      labelValue: slider._vnccsValueSpan.innerText,
       numberInputs: field.querySelectorAll('input[type="number"]').length,
       readOnlyValues: field.querySelectorAll(".vnccs-ps-value").length,
       sliderStep: slider.step,
-      numberStep: slider._vnccsNumberInput.step,
     };
   });
   return {
@@ -78,61 +77,49 @@ const clickCenter = async (page, locator) => {
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 };
 
-test("capture lens: one native numeric editor per setting, shared steps, live sync", async ({ page }) => {
+test("capture lens: standard camera sliders and value labels stay in sync", async ({ page }) => {
   test.setTimeout(180_000);
   await openPoseStudio(page);
   await openCameraAngle(page);
   const before = await lens(page);
   for (const row of before.rows) {
-    expect(row.numberInputs, `${row.key} has one number field`).toBe(1);
-    expect(row.readOnlyValues, `${row.key} has no duplicate read-only value`).toBe(0);
-    expect(row.sliderStep).toBe(row.numberStep);
+    expect(row.numberInputs, `${row.key} uses the standard value label`).toBe(0);
+    expect(row.readOnlyValues, `${row.key} has one value label`).toBe(1);
+    expect(Number(row.sliderStep)).toBe(0.1);
   }
 
-  // Same row and aligned: label, number field and reset button.
+  // Same row and aligned: label, value and reset button.
   const geometry = await page.evaluate(() => ["cam_fov_deg", "cam_distance"].map(key => {
-    const w = window.__node.studioWidget, slider = w.exportWidgets[key], input = slider._vnccsNumberInput;
+    const w = window.__node.studioWidget, slider = w.exportWidgets[key], value = slider._vnccsValueSpan;
     const field = slider.closest(".vnccs-ps-field");
     const rect = element => element.getBoundingClientRect();
     const reset = field.querySelector(".vnccs-ps-reset-btn");
     const center = element => rect(element).top + rect(element).height / 2;
     return {
-      inputCenter: center(input), resetCenter: center(reset),
-      inputRight: rect(input).right, resetLeft: rect(reset).left,
-      inputWidth: rect(input).width, fieldWidth: rect(field).width,
+      valueCenter: center(value), resetCenter: center(reset),
+      valueRight: rect(value).right, resetLeft: rect(reset).left,
+      valueWidth: rect(value).width, fieldWidth: rect(field).width,
       sliderBottom: rect(slider).bottom, fieldBottom: rect(field).bottom,
     };
   }));
   for (const row of geometry) {
-    expect(Math.abs(row.inputCenter - row.resetCenter)).toBeLessThan(2);
-    expect(row.inputRight).toBeLessThanOrEqual(row.resetLeft);
-    expect(row.inputWidth).toBeLessThan(row.fieldWidth / 2);
+    expect(Math.abs(row.valueCenter - row.resetCenter)).toBeLessThan(2);
+    expect(row.valueRight).toBeLessThanOrEqual(row.resetLeft);
+    expect(row.valueWidth).toBeLessThan(row.fieldWidth / 2);
     expect(row.sliderBottom).toBeLessThanOrEqual(row.fieldBottom + 1);
   }
 
-  // Native Chromium behaviour: both controls accept the exact value.
-  const distanceInput = page.locator(".vnccs-ps-value-input").nth(1);
-  for (const [text, expected] of [["45.1", 45.1], ["61.7", 61.7], ["45", 45]]) {
-    await distanceInput.click({ force: true });
-    await page.keyboard.press("Control+A");
-    await page.keyboard.type(text);
+  // The standard range also supports the same keyboard controls as Yaw/Pitch.
+  await page.evaluate(() => window.__node.studioWidget.exportWidgets.cam_distance.focus());
+  for (const [key, expected] of [["End", 250], ["Home", 10], ["ArrowRight", 10.1]]) {
+    await page.keyboard.press(key);
     const live = await lens(page);
-    expect(live.rows[1].param, `typing ${text} is live`).toBe(expected);
-    expect(Number(live.rows[1].slider), `the range keeps ${text}`).toBe(expected);
+    expect(live.rows[1].param).toBe(expected);
+    expect(live.rows[1].labelValue).toBe(expected.toFixed(2));
     expect(live.captureDistance).toBeCloseTo(expected, 5);
-    await page.keyboard.press("Enter");
-    expect((await lens(page)).rows[1].number).toBe(String(expected));
   }
-  const fovInput = page.locator(".vnccs-ps-value-input").first();
-  await fovInput.click({ force: true });
-  await page.keyboard.press("Control+A");
-  await page.keyboard.type("33.3");
-  let live = await lens(page);
-  expect(live.rows[0].param).toBe(33.3);
-  expect(Number(live.rows[0].slider)).toBe(33.3);
-  await page.keyboard.press("Enter");
 
-  // A real slider drag updates the number field on every step.
+  // A real slider drag updates the value label on every step.
   const box = await page.evaluate(() => {
     const rect = window.__node.studioWidget.exportWidgets.cam_fov_deg.getBoundingClientRect();
     return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
@@ -143,18 +130,14 @@ test("capture lens: one native numeric editor per setting, shared steps, live sy
   for (let i = 1; i <= 6; i += 1) {
     await page.mouse.move(box.x + box.width * (0.2 + i * 0.1), box.y + box.height / 2);
     const state = await lens(page);
-    expect(state.rows[0].number).toBe(String(Number(state.rows[0].param.toFixed(2))));
+    expect(state.rows[0].labelValue).toBe(state.rows[0].param.toFixed(2));
     expect(state.captureFov).toBe(state.rows[0].param);
     seen.push(state.rows[0].param);
   }
   await page.mouse.up();
   for (let i = 1; i < seen.length; i += 1) expect(seen[i]).toBeGreaterThan(seen[i - 1]);
 
-  const panel = await page.evaluate(() => {
-    const rect = window.__node.studioWidget.exportWidgets.cam_fov_deg.closest(".vnccs-ps-section").getBoundingClientRect();
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-  });
-  await page.screenshot({ path: test.info().outputPath("camera-angle.png"), clip: panel });
+  await page.screenshot({ path: test.info().outputPath("camera-angle.png") });
 });
 
 test("capture lens: Undo and Redo restore the editor camera", async ({ page }) => {
@@ -164,11 +147,12 @@ test("capture lens: Undo and Redo restore the editor camera", async ({ page }) =
   const start = await lens(page);
   expect(start.captureFov).toBe(30);
   expect(start.editorFov).toBeCloseTo(45, 5);
-  const input = page.locator(".vnccs-ps-value-input").first();
-  await input.click({ force: true });
-  await page.keyboard.press("Control+A");
-  await page.keyboard.type("62");
-  await page.keyboard.press("Enter");
+  await page.evaluate(() => {
+    const slider = window.__node.studioWidget.exportWidgets.cam_fov_deg;
+    slider.value = "62";
+    slider.dispatchEvent(new Event("input"));
+    slider.dispatchEvent(new Event("change"));
+  });
   const wide = await lens(page);
   expect(wide.captureFov).toBe(62);
   expect(wide.editorFov).toBeCloseTo(85.77, 1);
@@ -179,7 +163,7 @@ test("capture lens: Undo and Redo restore the editor camera", async ({ page }) =
   expect(undone.editorFov).toBeCloseTo(start.editorFov, 5);
   expect(undone.editorZoom).toBeCloseTo(start.editorZoom, 5);
   expect(undone.editorDistance).toBeCloseTo(start.editorDistance, 5);
-  expect(undone.rows[0].number).toBe("30");
+  expect(undone.rows[0].labelValue).toBe("30.00");
   expect(Number(undone.rows[0].slider)).toBe(30);
 
   await page.evaluate(() => window.__node.studioWidget.viewer.redo());

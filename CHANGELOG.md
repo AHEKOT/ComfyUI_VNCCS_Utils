@@ -1,3 +1,17 @@
+# Version 0.7.3
+
+## Pose Studio: Camera Controls
+
+* **Adjustable FOV and Distance**: Control the capture camera's vertical field of view (15–75°) and distance (10–250) to compose wide-angle and telephoto shots. Controls update continuously while dragging and support Undo/Redo.
+* **Maintain Subject Size**: Automatically adjust camera distance when changing FOV to keep the subject's apparent size approximately constant while changing perspective.
+* **Align Camera to View**: Capture the current viewport composition. The output frame fits the viewport's width or height according to the selected output proportions, without moving or changing the viewport camera.
+* **Reset Camera**: Return to the standard scene camera with Yaw/Pitch 0°, FOV 30°, and Distance 45, preserving character poses, placement, and scale.
+* **Saved camera settings**: Store the lens and aligned camera view per pose tab, shared across its characters, and retain them in workflows, Pose Library assets, and animation JSON exports. Existing poses without these settings use the original camera defaults.
+
+### Contributors
+
+Thank you to [@IwahanaFuku](https://github.com/IwahanaFuku) for contributing this changes to project! [PR #109](https://github.com/AHEKOT/ComfyUI_VNCCS_Utils/pull/109).
+
 # Version 0.7.2
 
 ## Pose Library Creation, Publishing, and Repository Reliability

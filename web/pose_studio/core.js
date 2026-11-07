@@ -4888,10 +4888,8 @@ export class PoseViewerCore {
         return { ...view, position: position.toArray(), quaternion: new THREE.Quaternion().setFromRotationMatrix(rotation).toArray() };
     }
 
-    // Align Camera to View: the reverse of snapToCaptureCamera(). Returns the lens
-    // that puts the capture camera at the editor camera's position and rotation and
-    // captures what the orange frame covers there; the output aspect sets the width.
-    computeCaptureViewFromEditor() {
+    // Align Camera to View: fit the output aspect inside the unchanged editor view.
+    computeCaptureViewFromEditor(outputAspect = this.captureCamera?.aspect || 1) {
         if (!this.THREE || !this.camera || !this.orbit) return null;
         const camera = this.camera;
         camera.updateMatrixWorld(true);
@@ -4901,11 +4899,11 @@ export class PoseViewerCore {
         const depth = this.orbit.target.clone().sub(camera.position).dot(forward);
         const distance = normalizeCaptureLens({ distance: depth }).distance;
         const target = camera.position.clone().addScaledVector(forward, distance);
-        // The viewport shows the capture frame with the margin snapToCaptureCamera()
-        // gives it, so the captured part of the view is that frame: right after a snap
-        // this is exactly the current lens. A FOV outside the lens range is carried by zoom.
+        // Fill the viewport's height, or its width when the output is wider.
+        // A FOV outside the lens range is carried by zoom.
         const halfAngle = degrees => Math.tan(degrees * Math.PI / 360);
-        const frameFov = Math.atan(halfAngle(camera.fov) * halfAngle(POSE_STUDIO_CAPTURE_FOV) / halfAngle(POSE_STUDIO_EDITOR_FOV)) * 360 / Math.PI;
+        const frameScale = Math.min(1, camera.aspect / outputAspect);
+        const frameFov = Math.atan(halfAngle(camera.fov) * frameScale) * 360 / Math.PI;
         const fov = Math.abs(frameFov - this.captureLens.fov_deg) < 1e-9
             ? this.captureLens.fov_deg
             : normalizeCaptureLens({ fov_deg: frameFov }).fov_deg;

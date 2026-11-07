@@ -35,6 +35,7 @@ function animationWidget(Widget) {
     const w = Object.assign(Object.create(Widget.prototype), {
         animationState: animation.createDefaultAnimationState(pose), _animationInitialized: true,
         _applyingAnimationPose: false, _animationUndoStack: [], _animationRedoStack: [],
+        exportParams: {},
         isAnimationMode: () => true,
         viewer: { isInitialized: () => true, getPose: () => pose, boneList: [] },
         animationTimeline: { renderTracks: noop },
