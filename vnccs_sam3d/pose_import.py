@@ -7,7 +7,15 @@ shape while loading the vendored inference code directly.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from dataclasses import dataclass
+import gc
 import json
+import sys
+import threading
+import time
+import traceback
+from uuid import uuid4
 
 import numpy as np
 
@@ -23,8 +31,114 @@ def _dependency_error(exc: Exception) -> RuntimeError:
     )
 
 
+_MODEL_SESSION_IDLE_SECONDS = 300
+_MAX_MODEL_SESSIONS = 32
+
+
+@dataclass
+class _PoseModelSession:
+    keep_models_loaded: bool
+    deadline: float
+    timer: threading.Timer | None = None
+
+
+_MODEL_SESSIONS: dict[str, _PoseModelSession] = {}
+
+
+class PoseModelSessionError(RuntimeError):
+    pass
+
+
+def _release_pose_models():
+    # Closing an unused session must not import model dependencies.
+    process = sys.modules.get(f"{__package__}.processing.process")
+    mask = sys.modules.get(f"{__package__}.processing.birefnet_mask")
+    if process is None and mask is None:
+        return
+    if process is not None:
+        process._MODEL_CACHE.clear()
+        process._FACE_BS_CACHE["rest_key"] = None
+    if mask is not None:
+        mask._release_model()
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return
+    gc.collect()
+    for backend in (getattr(torch, "cuda", None), getattr(torch, "xpu", None)):
+        try:
+            if backend is not None and backend.is_available():
+                backend.empty_cache()
+        except Exception as exc:
+            print(f"[VNCCS] Could not release unused SAM3D allocator memory: {exc}")
+
+
+def _schedule_session_expiry(session_id, session, delay):
+    session.timer = threading.Timer(delay, _expire_pose_model_session, args=(session_id,))
+    session.timer.daemon = True
+    session.timer.start()
+
+
 @progress.model_operation
-def process_image_to_pose_json(image_tensor):
+def _expire_pose_model_session(session_id):
+    session = _MODEL_SESSIONS.get(session_id)
+    if session is not None:
+        remaining = session.deadline - time.monotonic()
+        if remaining > 0:
+            _schedule_session_expiry(session_id, session, remaining)
+        else:
+            close_pose_model_session(session_id)
+
+
+@progress.model_operation
+def open_pose_model_session(keep_models_loaded=False):
+    if len(_MODEL_SESSIONS) >= _MAX_MODEL_SESSIONS:
+        raise PoseModelSessionError("Too many active SAM 3D Body imports. Try again when one finishes.")
+    session_id = uuid4().hex
+    session = _PoseModelSession(keep_models_loaded, time.monotonic() + _MODEL_SESSION_IDLE_SECONDS)
+    _schedule_session_expiry(session_id, session, _MODEL_SESSION_IDLE_SECONDS)
+    _MODEL_SESSIONS[session_id] = session
+    return session_id
+
+
+@progress.model_operation
+def close_pose_model_session(session_id):
+    session = _MODEL_SESSIONS.pop(session_id, None)
+    if session is not None:
+        session.timer.cancel()
+        if not session.keep_models_loaded and not _MODEL_SESSIONS:
+            _release_pose_models()
+
+
+@contextmanager
+def _pose_model_lifetime(keep_models_loaded, model_session_id):
+    session = None
+    if model_session_id is not None:
+        session = _MODEL_SESSIONS.get(model_session_id)
+        if session is None or session.deadline <= time.monotonic():
+            raise PoseModelSessionError("SAM 3D Body import expired or was closed. Restart the import.")
+        keep_models_loaded = session.keep_models_loaded
+
+    try:
+        yield
+    except BaseException as exc:
+        # Inference frames can still own device tensors through the traceback.
+        if not keep_models_loaded:
+            traceback.clear_frames(exc.__traceback__)
+        raise
+    finally:
+        if session is not None:
+            session.deadline = time.monotonic() + _MODEL_SESSION_IDLE_SECONDS
+        elif not keep_models_loaded and not _MODEL_SESSIONS:
+            _release_pose_models()
+
+
+@progress.model_operation
+def process_image_to_pose_json(image_tensor, *, keep_models_loaded=False, model_session_id=None):
+    with _pose_model_lifetime(keep_models_loaded, model_session_id):
+        return _extract_pose_json(image_tensor)
+
+
+def _extract_pose_json(image_tensor):
     try:
         import torch
 
@@ -173,12 +287,19 @@ def process_image_to_pose_json(image_tensor):
 
 
 @progress.model_operation
-def process_pose_json_to_overlay_mesh(pose_data, body_preset=None, pose_adjust=0.0):
+def process_pose_json_to_overlay_mesh(
+    pose_data, body_preset=None, pose_adjust=0.0, *, keep_models_loaded=False, model_session_id=None,
+):
     """Build the same postprocessed MHR mesh used by the SAM render node.
 
     This returns geometry only, so Pose Studio can overlay it in Three.js
     without relying on a 2D render screenshot.
     """
+    with _pose_model_lifetime(keep_models_loaded, model_session_id):
+        return _build_overlay_mesh(pose_data, body_preset, pose_adjust)
+
+
+def _build_overlay_mesh(pose_data, body_preset, pose_adjust):
     try:
         import os
         import torch

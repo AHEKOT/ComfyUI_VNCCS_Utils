@@ -13,7 +13,11 @@ const plan = videoImports.computeVideoSamplePlan({ inTime: 0, outTime: 0.25, tar
 function videoScene() {
     const scene = createScene();
     const { w, viewer, context } = scene;
-    Object.assign(context, videoImports, { DOMException });
+    const sessionRequests = [];
+    Object.assign(context, videoImports, { DOMException, fetch: async (url, options) => {
+        sessionRequests.push([url, options.method]);
+        return { ok: true, json: async () => ({ session_id: "video-session" }) };
+    } });
     w.container.isConnected = true;
     w.hydrateCharacterSceneModels = async () => true;
     w.setInterfaceMode = noop;
@@ -23,7 +27,7 @@ function videoScene() {
     w.captureVideoFrameBlob = async () => new Blob();
     w.requestSAM3DPoseForImage = async () => ({ source: "old video" });
     w.prepareSAM3DRenderFit = async poseData => ({ poseData });
-    return scene;
+    return { ...scene, sessionRequests };
 }
 
 async function replaceScene(scene, action) {
@@ -78,11 +82,18 @@ for (const stage of ["captureVideoFrameBlob", "requestSAM3DPoseForImage", "prepa
 }
 
 test("video cancellation during mesh fitting restores the current scene without applying the late result", async () => {
-    const { w, viewer } = videoScene();
+    const { w, viewer, sessionRequests } = videoScene();
     const controller = new AbortController();
     const original = JSON.stringify(viewer.getPose());
     let finish;
-    w.prepareSAM3DRenderFit = () => new Promise(resolve => { finish = resolve; });
+    w.requestSAM3DPoseForImage = async (_image, { modelSessionId }) => {
+        assert.equal(modelSessionId, "video-session");
+        return {};
+    };
+    w.prepareSAM3DRenderFit = (_poseData, { modelSessionId }) => {
+        assert.equal(modelSessionId, "video-session");
+        return new Promise(resolve => { finish = resolve; });
+    };
     let applied = 0;
     viewer.applySAM3DImport = () => { applied++; return true; };
     const importing = w.importVideoPoseSegment({ pause: noop }, plan, { signal: controller.signal });
@@ -90,6 +101,9 @@ test("video cancellation during mesh fitting restores the current scene without 
     controller.abort();
     finish({ poseData: { source: "cancelled video" } });
     await assert.rejects(importing, error => error.name === "AbortError");
+    assert.deepEqual(sessionRequests, [
+        ["/vnccs/sam3d/model_session", "POST"], ["/vnccs/sam3d/model_session/video-session", "DELETE"],
+    ]);
     assert.equal(applied, 0);
     assert.equal(JSON.stringify(viewer.getPose()), original);
 });
@@ -98,9 +112,14 @@ for (const action of ["workflow", "character"]) {
     test(`failed video request cannot roll back ${action} to the old pose`, async () => {
         const scene = videoScene();
         const { w, viewer, node } = scene;
-        let fail;
-        w.captureVideoFrameBlob = () => new Promise((_resolve, reject) => { fail = reject; });
+        let fail, startCapture;
+        const captureStarted = new Promise(resolve => { startCapture = resolve; });
+        w.captureVideoFrameBlob = () => new Promise((_resolve, reject) => {
+            fail = reject;
+            startCapture();
+        });
         const importing = w.importVideoPoseSegment({ pause: noop }, plan);
+        await captureStarted;
         await replaceScene(scene, action);
         const saved = node.widgets[0].value;
         viewer.setPose = () => assert.fail("obsolete error must not restore the old pose");

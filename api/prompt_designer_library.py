@@ -14,7 +14,7 @@ from ..nodes.prompt_designer_defaults import list_default_cards
 async def document(request):
     try:
         document_id = request.match_info["document_id"]
-        if request.method == "GET":
+        if request.method in {"GET", "HEAD"}:
             result = await asyncio.to_thread(load_document, document_id)
         else:
             limit = (MAX_STATE_CHARS + 1024) * 4

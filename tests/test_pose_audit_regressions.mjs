@@ -161,12 +161,19 @@ for (const action of ["character", "tab", "edit", "remove"]) {
 
 test("SAM image import and overlay discard late responses for another character", async () => {
     const s = createScene();
-    let finish, applied = 0, closed = 0;
+    let finish, startRequest, applied = 0, closed = 0;
+    const requestStarted = new Promise(resolve => { startRequest = resolve; });
     s.w.showImportProgressModal = () => ({ setProgress: noop, setText: noop, update: noop, close: () => closed++ });
     s.context.setInterval = () => 1; s.context.clearInterval = noop;
-    s.w.requestSAM3DPoseForImage = () => new Promise(resolve => { finish = resolve; });
+    s.w.openSAM3DModelSession = async () => "image-session";
+    s.w.closeSAM3DModelSession = async () => {};
+    s.w.requestSAM3DPoseForImage = () => new Promise(resolve => {
+        finish = resolve;
+        startRequest();
+    });
     s.viewer.applySAM3DImport = () => { applied++; return true; };
     const pending = s.w.importSAM3DImageAsPose({ name: "source.png" });
+    await requestStarted;
     s.w.activeCharacterId = "character-2";
     finish({});
     await pending;

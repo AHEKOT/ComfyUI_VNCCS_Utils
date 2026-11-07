@@ -37,6 +37,9 @@ def test_prompt_designer_routes_dispatch_through_the_application(prefix, tmp_pat
         endpoint = "documents/" + "a" * 32
         assert await request("GET", endpoint) == {"state": None, "revision": 0}
         assert await request("PUT", endpoint, {"state": state, "revision": 0}) == {"revision": 1}
+        assert await request("HEAD", endpoint, {
+            "state": {**state, "seed": "5"}, "revision": 1,
+        }) == {"state": state, "revision": 1}
         assert await request("GET", endpoint) == {"state": state, "revision": 1}
         assert (await request("GET", "library"))["cards"] == []
         assert (await request("GET", "defaults"))["total"] > 0

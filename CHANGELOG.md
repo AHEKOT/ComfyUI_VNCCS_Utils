@@ -1,3 +1,17 @@
+# Version 0.7.5
+
+## Pose Studio
+
+* **Progress for connected images.** Analyzing the `pose_image` input opens the same SAM 3D Body dialog as importing an image file. The dialog shows analysis and capture progress, then closes when the run completes, fails, or is cancelled.
+* **Keep Models Loaded.** Pose Studio reuses SAM 3D Body and BiRefNet throughout an import, including across video frames, and releases the models when the import ends by default. Enable **Keep Models Loaded** in Settings to retain them between runs. Pose Library Creator keeps model retention enabled for its recognition and rendering stages.
+* **Capture frame after SAM analysis.** The yellow capture frame keeps its usual margin in the viewport after applying the recovered camera. Exported images use the recovered projection.
+
+## Security
+
+* **Restricted checkpoint loading.** Updated checkpoint readers in the bundled SAM 3D Body and DINOv3 utilities use PyTorch's `weights_only=True` option.
+* **Read-only Prompt Designer requests.** `HEAD` requests follow the document read path. Edits are saved through `PUT`.
+* **Registry checks.** The source scanner checks for unsafe deserialization, runtime package installation, and write operations on `GET` and `HEAD` routes.
+
 # Version 0.7.4
 
 ## Pose Studio

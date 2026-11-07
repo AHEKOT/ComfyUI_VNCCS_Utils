@@ -222,11 +222,11 @@ def save_features_dict(features_dict: Dict[str, torch.Tensor], path: str) -> Non
     _, ext = os.path.splitext(path)
     if ext == ".pt":
         torch.save(features_dict, path)
+    elif ext == ".npz":
+        arrays = [value.cpu().numpy() for value in features_dict.values()]
+        np.savez(path, *arrays, feature_names=np.asarray(list(features_dict), dtype=str))
     elif ext == ".npy":
-        numpy_features_dict = {  # Convert to NumPy arrays (if possible)
-            key: value.cpu().numpy() for key, value in features_dict.items()
-        }
-        np.save(path, numpy_features_dict, allow_pickle=True)
+        raise ValueError("Use the .npz extension to save NumPy feature dictionaries.")
     else:
         raise ValueError(f'Unsupported features dict extension "{ext}"')
 
@@ -236,10 +236,15 @@ def load_features_dict(path: str) -> Dict[str, torch.Tensor]:
 
     _, ext = os.path.splitext(path)
     if ext == ".pt":
-        features_dict = torch.load(path)
+        features_dict = torch.load(path, weights_only=True)
+    elif ext == ".npz":
+        with np.load(path, allow_pickle=False) as archive:
+            features_dict = {
+                key: torch.from_numpy(archive[f"arr_{index}"])
+                for index, key in enumerate(archive["feature_names"].tolist())
+            }
     elif ext == ".npy":
-        numpy_features_dict = np.load(path, allow_pickle=True).item()
-        features_dict = {key: torch.from_numpy(value) for key, value in numpy_features_dict.items()}
+        raise ValueError("Legacy .npy feature dictionaries use pickle. Regenerate the features as .npz or .pt.")
     else:
         raise ValueError(f'Unsupported features dict extension "{ext}"')
 

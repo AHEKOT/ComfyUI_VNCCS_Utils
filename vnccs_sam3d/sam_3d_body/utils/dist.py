@@ -1,7 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import os
-import pickle
 import shutil
 import tempfile
 from typing import Any, Iterable, List, Mapping, Optional, Tuple, Union
@@ -483,8 +482,7 @@ def collect_results(
 
     Args:
         results (list[object]): Result list containing result parts to be
-            collected. Each item of ``result_part`` should be a picklable
-            object.
+            collected. CPU collection supports tensors and primitive containers.
         size (int): Size of the results, commonly equal to length of
             the results.
         device (str): Device name. Optional values are 'cpu', 'gpu' or 'npu'.
@@ -555,8 +553,7 @@ def collect_results_cpu(
 
     Args:
         result_part (list): Result list containing result parts
-            to be collected. Each item of ``result_part`` should be a picklable
-            object.
+            to be collected. CPU collection supports tensors and primitive containers.
         size (int): Size of the results, commonly equal to length of
             the results.
         tmpdir (str | None): Temporal directory for collected results to
@@ -600,8 +597,7 @@ def collect_results_cpu(
         os.makedirs(tmpdir, exist_ok=True)
 
     # dump the part result to the dir
-    with open(os.path.join(tmpdir, f"part_{rank}.pkl"), "wb") as f:  # type: ignore
-        pickle.dump(result_part, f, protocol=2)
+    torch.save(result_part, os.path.join(tmpdir, f"part_{rank}.pt"))  # type: ignore
 
     barrier()
     # collect all parts
@@ -611,15 +607,14 @@ def collect_results_cpu(
         # load results of all parts from tmp dir
         part_list = []
         for i in range(world_size):
-            path = os.path.join(tmpdir, f"part_{i}.pkl")  # type: ignore
+            path = os.path.join(tmpdir, f"part_{i}.pt")  # type: ignore
             if not os.path.exists(path):
                 raise FileNotFoundError(
                     f"{tmpdir} is not an shared directory for "
                     f"rank {i}, please make sure {tmpdir} is a shared "
                     "directory for all ranks!"
                 )
-            with open(path, "rb") as f:
-                part_list.append(pickle.load(f))
+            part_list.append(torch.load(path, weights_only=True))
         # With webdataset, some gpus don't get any data
         # They don't get a shard with nodesplitter.
         # Hence, the zip below can fail, since some elements are length 0.

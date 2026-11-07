@@ -97,10 +97,33 @@ register_unicanvas_routes()
 
 def _vnccs_register_sam3d_pose_import():
     try:
+        import asyncio
         from server import PromptServer
         from aiohttp import web
+        from .vnccs_sam3d.pose_import import PoseModelSessionError, open_pose_model_session, close_pose_model_session
     except Exception:
         return
+
+    @PromptServer.instance.routes.post("/vnccs/sam3d/model_session")
+    async def vnccs_sam3d_open_model_session(request):
+        if not _vnccs_content_length_ok(request, 1024):
+            return web.json_response({"error": "model session payload is too large"}, status=413)
+        try:
+            data = await request.json()
+        except ValueError:
+            return web.json_response({"error": "invalid model session payload"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "invalid model session payload"}, status=400)
+        try:
+            session_id = await asyncio.to_thread(open_pose_model_session, data.get("keep_models_loaded") is True)
+        except PoseModelSessionError as exc:
+            return web.json_response({"error": str(exc)}, status=429)
+        return web.json_response({"session_id": session_id})
+
+    @PromptServer.instance.routes.delete(r"/vnccs/sam3d/model_session/{session_id:[0-9a-f]{32}}")
+    async def vnccs_sam3d_close_model_session(request):
+        await asyncio.to_thread(close_pose_model_session, request.match_info["session_id"])
+        return web.Response(status=204)
 
     @PromptServer.instance.routes.get("/vnccs/sam3d/import_status/{task_id}")
     async def vnccs_sam3d_import_status(request):
@@ -120,7 +143,6 @@ def _vnccs_register_sam3d_pose_import():
         try:
             import io
             import json
-            import asyncio
             import torch
             from PIL import Image
 
@@ -131,6 +153,10 @@ def _vnccs_register_sam3d_pose_import():
             if image_field is None or not hasattr(image_field, "file"):
                 return web.json_response({"error": "missing image"}, status=400)
             task_id = str(post.get("task_id") or "")
+            keep_models_loaded = post.get("keep_models_loaded") == "true"
+            model_session_id = post.get("model_session_id")
+            if model_session_id is not None and not isinstance(model_session_id, str):
+                return web.json_response({"error": "invalid model session ID"}, status=400)
 
             image_bytes = image_field.file.read()
             if len(image_bytes) > _SAM3D_MAX_UPLOAD_BYTES:
@@ -148,7 +174,9 @@ def _vnccs_register_sam3d_pose_import():
                 progress.start_task(task_id)
                 with progress.task_context(task_id):
                     progress.update("Step 1/6: Image uploaded. Preparing SAM 3D Body import...", 2)
-                    return process_image_to_pose_json(image_tensor)
+                    return process_image_to_pose_json(
+                        image_tensor, keep_models_loaded=keep_models_loaded, model_session_id=model_session_id,
+                    )
 
             pose_json = await asyncio.to_thread(run_sam3d_process)
 
@@ -162,6 +190,8 @@ def _vnccs_register_sam3d_pose_import():
                 "pose_json": pose_json,
                 "pose_data": pose_data,
             })
+        except PoseModelSessionError as exc:
+            return web.json_response({"error": str(exc)}, status=409)
         except Exception as e:
             try:
                 from .vnccs_sam3d import progress
@@ -176,14 +206,15 @@ def _vnccs_register_sam3d_pose_import():
     @PromptServer.instance.routes.post("/vnccs/sam3d/render_mesh_overlay")
     async def vnccs_sam3d_render_mesh_overlay(request):
         try:
-            import asyncio
-
             if not _vnccs_content_length_ok(request, 32 * 1024 * 1024):
                 return web.json_response({"error": "mesh overlay payload is too large"}, status=413)
             data = await request.json()
-            pose_data = data.get("pose_data")
+            pose_data = data.get("pose_data") if isinstance(data, dict) else None
             if not isinstance(pose_data, dict):
                 return web.json_response({"error": "missing pose_data"}, status=400)
+            model_session_id = data.get("model_session_id")
+            if model_session_id is not None and not isinstance(model_session_id, str):
+                return web.json_response({"error": "invalid model session ID"}, status=400)
             body_preset = data.get("body_preset") if isinstance(data.get("body_preset"), dict) else {}
             pose_adjust = float(data.get("pose_adjust") or 0.0)
 
@@ -194,10 +225,14 @@ def _vnccs_register_sam3d_pose_import():
                     pose_data,
                     body_preset=body_preset,
                     pose_adjust=pose_adjust,
+                    keep_models_loaded=data.get("keep_models_loaded") is True,
+                    model_session_id=model_session_id,
                 )
 
             mesh_data = await asyncio.to_thread(build_overlay)
             return web.json_response({"status": "success", "mesh": mesh_data})
+        except PoseModelSessionError as exc:
+            return web.json_response({"error": str(exc)}, status=409)
         except Exception as e:
             import traceback
             traceback.print_exc()

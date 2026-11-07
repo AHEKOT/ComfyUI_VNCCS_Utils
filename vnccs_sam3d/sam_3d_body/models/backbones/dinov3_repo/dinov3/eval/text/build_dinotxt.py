@@ -46,7 +46,7 @@ def load_backbone_checkpoint(
 ):
     if not Path(checkpoint_path).is_dir():  # PyTorch standard checkpoint
         logger.info(f"Loading pretrained weights from {checkpoint_path}")
-        state_dict = torch.load(checkpoint_path, map_location="cpu")
+        state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
         if "register_tokens" in state_dict:
             state_dict["storage_tokens"] = state_dict["register_tokens"]
             del state_dict["register_tokens"]

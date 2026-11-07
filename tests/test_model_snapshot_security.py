@@ -20,7 +20,8 @@ def test_model_snapshot_uses_pinned_revision_on_every_attempt(tmp_path, monkeypa
     package = ModuleType(package_name)
     package.__path__ = []
     package.progress = SimpleNamespace(update=mock.Mock(), SnapshotDownloadTqdm=object,
-                                       download_phase=lambda *_args: contextlib.nullcontext())
+                                       download_phase=lambda *_args: contextlib.nullcontext(),
+                                       model_operation=lambda fn: fn)
     processing = ModuleType(f"{package_name}.processing")
     processing.__path__ = []
     calls = []

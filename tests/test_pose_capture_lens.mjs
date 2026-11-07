@@ -681,15 +681,25 @@ test("SAM projection owns the lens while applied and the manual lens returns aft
     const { w, viewer } = scene;
     slide(scene, "cam_fov_deg", 60);
     slide(scene, "cam_distance", 70);
-    const frame = { fov: 30, cameraPosition: { x: 1, y: 12, z: 40 }, projection_zoom: 0.8 };
-    viewer.setSAMProjectionCameraFrame(frame);
-    w._samCameraModeActive = true;
+    viewer.captureFrame = new viewer.THREE.Object3D();
+    const frameTop = () => {
+        viewer.captureFrame.updateMatrixWorld(true);
+        return new viewer.THREE.Vector3(0, 1, 0).applyMatrix4(viewer.captureFrame.matrixWorld).project(viewer.camera).y;
+    };
     w.applyCameraToViewer(true);
+    const normalFrameTop = frameTop();
+    w._samCameraModeActive = true;
+    for (const [fov, zoom] of [[30, 0.5], [55, 1]]) {
+        viewer.setSAMProjectionCameraFrame({ fov, cameraPosition: { x: 1, y: 12, z: 40 }, projection_zoom: zoom });
+        w.applyCameraToViewer(true);
+        close(frameTop(), normalFrameTop, 1e-9, "SAM keeps the normal margin around the capture frame");
+        close(viewer.captureCamera.fov, fov, 1e-9, "SAM keeps its capture FOV");
+        close(viewer.captureCamera.position.z, 40, 1e-9);
+        close(viewer.captureCamera.zoom, zoom, 1e-9, "SAM keeps its capture zoom");
+        viewer.restoreEditorLens();
+        close(frameTop(), normalFrameTop, 1e-9, "restoring the editor lens keeps the margin");
+    }
     w.syncCameraWidgets();
-    assert.equal(viewer.captureCamera.fov, 30, "SAM projection keeps its own FOV");
-    close(viewer.camera.fov, 45, 1e-9, "SAM keeps the default editor view");
-    close(viewer.captureCamera.position.z, 40, 1e-9);
-    close(viewer.captureCamera.zoom, 0.8, 1e-9);
     assert.equal(w.exportWidgets.cam_fov_deg.disabled, true);
     assert.equal(w.exportWidgets.cam_distance.disabled, true);
     assert.equal(w._captureLensSamNote.style.display, "block");

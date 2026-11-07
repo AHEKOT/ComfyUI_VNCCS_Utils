@@ -154,7 +154,7 @@ class VNCCS_PoseLibraryCreator:
 
         progress.start_task(run_id)
         with progress.task_context(run_id):
-            sam_pose = json.loads(process_image_to_pose_json(image))
+            sam_pose = json.loads(process_image_to_pose_json(image, keep_models_loaded=True))
         interrupt_check()
         self._emit(node_id, run_id, "render", "Rendering the reconstructed pose")
         start = time.time()

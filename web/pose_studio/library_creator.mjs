@@ -130,7 +130,7 @@ export class PoseLibraryCreatorWidget {
             studio.container.inert = true;
             studio.container.setAttribute("aria-hidden", "true");
             document.body.append(studio.container);
-            Object.assign(studio.exportParams, { samApplyCamera: true, capture_image_size: true });
+            Object.assign(studio.exportParams, { samApplyCamera: true, capture_image_size: true, keep_models_loaded: true });
             if (!studio.applyCapturedImageSize(detail.width, detail.height)) throw new Error("Invalid pose capture dimensions.");
             await studio.loadModel(false);
             assertCurrent();
