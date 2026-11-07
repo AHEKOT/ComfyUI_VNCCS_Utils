@@ -86,6 +86,27 @@ test("a library pose only replaces the active prompt with a nonblank saved promp
     }
 });
 
+test("a library pose set keeps the active prompt when its first pose has no prompt", async () => {
+    const { w, context } = createScene();
+    w.userPromptArea = { value: "", style: {}, scrollHeight: 0 };
+    for (const prompt of [undefined, "", " \n\t", "saved prompt"]) {
+        w.addTab();
+        w.setPosePrompt(w.activeTab, "current prompt");
+        context.fetch = async () => ({
+            ok: true,
+            json: async () => ({
+                pose: { type: "pose_set", poses: [{ bones: {}, prompt }, { bones: {}, prompt: "second pose" }] },
+            }),
+        });
+        await w.loadFromLibrary("Library pose set");
+        const expected = prompt?.trim() ? prompt : "current prompt";
+        assert.equal(w.activeTab, 0);
+        assert.equal(w.getPosePrompt(), expected);
+        assert.equal(w.userPromptArea.value, expected);
+        assert.equal(w.getPosePrompt(1), "second pose");
+    }
+});
+
 for (const format of ["FBX", "HMR2", "OpenPose"]) {
     test(`failed ${format} file import preserves SAM view and character placement`, async () => {
         const { w, viewer, node, context } = createScene();

@@ -185,7 +185,7 @@ confirmation. At least one character always remains in the scene.
 
 ### Moving and Rotating a Whole Character
 
-The bar at the top-left of the viewport switches what a left drag edits:
+The bar at the top center of the viewport switches what a left drag edits.
 
 - **Pose** (default) - the existing joint FK/IK editing. Nothing changes for
   workflows that never leave this mode.

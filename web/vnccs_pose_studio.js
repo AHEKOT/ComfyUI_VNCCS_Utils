@@ -36,7 +36,7 @@ import {
     serializePoseStudioCharacter,
 } from "./pose_studio/characters.mjs?v=20260908.14";
 import { CHARACTER_POSITION_LIMITS, clampCharacterPosition, modelRotationQuaternion, wrapDegrees } from "./pose_studio/character_transform.mjs?v=20261102.2";
-import { PoseCharacterTransformController } from "./pose_studio/character_transform_controller.mjs?v=20261105.4";
+import { PoseCharacterTransformController } from "./pose_studio/character_transform_controller.mjs?v=20261107.2";
 import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
@@ -6748,7 +6748,7 @@ class PoseStudioWidget {
         return next;
     }
 
-    applyCharacterPosition(position, { link = true } = {}) {
+    applyCharacterPosition(position, { link = true, beforeMove } = {}) {
         const active = this.getActiveCharacter();
         if (!active) return;
         const members = link ? this.linkedPassiveCharacters() : [];
@@ -6756,19 +6756,23 @@ class PoseStudioWidget {
         const next = this.constrainCharacterPosition(position, transforms);
         const { x, y, z } = active.transform;
         const delta = { x: next.x - x, y: next.y - y, z: next.z - z };
-        if (delta.x || delta.y || delta.z) {
-            members.forEach((character, index) => {
-                const transform = transforms[index];
-                this.applyPassiveCharacterPlacement(character, { transform: {
-                    ...transform, x: transform.x + delta.x, y: transform.y + delta.y, z: transform.z + delta.z,
-                } });
-            });
-        }
         this.pendingAgeCameraFit = false;
+        if (!delta.x && !delta.y && !delta.z) {
+            this.syncCameraWidgets();
+            return false;
+        }
+        beforeMove?.();
+        members.forEach((character, index) => {
+            const transform = transforms[index];
+            this.applyPassiveCharacterPlacement(character, { transform: {
+                ...transform, x: transform.x + delta.x, y: transform.y + delta.y, z: transform.z + delta.z,
+            } });
+        });
         active.transform.z = next.z;
         this.exportParams.cam_offset_x = next.x;
         this.exportParams.cam_offset_y = next.y;
         this.persistActivePoseCameraParams();
+        return true;
     }
 
     applyPassiveCharacterPlacement(character, { transform, rotation }) {
@@ -8564,6 +8568,12 @@ class PoseStudioWidget {
         let active = false;
         let pointer = false;
         let key = false;
+        let recorded = false;
+        const record = () => {
+            if (recorded || this.isAnimationMode()) return;
+            this.viewer?.recordState?.();
+            recorded = true;
+        };
         const begin = () => {
             if (active) return;
             this._finishPoseGesture?.();
@@ -8581,11 +8591,11 @@ class PoseStudioWidget {
                     return [character, JSON.stringify(character.animationState)];
                 });
             }
-            if (recordPose && !this.isAnimationMode()) this.viewer?.recordState?.();
+            if (recordPose) record();
         };
         const finish = () => {
             if (!active) return;
-            active = pointer = key = false;
+            active = pointer = key = recorded = false;
             this._poseGestureActive = false;
             this._finishPoseGesture = null;
             if (animationTiming) this._settingsTimingBaseline = null;
@@ -8607,6 +8617,7 @@ class PoseStudioWidget {
         control.addEventListener("lostpointercapture", finish);
         control.addEventListener("keyup", () => { if (key) finish(); });
         control.addEventListener("blur", finish);
+        return record;
     }
 
     createSliderNumber(slider, label, digits = 2) {
@@ -8984,12 +8995,13 @@ class PoseStudioWidget {
             if (axis === "y") slider.setAttribute("aria-orientation", "vertical");
 
             const number = this.createSliderNumber(slider, `Camera ${label.textContent}`);
-            this.trackPoseGesture(slider, { recordPose: true });
+            const record = this.trackPoseGesture(slider);
             slider.addEventListener("input", () => {
-                this.applyCharacterPosition({
+                const moved = this.applyCharacterPosition({
                     x: this.exportParams.cam_offset_x, y: this.exportParams.cam_offset_y,
                     z: this.getActiveCharacter()?.transform.z, [axis]: Number(slider.value),
-                });
+                }, { beforeMove: record });
+                if (!moved) return;
                 this.applyCameraToViewer(true);
                 this.syncToNode(false, { skipCapture: true });
             });
@@ -9006,7 +9018,15 @@ class PoseStudioWidget {
         const ctx = canvas.getContext("2d");
 
         // Interaction State
-        let isDragging = false;
+        let drag = null;
+        const beforeDragMove = () => {
+            if (drag.moved) return;
+            drag.moved = true;
+            this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
+            if (!this.isAnimationMode() && this.linkedPassiveCharacters().length) {
+                this.viewer?.recordState?.();
+            }
+        };
 
         const updateFromMouse = (e) => {
             const pointer = this.getCanvasPointerPoint(canvas, e);
@@ -9059,37 +9079,35 @@ class PoseStudioWidget {
 
             const next = this.viewer?.characterTranslationForFramePoint(normX, -normY);
             if (!next) return;
-            this.applyCharacterPosition(next);
-
-            // Sync Viewport
-            this.applyCameraToViewer(true);
+            if (this.applyCharacterPosition(next, { beforeMove: beforeDragMove })) this.applyCameraToViewer(true);
         };
 
+        const finishDrag = (event) => {
+            if (!drag || (event && event.pointerId !== drag.pointerId)) return;
+            const { pointerId, moved, restoreToken } = drag;
+            drag = null;
+            this._finishPoseGesture = null;
+            if (canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId);
+            if (moved && !this._disposed && restoreToken === this._poseDataRestoreToken) this.syncToNode(false);
+        };
         canvas.addEventListener("pointerdown", (e) => {
-            if (!isDragging && !this.isAnimationMode() && this.linkedPassiveCharacters().length) {
-                this._finishPoseGesture?.();
-                this.viewer?.recordState?.();
-            }
+            if (e.button !== 0 || drag) return;
+            this._finishPoseGesture?.();
+            drag = { pointerId: e.pointerId, moved: false, restoreToken: this._poseDataRestoreToken };
             canvas.setPointerCapture(e.pointerId);
-            isDragging = true;
+            this._finishPoseGesture = finishDrag;
             updateFromMouse(e);
         });
 
         canvas.addEventListener("pointermove", (e) => {
-            if (isDragging) updateFromMouse(e);
+            if (!drag || e.pointerId !== drag.pointerId) return;
+            if (drag.restoreToken !== this._poseDataRestoreToken) finishDrag(e);
+            else updateFromMouse(e);
         });
 
-        const finishDrag = (e) => {
-            if (isDragging) {
-                if (e && canvas.hasPointerCapture(e.pointerId)) {
-                    canvas.releasePointerCapture(e.pointerId);
-                }
-                isDragging = false;
-                this.syncToNode(false);
-            }
-        };
         canvas.addEventListener("pointerup", finishDrag);
         canvas.addEventListener("pointercancel", finishDrag);
+        canvas.addEventListener("lostpointercapture", finishDrag);
 
         const draw = () => {
             // Clear
@@ -9196,7 +9214,6 @@ class PoseStudioWidget {
         linkBtn.title = "Move all characters together and link the Model Rotation controls";
         linkBtn.setAttribute("aria-pressed", "false");
         linkBtn.onclick = () => {
-            finishDrag();
             this._finishPoseGesture?.();
             this.linkCharacterTransforms = !this.linkCharacterTransforms;
             linkBtn.setAttribute("aria-pressed", String(this.linkCharacterTransforms));
@@ -9952,10 +9969,12 @@ class PoseStudioWidget {
         return {
             mesh: { ...this.meshParams }, transform: { ...this.getActiveCharacter()?.transform },
             cameraParams: this.currentCameraParams(), prompt: this.getPosePrompt(),
+            animationBaseTransform: { ...this.animationState.baseTransform },
             passivePlacements: this.characters.filter(character => character.id !== this.activeCharacterId).map(character => ({
                 id: character.id,
                 transform: this.characterTransformForScene(character),
                 rotation: this.passiveCharacterRotation(character),
+                animationBaseTransform: { ...character.animationState.baseTransform },
             })),
         };
     }
@@ -9982,6 +10001,7 @@ class PoseStudioWidget {
             this.viewer.restoreEditorLens?.();
             this.syncCameraWidgets();
         }
+        if (context?.animationBaseTransform) this.animationState.baseTransform = context.animationBaseTransform;
         for (const placement of context?.passivePlacements || []) {
             const passive = this.characters.find(character => character.id === placement.id);
             if (!passive) continue;
@@ -9991,6 +10011,7 @@ class PoseStudioWidget {
                 ? placement.transform : null;
             const rotation = placement.rotation.some((value, index) => value !== currentRotation[index]) ? placement.rotation : null;
             if (transform || rotation) this.applyPassiveCharacterPlacement(passive, { transform, rotation });
+            if (placement.animationBaseTransform) passive.animationState.baseTransform = placement.animationBaseTransform;
         }
         if (context?.prompt !== undefined) this.setPosePrompt(this.activeTab, context.prompt);
         this.syncCharacterEditorControls();
@@ -13986,7 +14007,7 @@ class PoseStudioWidget {
         this.syncToNode(false, { skipCapture: true, skipAnimationHistory: true });
     }
 
-    loadPoseSetAsset(asset) {
+    loadPoseSetAsset(asset, { fallbackPrompt } = {}) {
         const sourcePoses = Array.isArray(asset) ? asset : asset?.poses;
         if (!Array.isArray(sourcePoses) || !sourcePoses.length) {
             throw new Error("Pose set does not contain poses.");
@@ -13994,11 +14015,15 @@ class PoseStudioWidget {
         sourcePoses.forEach(pose => this.validateImportedPose(pose));
         this._poseDataRestoreError = null;
 
+        this._finishPoseGesture?.();
         this.setEditorMode("image", { sync: false });
         this.clearSAMCameraMode();
         const activeCharacter = this.getActiveCharacter();
-        this.poses = sourcePoses.map(sourcePose => {
+        this.poses = sourcePoses.map((sourcePose, index) => {
             const pose = JSON.parse(JSON.stringify(sourcePose || {}));
+            if (index === 0 && fallbackPrompt !== undefined && !(typeof pose.prompt === "string" && pose.prompt.trim())) {
+                pose.prompt = fallbackPrompt;
+            }
             const savedCamera = pose.cameraParams;
             this.stripSceneCameraFromPose(pose);
             pose.cameraParams = resolveCaptureCameraParams(
@@ -14018,6 +14043,7 @@ class PoseStudioWidget {
         this.poseCaptures = [];
         this.lightingPrompts = [];
         this.activeTab = 0;
+        this.syncPromptFieldToActiveTab();
         this.ensurePoseCameraParams();
         this.restoreActivePoseCameraParams({ updateViewer: false });
         this.updateTabs();
@@ -14106,7 +14132,7 @@ class PoseStudioWidget {
                     if (!data.pose.poses.length) throw new Error("Pose set does not contain poses.");
                     data.pose.poses.forEach(pose => this.validateImportedPose(pose));
                     if (!this.isAnimationMode()) this.viewer?.recordState?.();
-                    this.loadPoseSetAsset(data.pose);
+                    this.loadPoseSetAsset(data.pose, { fallbackPrompt: this.getPosePrompt() });
                 } else if (
                     assetType === "animation"
                     && Array.isArray(data.pose.characters)

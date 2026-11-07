@@ -180,13 +180,13 @@ test("loading a scene-format pose preserves Pose Manager while animations open S
     );
     assert.match(
         dispatchMethod,
-        /data\.pose\?\.type === "pose_set"[\s\S]*this\.loadPoseSetAsset\(data\.pose\)/,
+        /data\.pose\?\.type === "pose_set"[\s\S]*this\.loadPoseSetAsset\(data\.pose, \{ fallbackPrompt: this\.getPosePrompt\(\) \}\)/,
     );
 });
 
 
 test("only explicit pose-set assets replace the Pose Manager pose list", () => {
-    const setStart = poseStudioSource.indexOf("loadPoseSetAsset(asset)");
+    const setStart = poseStudioSource.indexOf("\n    loadPoseSetAsset(asset,");
     const setEnd = poseStudioSource.indexOf("\n    loadAnimationLibraryAsset", setStart);
     const setMethod = poseStudioSource.slice(setStart, setEnd);
     assert.match(setMethod, /this\.poses = sourcePoses\.map/);

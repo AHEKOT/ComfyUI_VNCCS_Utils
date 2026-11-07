@@ -324,6 +324,9 @@ test("Move & Rotate All preserves each character's offsets and undoes grouped ed
     await w.addCharacter();
     w.applyCharacterPosition({ x: 4, y: -1, z: 2 });
     w.setModelRotationAxis("y", 15);
+    first.animationState.baseTransform.x = 15;
+    const active = w.getActiveCharacter();
+    active.animationState.baseTransform.x = 21;
     const passive = viewer.passiveCharacters.get(first.id).mesh;
     const toggle = radar.children.find(child => child.textContent === "Move & Rotate All");
     toggle.click();
@@ -343,8 +346,12 @@ test("Move & Rotate All preserves each character's offsets and undoes grouped ed
     viewer.undo();
     close(viewer.skinnedMesh.position.x, 4);
     close(passive.position.x, -6);
+    close(first.animationState.baseTransform.x, 15);
+    close(active.animationState.baseTransform.x, 21);
     viewer.redo();
     close(passive.position.x, 0);
+    close(first.animationState.baseTransform.x, 0);
+    close(active.animationState.baseTransform.x, 10);
 
     toggle.click();
     viewer.recordState();
@@ -364,6 +371,61 @@ test("Move & Rotate All preserves each character's offsets and undoes grouped ed
     w.setModelRotationAxis("y", 60);
     close(passive.position.x, -50);
     close(passive.rotation.y * 180 / Math.PI, 5);
+});
+
+test("linked Camera input at the group limit preserves Redo", async () => {
+    const { w, viewer, radar } = createScene({ skinned: true });
+    w.applyCharacterPosition({ x: -50, y: 0, z: 0 });
+    await w.addCharacter();
+    w.applyCharacterPosition({ x: 4, y: 0, z: 0 });
+    radar.children.find(child => child.textContent === "Move & Rotate All").click();
+    viewer.recordState();
+    w.applyCharacterPosition({ x: 8, y: 0, z: 0 });
+    viewer.undo();
+
+    const number = w.exportWidgets.cam_offset_x._vnccsNumberInput;
+    number.value = "-45";
+    number.emit("input");
+    number.emit("blur");
+    close(viewer.skinnedMesh.position.x, 4);
+    assert.equal(number.value, "4.00");
+    assert.equal(viewer.history.length, 0);
+    assert.equal(viewer.future.length, 1);
+    viewer.redo();
+    close(viewer.skinnedMesh.position.x, 8);
+});
+
+test("a linked radar drag belongs to its pointer and ends before a pose switch", async () => {
+    const { w, viewer, radar, pad } = createScene({ skinned: true });
+    const first = w.getActiveCharacter();
+    await w.addCharacter();
+    w.addTab();
+    w.switchTab(0);
+    radar.children.find(child => child.textContent === "Move & Rotate All").click();
+    const positions = () => [
+        viewer.skinnedMesh.position.x,
+        viewer.passiveCharacters.get(first.id).mesh.position.x,
+    ];
+    const point = (pointerId, clientX) => ({ pointerId, clientX, clientY: 70 });
+    pad.emit("pointerdown", point(1, 80));
+    assert.equal(viewer.history.length, 1);
+    const firstMove = positions();
+    pad.emit("pointerdown", point(2, 100));
+    pad.emit("pointermove", point(2, 110));
+    pad.emit("pointerup", point(2, 110));
+    w._handleDocumentPointerUp({ pointerId: 2 });
+    assert.deepEqual(positions(), firstMove);
+    pad.emit("pointermove", point(1, 90));
+    assert.notDeepEqual(positions(), firstMove);
+    assert.equal(viewer.history.length, 1);
+
+    w.switchTab(1);
+    assert.equal(pad.hasPointerCapture(1), false);
+    const newPose = positions();
+    pad.emit("pointermove", point(1, 110));
+    pad.emit("pointerup", point(1, 110));
+    assert.deepEqual(positions(), newPose);
+    assert.equal(viewer.history.length, 0);
 });
 
 test("Move & Rotate All uses the existing animation Auto-Key and Undo", async () => {
