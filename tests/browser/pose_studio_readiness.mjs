@@ -10,7 +10,10 @@ const { chromium } = createRequire(new URL("../e2e/package.json", import.meta.ur
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const output = resolve(process.argv[3] || join(root, "tests/e2e/evidence/pose-readiness"));
 await mkdir(output, { recursive: true });
-const uploads = [], errors = [], report = [];
+const uploads = [], errors = [], report = [], modelRetention = [];
+const modelSessions = [];
+const sessionId = "1".repeat(32);
+let poseInputStatus = { message: "Step 3/6: Segmenting the person.", progress: 54 };
 const html = `<!doctype html><meta charset="utf-8"><title>Pose Studio readiness</title>
 <style>body{margin:20px;background:#202024}#host{border:2px solid #555;box-sizing:content-box;transform-origin:top left}header{height:28px;color:white;background:#303036;padding-left:10px}#mount{height:calc(100% - 28px);padding:0 10px 10px;box-sizing:border-box;display:flex}#mount>div{flex:1;min-width:0}</style>
 <div id="host"><header>VNCCS Pose Studio · 761</header><div id="mount"></div></div>
@@ -30,7 +33,8 @@ class Node {
 await extension.beforeRegisterNodeDef(Node,{name:'VNCCS_PoseStudio'});
 window.saved=JSON.stringify({poses:[{modelRotation:[0,0,0],prompt:'First pose'},{modelRotation:[0,0.3,0],prompt:'Second pose'}],activeTab:1,export:{view_width:256,view_height:256,skin_type:'dummy_white',interface_mode:'studio',debugMode:false,manager_auto_analyze_proportions:false},legacy_fixture:'preserved'});
 window.setup=()=>{window.node=new Node();app.graph._nodes=[node];node.onNodeCreated();window.widget=node.studioWidget;node.widgets[0].value=saved;node.onConfigure({});};
-window.sync=(event,token)=>api.emit(event,{node_id:'761',sync_token:token,pose_data:{},apply_mode:'manager_proportions'});
+window.sync=(event,token,pose)=>api.emit(event,{node_id:'761',sync_token:token,pose_data:pose || {},apply_mode:pose ? 'pose' : 'manager_proportions'});
+window.poseInputProgress=(token,active)=>api.emit('vnccs_pose_image_progress',{node_id:'761',sync_token:token,active});
 window.ready=true;
 </script>`;
 const mime = { ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml" };
@@ -51,6 +55,29 @@ const server = createServer(async (request, response) => {
             body = await readFile(path); type = mime[extname(path)] || "application/octet-stream";
         } else if (url.pathname === "/vnccs/pose_library/list") body = JSON.stringify({ poses: [] });
         else if (url.pathname === "/vnccs/pose_library/repositories/auto_refresh") body = "{}";
+        else if (url.pathname.startsWith("/vnccs/sam3d/import_status/input-")) body = JSON.stringify(poseInputStatus);
+        else if (url.pathname === "/vnccs/sam3d/model_session" && request.method === "POST") {
+            let raw = ""; for await (const chunk of request) raw += chunk;
+            modelSessions.push(["open", JSON.parse(raw).keep_models_loaded]);
+            body = JSON.stringify({ session_id: sessionId });
+        } else if (url.pathname === `/vnccs/sam3d/model_session/${sessionId}` && request.method === "DELETE") {
+            modelSessions.push(["close", sessionId]);
+            response.writeHead(204).end();
+            return;
+        }
+        else if (url.pathname === "/vnccs/sam3d/process_image_to_pose_json" || url.pathname === "/vnccs/sam3d/render_mesh_overlay") {
+            let raw = ""; for await (const chunk of request) raw += chunk;
+            if (url.pathname.endsWith("process_image_to_pose_json")) {
+                modelRetention.push(raw.match(/name="keep_models_loaded"\r\n\r\n(true|false)\r\n/)?.[1] === "true");
+                modelSessions.push(["image", raw.match(/name="model_session_id"\r\n\r\n([^\r\n]+)\r\n/)?.[1]]);
+                body = JSON.stringify({ pose_data: {} });
+            } else {
+                const data = JSON.parse(raw);
+                modelRetention.push(data.keep_models_loaded);
+                if (data.model_session_id) modelSessions.push(["mesh", data.model_session_id]);
+                body = JSON.stringify({ mesh: {} });
+            }
+        }
         else if (["/vnccs/pose_sync/upload_capture", "/vnccs/pose_captures_upload", "/vnccs/pose_animation_upload"].includes(url.pathname)) {
             let raw = ""; for await (const chunk of request) raw += chunk;
             if (url.pathname.includes("pose_sync")) uploads.push(JSON.parse(raw));
@@ -80,6 +107,9 @@ try {
         const modules = new Promise(resolve => { releaseModules = resolve; });
         await page.route("**/*", async route => {
             const url = new URL(route.request().url());
+            if (url.hostname === "cdn.buymeacoffee.com") {
+                return route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg"/>' });
+            }
             if (url.origin !== origin && !["blob:", "data:"].includes(url.protocol)) return route.abort();
             if (url.pathname.endsWith("/OrbitControls.js")) await modules;
             return route.continue();
@@ -137,6 +167,74 @@ try {
                 assert.deepEqual(await geometry(page), before, "pose selection does not move panels");
                 await page.locator("#host").screenshot({ path: join(output, scenario === "sam" ? "after-sam.png" : width === 900 ? "after.png" : `after-${width}.png`) });
                 report.push({ scenario, width, height, scale, bounds });
+                if (scenario === "sam") {
+                    const modal = page.locator(".vnccs-ps-canvas-wrap .vnccs-ps-modal-overlay");
+                    await page.evaluate(() => poseInputProgress("input-cancelled", true));
+                    assert.equal(await modal.count(), 1);
+                    await page.evaluate(() => poseInputProgress("input-cancelled", false));
+                    assert.equal(await modal.count(), 0, "server can close the modal without a pose result");
+                    await page.evaluate(() => poseInputProgress("input-current", true));
+                    await modal.getByText("54%").waitFor();
+                    await page.evaluate(() => poseInputProgress("input-cancelled", false));
+                    poseInputStatus = { message: "Step 4/6: 3D body pose reconstructed.", progress: 76 };
+                    await modal.getByText("76%").waitFor();
+                    assert.deepEqual(await geometry(page), before, "progress does not move panels");
+                    await page.locator("#host").screenshot({ path: join(output, "after-sam-progress.png") });
+                    report.push({ scenario: "pose input progress", width, height, scale, bounds, modal: await modal.boundingBox() });
+                    await page.evaluate(() => sync("vnccs_apply_sam3d_pose", "input-current", {
+                        joint_names: ["pelvis"], joint_rotations: [[[1, 0, 0], [0, 1, 0], [0, 0, 1]]],
+                    }));
+                    assert.equal(uploads.at(-1).node_id, "761_input-current");
+                    assert.equal(uploads.at(-1).sync_error, undefined);
+                    assert.equal(await modal.count(), 0);
+                    assert.deepEqual(await geometry(page), before, "capture does not move panels");
+                } else if (scenario === "plain") {
+                    const panel = page.locator(".vnccs-ps-settings-panel");
+                    const keepModels = panel.getByRole("checkbox", { name: /Keep Models Loaded/ });
+                    const close = panel.locator(".vnccs-ps-settings-close");
+                    const sendPoseRequests = () => page.evaluate(async () => {
+                        const modelSessionId = await widget.openSAM3DModelSession();
+                        try {
+                            await widget.requestSAM3DPoseForImage(new Blob(["fixture"], { type: "image/jpeg" }), { modelSessionId });
+                            await widget.fetchSAM3DRenderMesh({}, { modelSessionId });
+                        } finally {
+                            await widget.closeSAM3DModelSession(modelSessionId);
+                        }
+                    });
+                    await page.evaluate(() => widget.settingsBtn.click());
+                    assert.equal(await keepModels.isChecked(), false);
+                    await keepModels.scrollIntoViewIfNeeded();
+                    const checkbox = await keepModels.boundingBox(), settings = await panel.boundingBox();
+                    assert.ok(checkbox.x >= settings.x && checkbox.x + checkbox.width <= settings.x + settings.width);
+                    assert.ok(checkbox.y >= settings.y && checkbox.y + checkbox.height <= settings.y + settings.height);
+                    await page.locator("#host").screenshot({ path: join(output, `after-settings-${width}.png`) });
+                    report.push({ scenario: "model retention settings", width, height, scale, checkbox, settings });
+                    if (width === 900) {
+                        await sendPoseRequests();
+                        assert.deepEqual(modelRetention.slice(-2), [false, false]);
+                        assert.deepEqual(modelSessions.slice(-4), [
+                            ["open", false], ["image", sessionId], ["mesh", sessionId], ["close", sessionId],
+                        ]);
+                        await keepModels.check();
+                        const enabledState = await page.evaluate(() => node.widgets[0].value);
+                        assert.equal(JSON.parse(enabledState).export.keep_models_loaded, true);
+                        await sendPoseRequests();
+                        assert.deepEqual(modelRetention.slice(-2), [true, true]);
+                        assert.deepEqual(modelSessions.slice(-4), [
+                            ["open", true], ["image", sessionId], ["mesh", sessionId], ["close", sessionId],
+                        ]);
+                        await keepModels.uncheck();
+                        await close.click();
+                        await page.evaluate(value => { node.widgets[0].value = value; node.onConfigure({}); }, enabledState);
+                        await page.waitForFunction(() => !widget._poseDataRestorePending && widget.exportParams.keep_models_loaded === true);
+                        await page.evaluate(() => { node.widgets[0].value = saved; node.onConfigure({}); });
+                        await page.waitForFunction(() => !widget._poseDataRestorePending && widget.exportParams.keep_models_loaded === false);
+                        await page.evaluate(() => widget.settingsBtn.click());
+                        assert.equal(await keepModels.isChecked(), false);
+                    }
+                    await close.click();
+                    assert.deepEqual(await geometry(page), before, "settings does not move panels");
+                }
             }
             assert.deepEqual(consoleErrors, []);
         }

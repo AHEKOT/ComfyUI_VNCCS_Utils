@@ -4801,8 +4801,8 @@ export class PoseViewerCore {
         // The editor lens scales with the capture lens instead, so the viewport shows
         // the capture perspective and the frame keeps its default 30 degree size.
         this.camera.position.copy(this.captureCamera.position);
-        this.camera.fov = this._samProjectionCameraFrame ? POSE_STUDIO_EDITOR_FOV : this._editorFovForCaptureLens();
-        this.camera.zoom = this._samProjectionCameraFrame ? zoom : this.captureCamera.zoom;
+        this.camera.fov = this._editorFovForCaptureLens();
+        this.camera.zoom = this.captureCamera.zoom;
         this.camera.updateProjectionMatrix();
 
         const target = this._samProjectionCameraFrame
@@ -4827,7 +4827,7 @@ export class PoseViewerCore {
 
     _editorFovForCaptureLens() {
         const halfAngle = degrees => Math.tan(degrees * Math.PI / 360);
-        return Math.atan(halfAngle(this.captureLens.fov_deg) * halfAngle(POSE_STUDIO_EDITOR_FOV) / halfAngle(POSE_STUDIO_CAPTURE_FOV)) * 360 / Math.PI;
+        return Math.atan(halfAngle(this.captureCamera.fov) * halfAngle(POSE_STUDIO_EDITOR_FOV) / halfAngle(POSE_STUDIO_CAPTURE_FOV)) * 360 / Math.PI;
     }
 
     // Lens edits on a view the user moved: keep its direction and pivot and show the
@@ -4854,9 +4854,8 @@ export class PoseViewerCore {
     // snapshot has no editor lens, so it is rebuilt here from the restored capture lens.
     restoreEditorLens() {
         if (!this.camera || !this.captureCamera) return;
-        const samProjection = !!this._samProjectionCameraFrame;
-        this.camera.fov = samProjection ? POSE_STUDIO_EDITOR_FOV : this._editorFovForCaptureLens();
-        this.camera.zoom = samProjection ? 1 : this.captureCamera.zoom;
+        this.camera.fov = this._editorFovForCaptureLens();
+        this.camera.zoom = this.captureCamera.zoom;
         this.camera.updateProjectionMatrix();
         this._viewLensDistance = this.captureLens.distance;
         // A view restored at the capture camera follows later lens edits again.

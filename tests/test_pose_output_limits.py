@@ -43,6 +43,11 @@ def _load_pose_studio_module():
 
 
 POSE_STUDIO = _load_pose_studio_module()
+SAM_SESSION_MODULE = "vnccs_pose_limit_testpkg.vnccs_sam3d.pose_import"
+SAM_SESSION = types.SimpleNamespace(
+    open_pose_model_session=lambda _keep: "model-session",
+    close_pose_model_session=lambda _session: None,
+)
 
 
 class PoseOutputLimitTests(unittest.TestCase):
@@ -85,17 +90,29 @@ class PoseOutputLimitTests(unittest.TestCase):
 
     def test_sam_analysis_failure_does_not_reuse_existing_pose(self):
         node = POSE_STUDIO.VNCCS_PoseStudio()
+        closed = []
+        events = []
+        server = types.SimpleNamespace(PromptServer=types.SimpleNamespace(instance=types.SimpleNamespace(
+            client_id="executing-browser", send_sync=lambda event, payload, sid: events.append((event, payload, sid)),
+        )))
+
+        def fail_inference(_image, **_kwargs):
+            self.assertTrue(events[-1][1]["active"])
+            raise ValueError("inference failed")
+
         sam = types.SimpleNamespace(
-            process_image_to_pose_json=lambda _image: (_ for _ in ()).throw(ValueError("inference failed")),
+            process_image_to_pose_json=fail_inference,
             progress=types.SimpleNamespace(start_task=lambda *_args: None,
                 task_context=lambda *_args: contextlib.nullcontext(), update=lambda *_args: None),
         )
-        with patch.dict(sys.modules, {"server": types.SimpleNamespace(),
-            "vnccs_pose_limit_testpkg.vnccs_sam3d": sam}):
-            # The server is imported before inference, so provide its normal symbol.
-            sys.modules["server"].PromptServer = types.SimpleNamespace()
+        with patch.dict(sys.modules, {"server": server,
+            "vnccs_pose_limit_testpkg.vnccs_sam3d": sam, SAM_SESSION_MODULE: SAM_SESSION}), \
+                patch.object(SAM_SESSION, "close_pose_model_session", closed.append):
             with self.assertRaisesRegex(RuntimeError, "inference failed"):
                 node._apply_pose_image_via_frontend([object()], "703")
+        self.assertEqual(closed, ["model-session"])
+        self.assertEqual([event for event, _, _ in events], ["vnccs_pose_image_progress"] * 2)
+        self.assertEqual(events[-1][1], {**events[0][1], "active": False})
 
     def test_sync_reader_matches_sanitized_combined_node_id_and_token(self):
         with tempfile.TemporaryDirectory() as root:
@@ -124,19 +141,22 @@ class PoseOutputLimitTests(unittest.TestCase):
             instance=types.SimpleNamespace(client_id="executing-browser",
                 send_sync=lambda event, payload, sid=None: events.append((event, payload, sid)))))
         sam = types.SimpleNamespace(
-            process_image_to_pose_json=lambda _image: '{"bones": {}}',
+            process_image_to_pose_json=lambda _image, **_kwargs: '{"bones": {}}',
             progress=types.SimpleNamespace(start_task=lambda *_args: None,
                 task_context=lambda *_args: contextlib.nullcontext(), update=lambda *_args: None))
         node = POSE_STUDIO.VNCCS_PoseStudio()
         node._wait_for_frontend_sync = lambda *_args, **_kwargs: {"sync_error": "widget unavailable"}
         with patch.dict(sys.modules, {"server": server,
-                "vnccs_pose_limit_testpkg.vnccs_sam3d": sam}):
+                "vnccs_pose_limit_testpkg.vnccs_sam3d": sam, SAM_SESSION_MODULE: SAM_SESSION}):
             with self.assertRaisesRegex(RuntimeError, "widget unavailable"):
                 node.generate("{}", unique_id="91:703")
             self.assertEqual(node._apply_pose_image_via_frontend([object()], "91:703"),
                 {"sync_error": "widget unavailable"})
-        self.assertEqual([event for event, _payload, _sid in events],
-            ["vnccs_req_pose_sync", "vnccs_apply_sam3d_pose"])
+        self.assertEqual([event for event, _payload, _sid in events], [
+            "vnccs_req_pose_sync", "vnccs_pose_image_progress", "vnccs_apply_sam3d_pose", "vnccs_pose_image_progress",
+        ])
+        self.assertEqual(events[2][1]["model_session_id"], "model-session")
+        self.assertEqual({payload["sync_token"] for _, payload, _ in events[1:]}, {events[2][1]["sync_token"]})
         for _event, payload, sid in events:
             self.assertEqual(sid, "executing-browser")
             self.assertEqual(payload["node_id"], "91:703")
@@ -158,7 +178,7 @@ class PoseOutputLimitTests(unittest.TestCase):
             instance=types.SimpleNamespace(send_sync=lambda *_args: None),
         ))
         sam = types.SimpleNamespace(
-            process_image_to_pose_json=lambda _image: '{"bones": {}}',
+            process_image_to_pose_json=lambda _image, **_kwargs: '{"bones": {}}',
             progress=types.SimpleNamespace(
                 start_task=lambda *_args: None,
                 task_context=lambda *_args: contextlib.nullcontext(),
@@ -169,6 +189,7 @@ class PoseOutputLimitTests(unittest.TestCase):
         with patch.dict(sys.modules, {
             "server": server,
             "vnccs_pose_limit_testpkg.vnccs_sam3d": sam,
+            SAM_SESSION_MODULE: SAM_SESSION,
         }), contextlib.redirect_stdout(output):
             with self.assertRaisesRegex(RuntimeError, "frontend sync failed: Pose Manager previews"):
                 node.generate(
@@ -247,6 +268,16 @@ class PoseOutputLimitTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "did not receive images"):
             node.generate(json.dumps({"export": {"capture_image_size": False}}), pose_image=image)
         self.assertIsNone(calls[-1][4])
+        self.assertIs(calls[-1][5], False)
+
+    def test_keep_models_loaded_is_forwarded_from_pose_studio_settings(self):
+        calls = []
+        node = POSE_STUDIO.VNCCS_PoseStudio()
+        node._apply_pose_image_via_frontend = lambda *args: calls.append(args)
+
+        with self.assertRaisesRegex(RuntimeError, "did not receive images"):
+            node.generate(json.dumps({"export": {"keep_models_loaded": True}}), pose_image=object())
+        self.assertIs(calls[-1][5], True)
 
     def test_pose_image_analysis_mode_isolated_to_pose_manager(self):
         self.assertEqual(POSE_STUDIO._pose_image_analysis_mode({}), "pose")

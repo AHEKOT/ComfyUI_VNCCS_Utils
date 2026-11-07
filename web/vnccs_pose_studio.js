@@ -4441,6 +4441,7 @@ class PoseStudioWidget {
             debugShowSAMHelper: false, // Show imported SAM skeleton overlay in the viewer
             debugShowSAMMeshOverlay: false, // Show postprocessed SAM render mesh overlay
             samApplyCamera: false, // Opt in: pose analysis must not replace the user's camera automatically
+            keep_models_loaded: false,
             keepOriginalLighting: false, // Override to clean white lighting, no prompts
             user_prompt: "",
             prompt_template: "Draw character from image2\n<lighting>\n<user_prompt>",
@@ -4596,6 +4597,7 @@ class PoseStudioWidget {
         window.removeEventListener("keydown", this._boundHandleCaptureViewShortcut, true);
         clearTimeout(this._animationCacheUploadTimer);
         this._animationCacheUploadTimer = null;
+        this._poseImageProgress?.close();
         this._activeVideoImportClose?.();
         this._closeLibraryModal?.();
         void this.flushAnimationCacheUpload?.();
@@ -10632,13 +10634,63 @@ class PoseStudioWidget {
         };
     }
 
-    async requestSAM3DPoseForImage(image, { taskId = null, signal = null, fileName = null } = {}) {
+    watchSAM3DImportProgress(taskId, update, isCurrent = () => true) {
+        let active = true;
+        let pending = false;
+        const poll = async () => {
+            if (!active || pending || !isCurrent()) return;
+            pending = true;
+            try {
+                const response = await api.fetchApi(`/vnccs/sam3d/import_status/${encodeURIComponent(taskId)}`);
+                if (!response.ok) return;
+                const status = await response.json();
+                if (active && isCurrent()) update(status);
+            } catch (_) {
+                // A status request can fail while the import itself is still running.
+            } finally {
+                pending = false;
+            }
+        };
+        const timer = setInterval(poll, 700);
+        void poll();
+        return () => {
+            active = false;
+            clearInterval(timer);
+        };
+    }
+
+    async openSAM3DModelSession() {
+        const response = await api.fetchApi("/vnccs/sam3d/model_session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ keep_models_loaded: this.exportParams.keep_models_loaded === true }),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.session_id) throw new Error(result.error || `HTTP ${response.status}`);
+        return result.session_id;
+    }
+
+    async closeSAM3DModelSession(modelSessionId) {
+        if (!modelSessionId) return;
+        try {
+            const response = await api.fetchApi(`/vnccs/sam3d/model_session/${encodeURIComponent(modelSessionId)}`, {
+                method: "DELETE", keepalive: true,
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        } catch (error) {
+            console.warn("[VNCCS] Could not close SAM 3D Body import session:", error);
+        }
+    }
+
+    async requestSAM3DPoseForImage(image, { taskId = null, signal = null, fileName = null, modelSessionId = null } = {}) {
         const resolvedTaskId = taskId || (
             globalThis.crypto?.randomUUID?.()
             || `sam3d-${Date.now()}-${Math.random().toString(16).slice(2)}`
         );
         const form = new FormData();
         form.append("task_id", resolvedTaskId);
+        form.append("keep_models_loaded", String(this.exportParams.keep_models_loaded === true));
+        if (modelSessionId) form.append("model_session_id", modelSessionId);
         form.append("image", image, fileName || image?.name || "pose_image.jpg");
         const response = await api.fetchApi("/vnccs/sam3d/process_image_to_pose_json", {
             method: "POST",
@@ -10646,7 +10698,9 @@ class PoseStudioWidget {
             signal,
         });
         const result = await response.json();
-        if (!response.ok) throw new Error(result?.error || `HTTP ${response.status}`);
+        if (!response.ok) {
+            throw Object.assign(new Error(result?.error || `HTTP ${response.status}`), { status: response.status });
+        }
         const poseData = result.pose_data || (result.pose_json ? JSON.parse(result.pose_json) : null);
         if (!poseData) throw new Error("SAM 3D Body returned empty pose JSON.");
         return poseData;
@@ -10667,34 +10721,25 @@ class PoseStudioWidget {
             globalThis.crypto?.randomUUID?.()
             || `sam3d-${Date.now()}-${Math.random().toString(16).slice(2)}`
         );
-        let pollTimer = null;
-        const pollStatus = async () => {
-            try {
-                if (!isCurrent()) return;
-                const statusResponse = await api.fetchApi(`/vnccs/sam3d/import_status/${encodeURIComponent(taskId)}`);
-                if (!statusResponse.ok) return;
-                const status = await statusResponse.json();
-                if (isCurrent()) progress.update(status);
-            } catch (_err) {
-                // The long-running POST is the source of truth; status polling is best-effort UI.
-            }
-        };
+        let stopPolling;
+        let modelSessionId = null;
         try {
             progress.setProgress(1);
             progress.setText("Step 1/6: Uploading image to SAM 3D Body...");
             progress.setText("Step 1/6: Waiting for SAM 3D Body to start processing...");
-            pollTimer = setInterval(pollStatus, 700);
+            modelSessionId = await this.openSAM3DModelSession();
+            if (!isCurrent()) return;
+            stopPolling = this.watchSAM3DImportProgress(taskId, progress.update, isCurrent);
             const poseData = await this.requestSAM3DPoseForImage(file, {
                 taskId,
                 fileName: file.name || "pose_image.png",
+                modelSessionId,
             });
             if (!isCurrent()) return;
-            await pollStatus();
-            if (!isCurrent()) return;
-
+            stopPolling();
             progress.setProgress(92);
             progress.setText("Step 6/6: Building SAM render fit...");
-            const fitData = await this.prepareSAM3DRenderFit(poseData);
+            const fitData = await this.prepareSAM3DRenderFit(poseData, { modelSessionId });
             if (!isCurrent()) return;
             const poseForImport = fitData?.poseData || poseData;
 
@@ -10714,7 +10759,7 @@ class PoseStudioWidget {
             if (fitData?.meshData) {
                 this.applySAM3DMeshOverlayFit(fitData.meshData, poseForImport);
             } else {
-                await this.refreshSAMMeshOverlay(poseForImport);
+                await this.refreshSAMMeshOverlay(poseForImport, { modelSessionId });
             }
             if (!isCurrent()) return;
             this.syncMeshProportionSlidersFromViewer();
@@ -10729,12 +10774,13 @@ class PoseStudioWidget {
         } catch (error) {
             if (isCurrent()) throw error;
         } finally {
-            if (pollTimer) clearInterval(pollTimer);
+            stopPolling?.();
             progress.close();
+            await this.closeSAM3DModelSession(modelSessionId);
         }
     }
 
-    async refreshSAMMeshOverlay(poseData = null) {
+    async refreshSAMMeshOverlay(poseData = null, { modelSessionId = null } = {}) {
         const activePose = poseData || this._lastSAM3DPoseData;
         if (!this.viewer?.setSAMMeshOverlayData || !activePose) return false;
         const showMeshOverlay = !!this.exportParams.debugShowSAMMeshOverlay;
@@ -10749,7 +10795,7 @@ class PoseStudioWidget {
         const isCurrent = () => !this._disposed && token === this._libraryLoadToken
             && characterId === this.activeCharacterId && tab === this.activeTab;
         try {
-            const meshData = await this.fetchSAM3DRenderMesh(activePose);
+            const meshData = await this.fetchSAM3DRenderMesh(activePose, { modelSessionId });
             if (!isCurrent()) return false;
             this._lastSAM3DMeshData = meshData;
             const ok = this.viewer.setSAMMeshOverlayData(meshData, activePose);
@@ -10763,7 +10809,7 @@ class PoseStudioWidget {
         }
     }
 
-    async fetchSAM3DRenderMesh(poseData, { signal = null } = {}) {
+    async fetchSAM3DRenderMesh(poseData, { signal = null, modelSessionId = null } = {}) {
         const response = await api.fetchApi("/vnccs/sam3d/render_mesh_overlay", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -10771,11 +10817,15 @@ class PoseStudioWidget {
                 pose_data: poseData,
                 body_preset: {},
                 pose_adjust: 0.0,
+                keep_models_loaded: this.exportParams.keep_models_loaded === true,
+                model_session_id: modelSessionId,
             }),
             signal,
         });
         const result = await response.json();
-        if (!response.ok) throw new Error(result?.error || `HTTP ${response.status}`);
+        if (!response.ok) {
+            throw Object.assign(new Error(result?.error || `HTTP ${response.status}`), { status: response.status });
+        }
         return result.mesh;
     }
 
@@ -10789,23 +10839,23 @@ class PoseStudioWidget {
         };
     }
 
-    async prepareSAM3DRenderFit(poseData, { signal = null, reportError = true } = {}) {
+    async prepareSAM3DRenderFit(poseData, { signal = null, reportError = true, modelSessionId = null } = {}) {
         try {
-            const meshData = await this.fetchSAM3DRenderMesh(poseData, { signal });
+            const meshData = await this.fetchSAM3DRenderMesh(poseData, { signal, modelSessionId });
             return {
                 meshData,
                 poseData: this.buildSAM3DFittedPoseData(poseData, meshData),
             };
         } catch (err) {
-            if (err?.name === "AbortError") throw err;
+            if (err?.name === "AbortError" || err?.status === 409) throw err;
             console.error("[VNCCS] Failed to build SAM render fit:", err);
             if (reportError) this.showMessage?.(`Failed to build SAM render fit: ${err?.message || err}`, true);
             return null;
         }
     }
 
-    async applySAM3DPoseForCapture(poseData, assertCurrent, signal = null) {
-        const fitData = await this.prepareSAM3DRenderFit(poseData, { signal });
+    async applySAM3DPoseForCapture(poseData, assertCurrent, signal = null, modelSessionId = null) {
+        const fitData = await this.prepareSAM3DRenderFit(poseData, { signal, modelSessionId });
         assertCurrent();
         const poseForImport = fitData?.poseData || poseData;
 
@@ -10821,14 +10871,14 @@ class PoseStudioWidget {
         if (fitData?.meshData) {
             this.applySAM3DMeshOverlayFit(fitData.meshData, poseForImport);
         } else {
-            await this.refreshSAMMeshOverlay(poseForImport);
+            await this.refreshSAMMeshOverlay(poseForImport, { modelSessionId });
             assertCurrent();
         }
         this.syncMeshProportionSlidersFromViewer();
         this.applySAM3DFrameCameraParams(poseForImport, fitData?.meshData || null);
     }
 
-    async applySAM3DProportionsToPoseManager(poseData) {
+    async applySAM3DProportionsToPoseManager(poseData, modelSessionId = null) {
         if (!this.viewer?.isInitialized?.()) {
             throw new Error("Pose viewer is not ready.");
         }
@@ -10839,7 +10889,7 @@ class PoseStudioWidget {
         const token = this._libraryLoadToken;
         const characterId = this.activeCharacterId;
         const tab = this.activeTab;
-        const fitData = await this.prepareSAM3DRenderFit(poseData);
+        const fitData = await this.prepareSAM3DRenderFit(poseData, { modelSessionId });
         if (this._disposed || token !== this._libraryLoadToken
             || characterId !== this.activeCharacterId || tab !== this.activeTab) return false;
         const poseForAnalysis = fitData?.poseData || poseData;
@@ -11243,7 +11293,11 @@ class PoseStudioWidget {
         const captureSchedule = computeVideoCaptureSchedule(plan, captureStep);
         if (captureSchedule.sampleCount < 2) throw new Error("Video capture requires at least two pose samples.");
 
+        let modelSessionId = null;
         try {
+            assertCurrent();
+            modelSessionId = await this.openSAM3DModelSession();
+            assertCurrent();
             video.pause();
             for (let index = 0; index < captureSchedule.times.length; index++) {
                 assertCurrent();
@@ -11273,10 +11327,11 @@ class PoseStudioWidget {
                         taskId,
                         signal,
                         fileName: `video_frame_${String(sourceFrame).padStart(5, "0")}.jpg`,
+                        modelSessionId,
                     });
                 } catch (error) {
                     assertCurrent();
-                    if (error?.name === "AbortError" || !lastPoseData) throw error;
+                    if (error?.name === "AbortError" || error?.status === 409 || !lastPoseData) throw error;
                     // Match the SAM mocap exporter contract: an isolated missed
                     // detection holds the previous valid pose instead of
                     // aborting the complete clip.
@@ -11298,6 +11353,7 @@ class PoseStudioWidget {
                     : await this.prepareSAM3DRenderFit(poseData, {
                         signal,
                         reportError: false,
+                        modelSessionId,
                     });
                 assertCurrent();
                 const poseForImport = fitData?.poseData || poseData;
@@ -11436,6 +11492,8 @@ class PoseStudioWidget {
             }
             if (!isCurrent()) assertCurrent();
             throw error;
+        } finally {
+            await this.closeSAM3DModelSession(modelSessionId);
         }
     }
 
@@ -14561,6 +14619,23 @@ class PoseStudioWidget {
         samCamRow.appendChild(samCamLabel);
         content.appendChild(samCamRow);
 
+        const keepModelsRow = document.createElement("div");
+        keepModelsRow.className = "vnccs-ps-field";
+        const keepModelsLabel = document.createElement("label");
+        keepModelsLabel.style.cssText = "display:flex;align-items:center;gap:10px;cursor:pointer;";
+        const keepModelsCheckbox = document.createElement("input");
+        keepModelsCheckbox.type = "checkbox";
+        keepModelsCheckbox.checked = this.exportParams.keep_models_loaded === true;
+        keepModelsCheckbox.onchange = () => {
+            this.exportParams.keep_models_loaded = keepModelsCheckbox.checked;
+            this.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
+        };
+        const keepModelsText = document.createElement("span");
+        keepModelsText.innerHTML = "<strong>Keep Models Loaded</strong><small style='display:block;color:#888;margin-top:3px;line-height:1.35'>Keep SAM 3D Body and BiRefNet in memory between runs for faster imports. Turn off to release GPU memory after each run.</small>";
+        keepModelsLabel.append(keepModelsCheckbox, keepModelsText);
+        keepModelsRow.appendChild(keepModelsLabel);
+        content.appendChild(keepModelsRow);
+
         // Debug Toggle
         const debugRow = document.createElement("div");
         debugRow.className = "vnccs-ps-field";
@@ -16732,6 +16807,7 @@ class PoseStudioWidget {
                 }
                 this.syncCameraWidgets();
             }
+            this.exportParams.keep_models_loaded = data.export?.keep_models_loaded === true;
             if (this.viewer?.setKpFigureVisible) {
                 this.viewer.setKpFigureVisible(this.exportParams.debugShowSAMHelper !== false);
             }
@@ -17183,22 +17259,53 @@ app.registerExtension({
             }
         });
 
+        api.addEventListener("vnccs_pose_image_progress", ({ detail }) => {
+            const widget = findPoseStudioSyncNode(detail.node_id)?.studioWidget;
+            const token = detail.sync_token;
+            if (!widget?.canvasContainer || widget._disposed || !token) return;
+            const current = widget._poseImageProgress;
+            if (!detail.active) {
+                if (current?.token === token) current.close();
+                return;
+            }
+            if (current?.token === token) return;
+            current?.close();
+            const modal = widget.showImportProgressModal("SAM 3D Body Import");
+            const stopPolling = widget.watchSAM3DImportProgress(token, status => {
+                modal.update({ ...status, progress: Math.min(status.progress, 90) });
+            });
+            widget._poseImageProgress = {
+                token, modal, stopPolling,
+                close() {
+                    if (widget._poseImageProgress !== this) return;
+                    widget._poseImageProgress = null;
+                    stopPolling();
+                    modal.close();
+                },
+            };
+        });
+
         api.addEventListener("vnccs_apply_sam3d_pose", async (event) => {
             const nodeId = event.detail.node_id;
             const poseData = event.detail.pose_data;
             const cameraPrompt = String(event.detail.camera_prompt ?? "");
             const applyMode = String(event.detail.apply_mode ?? "pose");
             const syncToken = String(event.detail.sync_token ?? "");
+            const modelSessionId = event.detail.model_session_id ?? null;
             const node = findPoseStudioSyncNode(nodeId);
-            if (!node?.studioWidget || !poseData) {
+            const widget = node?.studioWidget;
+            if (!widget || !poseData) {
                 await reportPoseStudioSyncFailure(nodeId, syncToken,
                     new Error(!poseData ? "SAM 3D Body pose data is unavailable."
                         : "Pose Studio widget is unavailable. Keep the executing workflow open and reload ComfyUI before retrying."));
                 return;
             }
 
+            const progress = widget._poseImageProgress?.token === syncToken ? widget._poseImageProgress : null;
             try {
-                const widget = node.studioWidget;
+                progress?.stopPolling();
+                progress?.modal.setProgress(92);
+                progress?.modal.setText("Step 6/6: Applying the pose and capturing the result...");
                 const assertCurrent = poseStudioSyncGuard(node);
                 widget.applyCapturedImageSize(
                     Number(event.detail.image_width),
@@ -17210,7 +17317,7 @@ app.registerExtension({
                 }
 
                 if (applyMode === "manager_proportions") {
-                    await widget.applySAM3DProportionsToPoseManager(poseData);
+                    await widget.applySAM3DProportionsToPoseManager(poseData, modelSessionId);
                     assertCurrent();
                     widget.setSkydomeFromCameraPrompt(cameraPrompt, { force: true });
                     // Committing fitted character state can invalidate the
@@ -17226,7 +17333,7 @@ app.registerExtension({
                     return;
                 }
 
-                await widget.applySAM3DPoseForCapture(poseData, assertCurrent);
+                await widget.applySAM3DPoseForCapture(poseData, assertCurrent, null, modelSessionId);
                 widget.setSkydomeFromCameraPrompt(cameraPrompt, { force: true });
 
                 widget.updateTabs();
@@ -17246,6 +17353,8 @@ app.registerExtension({
             } catch (e) {
                 await reportPoseStudioSyncFailure(nodeId, syncToken, e);
                 console.error("[VNCCS] SAM3D pose_image apply error:", e);
+            } finally {
+                progress?.close();
             }
         });
     },

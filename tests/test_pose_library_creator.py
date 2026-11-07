@@ -289,7 +289,11 @@ def test_real_capture_file_bridge_validates_run_and_payload(tmp_path, monkeypatc
         if failure == "skeleton":
             payload["pose"]["characters"] = [{}]
         (tmp_path / "vnccs_debug_7_9_current.json").write_text(json.dumps(payload))
-    sam = SimpleNamespace(process_image_to_pose_json=lambda image: '{"joint_names":["pelvis"]}',
+    def extract_pose(image, *, keep_models_loaded):
+        assert keep_models_loaded is True
+        return '{"joint_names":["pelvis"]}'
+
+    sam = SimpleNamespace(process_image_to_pose_json=extract_pose,
                           progress=SimpleNamespace(start_task=lambda task: None, task_context=lambda task: nullcontext()))
     with stub_imports({"torch": torch, "pose_creator_test.vnccs_sam3d": sam,
                        "folder_paths": SimpleNamespace(get_temp_directory=lambda: str(tmp_path)),

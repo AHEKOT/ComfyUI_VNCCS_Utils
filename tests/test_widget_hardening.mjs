@@ -252,7 +252,7 @@ test("Pose Manager keeps the pose image input and gates automatic proportion ana
 
 
 test("Pose Manager SAM input applies proportions without replacing managed poses", () => {
-    const managerStart = poseStudioSource.indexOf("async applySAM3DProportionsToPoseManager(poseData)");
+    const managerStart = poseStudioSource.indexOf("async applySAM3DProportionsToPoseManager(");
     const managerEnd = poseStudioSource.indexOf("\n    applySAM3DMeshOverlayFit", managerStart);
     const managerMethod = poseStudioSource.slice(managerStart, managerEnd);
     assert.match(managerMethod, /manager_auto_analyze_proportions === false/);
@@ -284,9 +284,9 @@ test("Pose Manager SAM input applies proportions without replacing managed poses
     const eventEnd = poseStudioSource.indexOf("\n    },\n\n    async beforeRegisterNodeDef", eventStart);
     const eventMethod = poseStudioSource.slice(eventStart, eventEnd);
     assert.match(eventMethod, /applyMode === "manager_proportions"/);
-    assert.match(eventMethod, /applySAM3DProportionsToPoseManager\(poseData\)/);
+    assert.match(eventMethod, /applySAM3DProportionsToPoseManager\(poseData, modelSessionId\)/);
     assert.match(eventMethod, /widget\.syncToNode\(true, \{[\s\S]*executionCapture: true/);
-    assert.match(eventMethod, /widget\.applySAM3DPoseForCapture\(poseData, assertCurrent\)/);
+    assert.match(eventMethod, /widget\.applySAM3DPoseForCapture\(poseData, assertCurrent, null, modelSessionId\)/);
     const captureMethod = poseStudioSource.slice(poseStudioSource.indexOf("async applySAM3DPoseForCapture("),
         poseStudioSource.indexOf("async applySAM3DProportionsToPoseManager("));
     assert.match(captureMethod, /viewer\.applySAM3DImport\(/, "ordinary Pose Studio import must remain intact");
