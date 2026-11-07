@@ -2,7 +2,7 @@ import { PARAMETRIC_PARTS, PRIMITIVE_KINDS, primitiveLabel } from "./factory3d/g
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./shared/custom_select.mjs?v=20261104-scaled-menu";
-import { Factory3DViewer } from "./factory3d/viewer.js?v=20260908.4";
+import { Factory3DViewer } from "./factory3d/viewer.js?v=20261107.1";
 import { hasRenderableFactoryScene } from "./factory3d/scene_content.mjs?v=20260905.1";
 import {
     allocateLocalLightShadows,
@@ -51,7 +51,7 @@ const ENDPOINTS = Object.freeze({
     splatCacheSettings: `${API_BASE}/splat-cache/settings`,
     splatCacheClear: `${API_BASE}/splat-cache/clear`,
     weightsDownload: `${API_BASE}/weights/download`,
-    generatorWeightsDownload: provider => `${API_BASE}/generators/${encodeURIComponent(provider)}/weights/download`,
+    generatorWeightsDownload: (provider, refineTextures = false) => `${API_BASE}/generators/${encodeURIComponent(provider)}/weights/download?refine_textures=${refineTextures ? "1" : "0"}`,
     scenes: `${API_BASE}/scenes`,
     scene: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}`,
     reference: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/reference`,
@@ -83,7 +83,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = FACTORY_EDITOR_SCHEMA_VERSION;
-const FRONTEND_BUILD = "20261101.1";
+const FRONTEND_BUILD = "20261108.1";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_PLY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_MODEL_TOTAL_BYTES = 4 * 1024 * 1024 * 1024;
@@ -107,9 +107,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     mesh_shape_steps: 20,
     mesh_upsample_steps: 12,
     mesh_texture_steps: 12,
-    mesh_texture_pass: false,
-    mesh_texture_prompt: "",
-    mesh_texture_strength: 0.6,
+    mesh_refine_textures: false,
 });
 const DEFAULT_EXPORT_SETTINGS = Object.freeze({
     width: 1024,
@@ -232,7 +230,7 @@ const ICONS = Object.freeze({
 
 
 function installStyles() {
-    const href = new URL("./factory3d/styles.css?v=20261101.1", import.meta.url).href;
+    const href = new URL("./factory3d/styles.css?v=20261107.1", import.meta.url).href;
     const existing = document.getElementById("vnccs-3d-factory-styles");
     if (existing) {
         if (existing.href !== href) existing.href = href;
@@ -789,22 +787,11 @@ class Factory3DWidget {
                                     <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Texture</span><input class="vnccs-i3s__input vnccs-i3s__mesh-texture-steps" type="number" min="1" max="100" step="1" /></label>
                                 </div>
                             </details>
-                            <details class="vnccs-i3s__advanced-settings vnccs-i3s__texture-refinement">
-                                <summary>Texture refinement</summary>
-                                <div class="vnccs-i3s__switch-row vnccs-i3s__texture-pass-row">
-                                    <span class="vnccs-i3s__texture-pass-title">Refine from views</span>
-                                    <button class="vnccs-i3s__switch vnccs-i3s__texture-pass" type="button" role="switch" aria-checked="false" aria-label="Refine mesh textures from camera views"></button>
-                                </div>
-                                <div class="vnccs-i3s__texture-pass-note" hidden></div>
-                                <label class="vnccs-i3s__field">
-                                    <span class="vnccs-i3s__label">Master prompt</span>
-                                    <textarea class="vnccs-i3s__input vnccs-i3s__texture-prompt" rows="2" placeholder="Character description used to refine every view"></textarea>
-                                </label>
-                                <label class="vnccs-i3s__field">
-                                    <span class="vnccs-i3s__label"><span>Strength</span><span class="vnccs-i3s__texture-strength-value">0.60</span></span>
-                                    <input class="vnccs-i3s__range vnccs-i3s__texture-strength" type="range" min="0.1" max="1" step="0.05" value="0.6" />
-                                </label>
-                            </details>
+                            <div class="vnccs-i3s__switch-row">
+                                <span>Refine Textures and Materials</span>
+                                <button class="vnccs-i3s__switch vnccs-i3s__refine-textures" type="button" role="switch" aria-checked="false" aria-label="Refine Textures and Materials"></button>
+                            </div>
+                            <div class="vnccs-i3s__hint">Automatic multiview textures and PBR materials</div>
                         </div>
                         <div class="vnccs-i3s__switch-row vnccs-i3s__background-row">
                             <span class="vnccs-i3s__background-title">Remove background</span>
@@ -1280,11 +1267,7 @@ class Factory3DWidget {
             meshShapeSteps: $(".vnccs-i3s__mesh-shape-steps"),
             meshUpsampleSteps: $(".vnccs-i3s__mesh-upsample-steps"),
             meshTextureSteps: $(".vnccs-i3s__mesh-texture-steps"),
-            texturePass: $(".vnccs-i3s__texture-pass"),
-            texturePassNote: $(".vnccs-i3s__texture-pass-note"),
-            texturePrompt: $(".vnccs-i3s__texture-prompt"),
-            textureStrength: $(".vnccs-i3s__texture-strength"),
-            textureStrengthValue: $(".vnccs-i3s__texture-strength-value"),
+            refineTextures: $(".vnccs-i3s__refine-textures"),
             texturingViews: $(".vnccs-i3s__texturing-views"),
             removeBackground: $(".vnccs-i3s__remove-background"),
             seed: $(".vnccs-i3s__seed"),
@@ -1602,8 +1585,6 @@ class Factory3DWidget {
             [this.els.meshShapeSteps, "mesh_shape_steps", "integer"],
             [this.els.meshUpsampleSteps, "mesh_upsample_steps", "integer"],
             [this.els.meshTextureSteps, "mesh_texture_steps", "integer"],
-            [this.els.texturePrompt, "mesh_texture_prompt", "string"],
-            [this.els.textureStrength, "mesh_texture_strength", "number"],
         ];
         for (const [control, key, kind] of settings) {
             const update = () => {
@@ -1612,7 +1593,6 @@ class Factory3DWidget {
                 this.els.guidanceValue.textContent = Number(this.settings.guidance_scale).toFixed(1);
                 if (key === "num_gaussians") this._syncDensityMode();
                 if (key === "mesh_quality") this._syncMeshQuality();
-                if (key === "mesh_texture_strength") this._syncTexturePass();
                 this._scheduleStateSave();
             };
             this._listen(control, "input", update);
@@ -1623,9 +1603,10 @@ class Factory3DWidget {
             this._syncBackgroundRemoval();
             this._scheduleStateSave();
         });
-        this._listen(this.els.texturePass, "click", () => {
-            this.settings.mesh_texture_pass = !this.settings.mesh_texture_pass;
-            this._syncTexturePass();
+        this._listen(this.els.refineTextures, "click", () => {
+            this.settings.mesh_refine_textures = !this.settings.mesh_refine_textures;
+            this._syncRefineTextures();
+            this._syncGeneratorUI();
             this._scheduleStateSave();
         });
         this._listen(this.els.seedDice, "click", () => {
@@ -7079,7 +7060,11 @@ class Factory3DWidget {
             ? provider
             : "triposplat";
         const generator = safeObject(this.capabilities?.generators?.[key]);
-        if (Object.keys(generator).length) return generator;
+        if (Object.keys(generator).length) {
+            return key !== "triposplat" && this.settings.mesh_refine_textures === true
+                ? { ...generator, ...safeObject(generator.refinement) }
+                : generator;
+        }
         return key === "triposplat"
             ? {
                 key,
@@ -9441,15 +9426,7 @@ class Factory3DWidget {
             form.append("shape_steps", String(this.settings.mesh_shape_steps));
             form.append("upsample_steps", String(this.settings.mesh_upsample_steps));
             form.append("texture_steps", String(this.settings.mesh_texture_steps));
-            if (this.settings.mesh_texture_pass) {
-                if (!String(this.settings.mesh_texture_prompt || "").trim()) {
-                    this.toast("Texture refinement needs the master prompt.", "error");
-                    return;
-                }
-                form.append("texture_pass", "1");
-                form.append("texture_prompt", this.settings.mesh_texture_prompt);
-                form.append("texture_strength", String(this.settings.mesh_texture_strength));
-            }
+            form.append("refine_textures", this.settings.mesh_refine_textures === true ? "1" : "0");
         }
         form.append("seed", String(this.settings.seed));
         form.append("remove_background", this.settings.remove_background ? "1" : "0");
@@ -9736,12 +9713,15 @@ class Factory3DWidget {
     async _monitorJob(jobId, { modal = false } = {}) {
         const token = ++this.currentJobToken;
         this.currentJobId = jobId;
+        this.viewer.clearGenerationPreview();
+        this._renderTexturingViews(null);
         this._setProgress(true, 0, "Queued", "");
         this._setStatus("Working", "working");
         let previous = "";
         try {
             while (!this.destroyed && token === this.currentJobToken) {
                 const job = await this._fetchJSON(ENDPOINTS.job(jobId));
+                if (this.destroyed || token !== this.currentJobToken) return;
                 const signature = `${job.stage}|${job.progress}|${job.message}|${job.detail}`;
                 if (signature !== previous) {
                     previous = signature;
@@ -9754,6 +9734,13 @@ class Factory3DWidget {
                 }
                 this._setProgress(true, job.progress, job.message || job.stage, job.detail);
                 this._renderTexturingViews(job.texturing);
+                if (job.texturing && !TERMINAL.has(job.status)) {
+                    this.viewer.updateGenerationPreview(job.texturing).catch(error => {
+                        if (!this.destroyed && token === this.currentJobToken) {
+                            this.els.jobDetail.textContent = `Preview unavailable: ${error.message}`;
+                        }
+                    });
+                }
                 if (TERMINAL.has(job.status)) {
                     if (job.status === "completed") {
                         if (job.kind === "generation") {
@@ -9811,6 +9798,8 @@ class Factory3DWidget {
         } finally {
             if (token === this.currentJobToken) {
                 this.currentJobId = "";
+                this.viewer.clearGenerationPreview();
+                this._renderTexturingViews(null);
                 this._setProgress(false);
             }
         }
@@ -11493,6 +11482,7 @@ class Factory3DWidget {
     async openMeshModelSetup(provider) {
         const capabilities = await this.loadCapabilities();
         const generator = this._generatorCapability(provider);
+        const refineTextures = this.settings.mesh_refine_textures === true;
         const weights = safeObject(generator.weights);
         const runtime = safeObject(generator.runtime);
         const body = element("div", "vnccs-i3s__setup-grid vnccs-i3s__setup-grid--single");
@@ -11514,7 +11504,7 @@ class Factory3DWidget {
             "div",
             `vnccs-i3s__runtime-notice${runtime.ready === false ? " is-error" : ""}`,
             runtime.ready === false
-                ? `Update ComfyUI before using this generator. Missing nodes: ${(runtime.missing_nodes || []).join(", ")}`
+                ? `Install missing dependencies before generation: ${[...(runtime.missing_nodes || []), ...(runtime.missing_packages || [])].join(", ")}`
                 : "Required comfy-core nodes are available.",
         );
         const root = element("div", "vnccs-i3s__failure-context", weights.root || "");
@@ -11541,7 +11531,7 @@ class Factory3DWidget {
             close.disabled = true;
             try {
                 const job = await this._fetchJSON(
-                    ENDPOINTS.generatorWeightsDownload(provider),
+                    ENDPOINTS.generatorWeightsDownload(provider, refineTextures),
                     { method: "POST" },
                 );
                 await this._monitorJob(job.job_id, { modal: true });
@@ -12073,10 +12063,8 @@ class Factory3DWidget {
         this.els.meshUpsampleSteps.value = String(this.settings.mesh_upsample_steps);
         this.els.meshTextureSteps.value = String(this.settings.mesh_texture_steps);
         this.els.seed.value = String(this.settings.seed);
-        this.els.texturePrompt.value = this.settings.mesh_texture_prompt || "";
-        this.els.textureStrength.value = String(this.settings.mesh_texture_strength);
-        this._syncTexturePass();
         this._syncBackgroundRemoval();
+        this._syncRefineTextures();
         this._syncSeedMode();
         this._syncDensityMode();
         this._syncGeneratorUI();
@@ -12095,44 +12083,69 @@ class Factory3DWidget {
         );
     }
 
-    _syncTexturePass() {
-        const enabled = this.settings.mesh_texture_pass === true;
-        this.els.texturePass.setAttribute("aria-checked", String(enabled));
-        this.els.textureStrengthValue.textContent = Number(this.settings.mesh_texture_strength).toFixed(2);
-        const missing = enabled && this.capabilities?.texturing?.ready === false;
-        this.els.texturePassNote.hidden = !missing;
-        this.els.texturePassNote.textContent = missing
-            ? "Qwen Image 2.1 weights are not installed. Install them or disable texture refinement."
-            : "";
+    _syncRefineTextures() {
+        this.els.refineTextures.setAttribute("aria-checked", String(this.settings.mesh_refine_textures === true));
     }
 
     _renderTexturingViews(texturing) {
         const strip = this.els.texturingViews;
         if (!strip) return;
         const views = Array.isArray(texturing?.views) ? texturing.views : [];
-        const signature = views.map((view) => `${view?.label || ""}|${view?.base_url || ""}|${view?.refined_url || ""}`).join(";");
-        if (signature === (this._texturingViewsSignature ?? "")) return;
+        const signature = JSON.stringify(texturing || {});
+        if (signature === this._texturingViewsSignature) return;
         this._texturingViewsSignature = signature;
         strip.hidden = views.length === 0;
+        const scrollLeft = strip.querySelector(".vnccs-i3s__texturing-cards")?.scrollLeft || 0;
         strip.replaceChildren();
-        for (const view of views) {
+        if (!views.length) return;
+        const summary = document.createElement("div");
+        summary.className = "vnccs-i3s__texturing-summary";
+        summary.setAttribute("aria-live", "polite");
+        const covered = Math.round(Number(texturing.coverage || 0) * 100);
+        summary.textContent = `${texturing.phase === "materials" ? "PBR materials" : "Surface views"} · ${covered}% surface coverage`;
+        strip.appendChild(summary);
+        const cards = document.createElement("div");
+        cards.className = "vnccs-i3s__texturing-cards";
+        cards.setAttribute("aria-label", "Automatic texture views");
+        cards.tabIndex = 0;
+        const states = { pending: "Queued", rendering: "Rendering", generating: "Generating",
+            projected: "Projected", complete: "PBR ready", occluded: "Not visible" };
+        for (const [index, view] of views.entries()) {
             const card = document.createElement("div");
             card.className = "vnccs-i3s__texturing-view";
+            card.classList.toggle("is-active", index === texturing.active_view);
             const label = document.createElement("span");
             label.className = "vnccs-i3s__texturing-view-label";
-            label.textContent = view?.label || "";
+            label.textContent = view.label;
             card.appendChild(label);
-            for (const [key, tone] of [["base_url", "base"], ["refined_url", "refined"]]) {
-                const url = view?.[key];
-                if (!url) continue;
-                const image = document.createElement("img");
-                image.className = `vnccs-i3s__texturing-view-${tone}`;
-                image.src = url;
-                image.alt = `${view?.label || "view"} ${tone} pass`;
-                card.appendChild(image);
+            const images = document.createElement("div");
+            images.className = "vnccs-i3s__texturing-images";
+            for (const [key, name] of [["base_url", "Rendered"], ["refined_url", "Generated"]]) {
+                const image = document.createElement(view[key] ? "img" : "span");
+                if (view[key]) {
+                    image.src = apiUrl(view[key]);
+                    image.alt = `${view.label}: ${name.toLowerCase()} view`;
+                } else {
+                    image.textContent = "·";
+                }
+                image.title = name;
+                images.appendChild(image);
             }
-            strip.appendChild(card);
+            card.appendChild(images);
+            const status = document.createElement("span");
+            status.className = "vnccs-i3s__texturing-view-status";
+            status.textContent = states[view.state] || "Queued";
+            card.appendChild(status);
+            cards.appendChild(card);
         }
+        cards.addEventListener("wheel", event => {
+            if (cards.scrollWidth <= cards.clientWidth) return;
+            cards.scrollLeft += event.deltaY || event.deltaX;
+            event.preventDefault();
+            event.stopPropagation();
+        }, { passive: false });
+        strip.appendChild(cards);
+        cards.scrollLeft = scrollLeft;
     }
 
     _syncSeedMode() {
@@ -12453,6 +12466,7 @@ class Factory3DWidget {
             this.settings.mesh_quality = ["preview", "balanced", "high"].includes(this.settings.mesh_quality)
                 ? this.settings.mesh_quality
                 : "high";
+            this.settings.mesh_refine_textures = this.settings.mesh_refine_textures === true;
             for (const key of [
                 "mesh_structure_steps",
                 "mesh_shape_steps",

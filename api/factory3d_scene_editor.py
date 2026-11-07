@@ -2,7 +2,6 @@
 from __future__ import annotations
 import asyncio
 import json
-import re
 from typing import Any
 from ..nodes.factory3d import storage as factory, runtime, generation as factory3d_generation
 
@@ -73,13 +72,14 @@ def register_routes(routes: Any) -> None:
     async def factory_generator_weights_download(request: Any) -> Any:
         try:
             provider = factory3d_generation.normalize_provider(request.match_info["provider"])
+            refine_textures = request.query.get("refine_textures", "0") == "1"
             job = runtime._new_job("weights")
             job["provider"] = provider
             runtime._track_task(
                 asyncio.to_thread(
                     runtime._run_job,
                     job,
-                    lambda current: runtime._download_provider_weights(current, provider),
+                    lambda current: runtime._download_provider_weights(current, provider, refine_textures=refine_textures),
                 )
             )
             return web.json_response(runtime._job_public(job), status=202)
@@ -537,20 +537,10 @@ def register_routes(routes: Any) -> None:
             }:
                 raise FileNotFoundError("unknown object asset")
             if kind == "texturing":
-                file_name = request.query.get("file", "")
-                if not re.fullmatch(r"view_[0-9]{1,2}_(base|refined)\.png", file_name):
-                    raise FileNotFoundError("unknown texturing view")
-                path = (
-                    factory.resolve_scene_dir(
-                        factory._validate_id(request.match_info["scene_id"], "scene id")
-                    )
-                    / "objects"
-                    / factory._validate_id(request.match_info["object_id"], "object id")
-                    / "texturing"
-                    / file_name
+                path = runtime.texturing_asset_path(
+                    request.match_info["scene_id"], request.match_info["object_id"],
+                    request.query.get("file", ""),
                 )
-                if not path.is_file():
-                    raise FileNotFoundError("texturing view is not available")
                 return web.FileResponse(
                     path,
                     headers={"Cache-Control": "private, max-age=31536000, immutable"},

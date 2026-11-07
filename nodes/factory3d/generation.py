@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import inspect
+from importlib.util import find_spec
 import shutil
 import threading
 from contextlib import nullcontext
@@ -21,6 +22,21 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 from PIL import Image, ImageOps
+
+from .materials import MARIGOLD_WEIGHT_SPECS
+
+QI2_DIFFUSION_MODEL = "qwen_image_2.1_turbo_int8_convrot.safetensors"
+QI2_TEXT_ENCODER = "qwen3vl_8b_int8_convrot.safetensors"
+QI2_VAE = "qwen_image_2.1_vae_bf16.safetensors"
+QI2_WEIGHT_FILES = (
+    f"diffusion_models/{QI2_DIFFUSION_MODEL}",
+    f"text_encoders/{QI2_TEXT_ENCODER}",
+    f"vae/{QI2_VAE}",
+)
+REFINEMENT_WEIGHT_FILES = (*QI2_WEIGHT_FILES, *MARIGOLD_WEIGHT_SPECS)
+REFINEMENT_NODE_TYPES = (
+    "CLIPLoader", "TextEncodeQwenImage21", "VAEEncode", "VAEDecode", "SetLatentNoiseMask",
+)
 
 
 TRIPOSPLAT = "triposplat"
@@ -40,6 +56,12 @@ _COMFY_PROGRESS_PATCH_LOCK = threading.Lock()
 _COMFY_PROGRESS_PATCHED = False
 
 WEIGHT_SPECS: dict[str, dict[str, str]] = {
+    **MARIGOLD_WEIGHT_SPECS,
+    **{name: {
+        "repo_id": "Comfy-Org/Qwen-Image-2.1",
+        "revision": "aacf31a6d48e707f352ecba714cee0680da3479b",
+        "filename": name,
+    } for name in QI2_WEIGHT_FILES},
     "vae/trellis_2_texture_vae_bf16.safetensors": {
         "repo_id": "Comfy-Org/Pixal3D",
         "revision": "e69bd0b6c7b959661a87051187aab18e8e5abcdf",
@@ -172,6 +194,7 @@ MESH_DEFAULTS: dict[str, Any] = {
     "shape_steps": 20,
     "upsample_steps": 12,
     "texture_steps": 12,
+    "refine_textures": False,
     "remove_background": True,
     "seed": -1,
 }
@@ -224,9 +247,6 @@ def normalize_mesh_settings(values: Any) -> dict[str, Any]:
     remove_background = str(data.get("remove_background", "1")).strip().lower() in {
         "1", "true", "yes", "on",
     }
-    from .texturing import normalize_texture_settings
-
-    texture = normalize_texture_settings(data)
     return {
         "provider": normalize_provider(data.get("provider")),
         "quality": quality,
@@ -242,25 +262,28 @@ def normalize_mesh_settings(values: Any) -> dict[str, Any]:
         "ao_resolution": preset["ao_resolution"],
         "ao_samples": preset["ao_samples"],
         "remove_background": remove_background,
+        "refine_textures": str(data.get("refine_textures", "0")).strip().lower() in {
+            "1", "true", "yes", "on",
+        },
         "seed": max(-1, min(2**31 - 1, int(data.get("seed", -1)))),
-        "texture_pass": texture["texture_pass"],
-        "texture_prompt": texture["texture_prompt"],
-        "texture_strength": texture["texture_strength"],
     }
 
 
-def runtime_status(provider: Any) -> dict[str, Any]:
+def runtime_status(provider: Any, *, refine_textures: bool = False) -> dict[str, Any]:
     key = normalize_provider(provider)
     if key == TRIPOSPLAT:
         return {"ready": True, "missing_nodes": []}
+    required_nodes = (*PROVIDER_NODE_TYPES[key], *(REFINEMENT_NODE_TYPES if refine_textures else ()))
     try:
         import nodes as comfy_nodes
 
         mappings = getattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {}) or {}
-        missing = [name for name in PROVIDER_NODE_TYPES[key] if name not in mappings]
-        return {"ready": not missing, "missing_nodes": missing}
+        missing = [name for name in required_nodes if name not in mappings]
+        missing_packages = ["diffusers>=0.35.2"] if refine_textures and find_spec("diffusers") is None else []
+        return {"ready": not missing and not missing_packages, "missing_nodes": missing,
+                "missing_packages": missing_packages}
     except Exception as exc:
-        return {"ready": False, "missing_nodes": list(PROVIDER_NODE_TYPES[key]), "error": str(exc)}
+        return {"ready": False, "missing_nodes": list(required_nodes), "error": str(exc)}
 
 
 def _unwrap_node_output(value: Any) -> tuple[Any, ...]:
@@ -555,16 +578,18 @@ def run_mesh_generation(
     *,
     emit: Callable[[str, float, str, str], None],
     check_cancel: Callable[[], None],
+    material_model_directory: Path | None,
+    publish: Callable[[dict[str, Any]], None],
 ) -> dict[str, Any]:
     """Run the official Pixal3D/TRELLIS.2 graph and materialize its GLB."""
     key = normalize_provider(provider)
     if key not in MESH_PROVIDER_KEYS:
         raise ValueError("mesh generation requires pixal3d or trellis2")
-    status = runtime_status(key)
+    status = runtime_status(key, refine_textures=settings.get("refine_textures", False))
     if not status["ready"]:
         raise RuntimeError(
-            "This generator requires a newer ComfyUI release. Missing nodes: "
-            + ", ".join(status["missing_nodes"])
+            "Mesh generation dependencies are missing: "
+            + ", ".join([*status["missing_nodes"], *status.get("missing_packages", [])])
         )
 
     check_cancel()
@@ -885,28 +910,23 @@ def run_mesh_generation(
     textured = _call_node("MeshSmoothNormals", mesh=textured, crease_angle=180.0)[0]
     check_cancel()
 
-    if settings.get("texture_pass"):
+    del high_poly, mesh, voxel_colors
+    if settings.get("refine_textures", False):
         from .texturing import run_texture_pass
 
-        refined_base, _texture_views = run_texture_pass(
-            textured,
-            settings,
-            target_glb.parents[1] / "texturing",
-            prepared_path,
-            settings["seed"],
-            emit=emit,
-            check_cancel=check_cancel,
+        texturing_dir = target_glb.parents[1] / "texturing"
+        texturing_dir.mkdir(parents=True, exist_ok=True)
+        _save_file3d(_call_node("MeshToFile3D", mesh=textured)[0], texturing_dir / "preview.glb")
+        publish({"preview": "preview.glb", "views": []})
+        base_color, roughness, metallic = run_texture_pass(
+            textured, texturing_dir, prepared_path, settings["seed"],
+            material_model_directory=material_model_directory,
+            emit=emit, check_cancel=check_cancel, publish=publish,
         )
         textured = _call_node(
-            "ApplyTextureToMesh",
-            mesh=low_poly,
-            base_color=refined_base,
-            metallic=metallic,
-            roughness=roughness,
-            occlusion=occlusion,
-            normal_map=normal_map,
+            "ApplyTextureToMesh", mesh=low_poly, base_color=base_color,
+            metallic=metallic, roughness=roughness, occlusion=occlusion, normal_map=normal_map,
         )[0]
-        textured = _call_node("MeshSmoothNormals", mesh=textured, crease_angle=180.0)[0]
         check_cancel()
 
     emit("serialize", 96, "Serializing textured GLB", key)
@@ -915,7 +935,7 @@ def run_mesh_generation(
     file_size = target_glb.stat().st_size
     emit("validate", 98, "Validated textured GLB", f"{file_size:,} bytes")
 
-    del file3d, textured, low_poly, high_poly, mesh, voxel_colors
+    del file3d, textured, low_poly
     return {
         "provider": key,
         "format": "glb",

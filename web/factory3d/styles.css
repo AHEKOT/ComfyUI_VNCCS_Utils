@@ -1230,11 +1230,15 @@
 .vnccs-i3s__cache-unit { color: var(--i3-muted); font: max(11px, .78em) var(--i3-mono); }
 .vnccs-i3s__cache-hint { color: var(--i3-dim); font-size: max(11px, .72em); line-height: 1.4; }
 .vnccs-i3s__job-detail { margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--i3-dim); font: max(11px, .72em) var(--i3-mono); }
-.vnccs-i3s__texture-pass-note { color: var(--i3-dim); font-size: max(11px, .78em); line-height: 1.4; }
-.vnccs-i3s__texturing-views { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 6px; }
-.vnccs-i3s__texturing-view { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--i3-line); border-radius: 7px; background: rgba(255,255,255,.02); padding: 5px 6px; }
-.vnccs-i3s__texturing-view-label { color: var(--i3-muted); font-size: max(10px, .72em); font-weight: 700; }
-.vnccs-i3s__texturing-view-base, .vnccs-i3s__texturing-view-refined { width: 100%; aspect-ratio: 1; object-fit: contain; border-radius: 4px; background: rgba(0,0,0,.25); }
+.vnccs-i3s__texturing-views { margin-top: 6px; }
+.vnccs-i3s__texturing-summary { margin-bottom: 5px; color: var(--i3-muted); font-size: max(10px, .72em); }
+.vnccs-i3s__texturing-cards { display: flex; gap: 6px; overflow-x: auto; overscroll-behavior: contain; padding-bottom: 4px; }
+.vnccs-i3s__texturing-view { flex: 0 0 88px; min-width: 0; display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--i3-line); border-radius: 7px; background: rgba(255,255,255,.02); padding: 5px; }
+.vnccs-i3s__texturing-view.is-active { border-color: var(--i3-pink-hi); }
+.vnccs-i3s__texturing-view-label, .vnccs-i3s__texturing-view-status { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--i3-muted); font-size: max(10px, .72em); }
+.vnccs-i3s__texturing-view-label { font-weight: 700; text-transform: capitalize; }
+.vnccs-i3s__texturing-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
+.vnccs-i3s__texturing-images > * { display: grid; place-items: center; width: 100%; aspect-ratio: 1; object-fit: contain; border-radius: 4px; background: rgba(0,0,0,.25); }
 .vnccs-i3s__export-grid { display: grid; grid-template-columns: 1fr; gap: 7px; }
 .vnccs-i3s__panorama-export { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; padding: 9px; border: 1px solid rgba(184,169,232,.2); border-radius: 9px; background: linear-gradient(145deg, rgba(184,169,232,.055), rgba(255,143,163,.025)); }
 .vnccs-i3s__panorama-export > .vnccs-i3s__scene-frame-title,

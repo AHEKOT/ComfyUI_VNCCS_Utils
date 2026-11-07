@@ -20,3 +20,4 @@ roma
 tqdm
 color-matcher
 dynamicprompts>=0.31,<1
+diffusers>=0.35.2,<1

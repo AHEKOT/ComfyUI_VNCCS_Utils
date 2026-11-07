@@ -980,6 +980,8 @@ class FactoryBackendTests(unittest.TestCase):
         job = self.runtime._new_job("generation", scene["scene_id"])
 
         def fake_generate(_provider, _image, target, prepared, _settings, **_callbacks):
+            self.assertFalse(_settings["refine_textures"])
+            self.assertIsNone(_callbacks["material_model_directory"])
             target.write_bytes(b"glTF" + b"\0" * 32)
             Image.new("RGB", (1024, 1024), (0, 0, 0)).save(prepared, format="PNG")
             return {
@@ -1018,6 +1020,32 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertIn("/asset/model", item["urls"]["model"])
         stored = self.factory.load_scene(scene["scene_id"])["objects"][0]
         self.assertTrue(self.factory._object_file(scene["scene_id"], stored, "model").is_file())
+        self.assertNotIn("texturing", job)
+        self.assertNotIn("texturing", stored)
+
+    def test_cancelled_mesh_texturing_discards_preview_and_preserves_scene(self):
+        scene = self.factory.create_scene("Existing")
+        scene_root = self.factory.resolve_scene_dir(scene["scene_id"])
+        before = (scene_root / "scene.json").read_bytes()
+        object_id = self.factory._new_id()
+        image_stream = io.BytesIO()
+        Image.new("RGB", (16, 16)).save(image_stream, format="PNG")
+        job = self.runtime._new_job("generation", scene["scene_id"])
+
+        def cancelled(_provider, _image, target, _prepared, _settings, **callbacks):
+            directory = target.parents[1] / "texturing"
+            directory.mkdir()
+            (directory / "preview.glb").write_bytes(b"glTF")
+            callbacks["publish"]({"preview": "preview.glb", "views": []})
+            raise self.runtime.JobCancelled("cancelled")
+
+        with mock.patch.object(self.runtime, "_provider_weights_status", return_value={"ready": True}), \
+             mock.patch.object(self.factory.factory3d_generation, "run_mesh_generation", side_effect=cancelled):
+            with self.assertRaises(self.runtime.JobCancelled):
+                self.runtime._generate_mesh_object(job, image_stream.getvalue(), object_id, "New",
+                    self.factory._generation_settings({"provider": "trellis2", "seed": 1, "refine_textures": "1"}))
+        self.assertEqual((scene_root / "scene.json").read_bytes(), before)
+        self.assertFalse((scene_root / "objects" / object_id).exists())
 
     def test_object_updates_cannot_replace_server_file_metadata(self):
         scene = self.factory.create_scene("Scene")

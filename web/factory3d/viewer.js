@@ -11,6 +11,7 @@ import {
 import { FactoryArchitectureRuntime } from "./plan_geometry.mjs?v=20260908.3";
 import { solveDropToSurface } from "./support_solver.mjs?v=20260905.4";
 import { allocateLocalLightShadows } from "./lighting_policy.mjs?v=20260905.1";
+import { FactoryGenerationPreview } from "./generation_preview.mjs?v=20261107.1";
 import {
     disposeFactoryModel,
     loadFactoryModel,
@@ -31,7 +32,7 @@ const LIGHTING_BASE_RESPONSE = 0.65;
 const MAX_PLAN_GRID_LINES_PER_AXIS = 800;
 const CUTAWAY_MAX_VERTICAL_DOT = 0.7;
 const MIN_DIRECTIONAL_SHADOW_HALF_SPAN = 2;
-export const FACTORY_VIEWER_BUILD = "20260908.4";
+export const FACTORY_VIEWER_BUILD = "20261107.1";
 
 const MAX_OBJECT_AREA_LIGHTS = 32;
 const PLAN_BACKGROUND = "#0b0d14";
@@ -6977,9 +6978,19 @@ export class Factory3DViewer {
         }
     }
 
+    updateGenerationPreview(snapshot) {
+        this._generationPreview ||= new FactoryGenerationPreview(this);
+        return this._generationPreview.update(snapshot);
+    }
+
+    clearGenerationPreview() {
+        this._generationPreview?.clear();
+    }
+
     dispose() {
         if (this._disposed) return;
         this._disposed = true;
+        this.clearGenerationPreview();
         this._loadingToken += 1;
         this._skydomeLoadToken += 1;
         this._loadController?.abort();

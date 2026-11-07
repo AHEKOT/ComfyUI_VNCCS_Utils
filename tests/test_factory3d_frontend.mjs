@@ -55,8 +55,8 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20261101\.1"/);
-    assert.match(studio, /factory3d\/styles\.css\?v=20261101\.1/);
+    assert.match(studio, /FRONTEND_BUILD = "20261108\.1"/);
+    assert.match(studio, /factory3d\/styles\.css\?v=20261107\.1/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -425,7 +425,7 @@ test("Factory generation switches between TripoSplat, Pixal3D, and TRELLIS.2 wit
     assert.match(studio, /data-generator-settings="triposplat"/);
     assert.match(studio, /data-generator-settings="mesh" hidden/);
     assert.match(studio, /for \(const provider of \["triposplat", "pixal3d", "trellis2"\]\)/);
-    assert.match(studio, /generatorWeightsDownload: provider/);
+    assert.match(studio, /generatorWeightsDownload: \(provider, refineTextures = false\)/);
     assert.match(studio, /form\.append\("provider", provider\)/);
     assert.match(studio, /form\.append\("quality", String\(this\.settings\.mesh_quality\)\)/);
     assert.match(studio, /this\._listen\(control, "input", update\)/);
@@ -1322,7 +1322,7 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.prepareSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBufferAsync, "function");
     assert.equal(typeof support.solveDropToSurface, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260908.4");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20261107.1");
     const visiblePickRoot = new THREE.Group();
     const visiblePickMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
     visiblePickRoot.add(visiblePickMesh);
@@ -1972,15 +1972,14 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.ok(groupEvents.every(item => item.options.final && item.options.group_id === "group-a"));
 });
 
-test("Mesh texture refinement form, live view strip, and payload are wired", () => {
-    assert.match(studio, /mesh_texture_pass: false,/);
-    assert.match(studio, /mesh_texture_strength: 0\.6,/);
-    assert.match(studio, /vnccs-i3s__texture-refinement/);
-    assert.match(studio, /aria-label="Refine mesh textures from camera views"/);
-    assert.match(studio, /vnccs-i3s__texture-prompt/);
-    assert.match(studio, /form\.append\("texture_pass", "1"\)/);
+test("Optional mesh refinement needs no prompt and publishes live progress", () => {
+    assert.doesNotMatch(studio, /mesh_texture_pass|mesh_texture_prompt|_syncTexturePass/);
+    assert.match(studio, /mesh_refine_textures: false/);
+    assert.match(studio, /aria-label="Refine Textures and Materials"/);
+    assert.match(studio, /form\.append\("refine_textures", this\.settings\.mesh_refine_textures === true \? "1" : "0"\)/);
+    assert.match(studio, /<summary>Advanced sampling<\/summary>/);
     assert.match(studio, /this\._renderTexturingViews\(job\.texturing\)/);
-    assert.match(studio, /_syncTexturePass\(\)/);
-    assert.match(styles, /\.vnccs-i3s__texturing-views/);
-    assert.match(styles, /\.vnccs-i3s__texture-pass-note/);
+    assert.match(studio, /this\.viewer\.updateGenerationPreview\(job\.texturing\)/);
+    assert.match(studio, /this\.viewer\.clearGenerationPreview\(\)/);
+    assert.match(styles, /\.vnccs-i3s__texturing-cards/);
 });
