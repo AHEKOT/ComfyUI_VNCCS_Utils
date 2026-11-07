@@ -3,6 +3,7 @@ import test from "node:test";
 import { createScene, Element } from "./helpers/pose_studio_scene.mjs";
 import {
     computeSubjectSizeDistance,
+    MIN_CAPTURE_FOV_DEG,
     normalizeCaptureLens,
     resolveCaptureCameraParams,
 } from "../web/pose_studio/animation.mjs";
@@ -155,7 +156,7 @@ test("FOV and distance update the real perspective projection while sliding", ()
     }
 });
 
-test("FOV and Distance use the same value label, reset and slider as the other camera controls", () => {
+test("FOV and Distance use the same editable value, reset and slider as the other camera controls", () => {
     const { w, section } = lensScene();
     for (const [field, key, value] of [
         [section.content.children[0], "cam_fov_deg", "30.00"],
@@ -164,9 +165,10 @@ test("FOV and Distance use the same value label, reset and slider as the other c
         const slider = w.exportWidgets[key];
         const [labelRow, sliderWrap] = field.children;
         const valueRow = labelRow.children[1];
-        assert.equal(valueRow.children[0], slider._vnccsValueSpan);
-        assert.equal(slider._vnccsValueSpan.className, w.exportWidgets.cam_yaw_deg._vnccsValueSpan.className);
-        assert.equal(slider._vnccsValueSpan.innerText, value);
+        assert.equal(valueRow.children[0], slider._vnccsNumberInput);
+        assert.equal(slider._vnccsNumberInput.type, "number");
+        assert.equal(slider._vnccsNumberInput.className, w.exportWidgets.cam_yaw_deg._vnccsNumberInput.className);
+        assert.equal(slider._vnccsNumberInput.value, value);
         assert.equal(valueRow.children[1].className, "vnccs-ps-reset-btn");
         assert.deepEqual(sliderWrap.children, [slider]);
         assert.equal(field.children.length, 2);
@@ -174,7 +176,7 @@ test("FOV and Distance use the same value label, reset and slider as the other c
     }
 });
 
-test("lens value labels follow the sliders and Maintain Subject Size during a gesture", () => {
+test("lens fields follow the sliders and Maintain Subject Size during a gesture", () => {
     const scene = lensScene();
     const { w } = scene;
     const fov = w.exportWidgets.cam_fov_deg;
@@ -185,15 +187,51 @@ test("lens value labels follow the sliders and Maintain Subject Size during a ge
     for (const value of [33, 41, 58.5]) {
         fov.value = String(value);
         fov.emit("input");
-        assert.equal(fov._vnccsValueSpan.innerText, value.toFixed(2));
-        assert.equal(distance._vnccsValueSpan.innerText, w.exportParams.cam_distance.toFixed(2));
+        assert.equal(fov._vnccsNumberInput.value, value.toFixed(2));
+        assert.equal(distance._vnccsNumberInput.value, w.exportParams.cam_distance.toFixed(2));
         assert.equal(Number(distance.value), w.exportParams.cam_distance);
     }
     fov.emit("change");
     fov.emit("pointerup");
     const resetButton = fov.parentElement.parentElement.children[0].children[1].children[1];
     resetButton.onclick({ stopPropagation: noop });
-    assert.equal(fov._vnccsValueSpan.innerText, "30.00");
+    assert.equal(fov._vnccsNumberInput.value, "30.00");
+});
+
+test("typing camera values updates the lens live and commits one Undo per edit", () => {
+    const { w, viewer, document } = lensScene();
+    const fov = w.exportWidgets.cam_fov_deg;
+    const input = fov._vnccsNumberInput;
+    const distance = w.exportWidgets.cam_distance;
+    w.exportWidgets.cam_maintain_subject_size.checked = true;
+    w.exportWidgets.cam_maintain_subject_size.emit("change");
+    const history = viewer.history.length;
+    document.activeElement = input;
+    input.value = "";
+    input.emit("input");
+    assert.equal(viewer.history.length, history);
+    for (const value of ["4", "42", "42.5"]) {
+        input.value = value;
+        input.emit("input");
+        const expected = Math.max(MIN_CAPTURE_FOV_DEG, Number(value));
+        assert.equal(viewer.captureCamera.fov, expected);
+        assert.equal(Number(fov.value), expected);
+        assert.equal(input.value, value, "the active draft remains editable");
+        assert.equal(distance._vnccsNumberInput.value, w.exportParams.cam_distance.toFixed(2));
+    }
+    input.emit("keydown", { key: "Enter" });
+    assert.equal(input.value, "42.50");
+    assert.equal(viewer.history.length, history + 1);
+    viewer.undo();
+    assert.equal(viewer.captureCamera.fov, 30);
+    assert.equal(input.value, "30.00", "the committed field follows Undo even while focused");
+    document.activeElement = null;
+    input.emit("blur");
+
+    distance._vnccsNumberInput.value = "80.1";
+    distance._vnccsNumberInput.emit("input");
+    close(distanceToTarget(viewer), 80.1);
+    distance._vnccsNumberInput.emit("blur");
 });
 
 // Two points one unit apart vertically, at a given depth along the camera axis.
@@ -279,7 +317,7 @@ test("Undo and Redo restore the editor camera with the capture lens", () => {
     close(viewer.camera.projectionMatrix.elements[5], 1 / tanHalf(45) * start.zoom, 1e-9, "the editor projection is rebuilt");
     assert.deepEqual(viewer.camera.position.toArray(), start.position, "the editor distance returns");
     assert.equal(String(w.exportWidgets.cam_fov_deg.value), "30", "the slider returns");
-    assert.equal(w.exportWidgets.cam_fov_deg._vnccsValueSpan.innerText, "30.00", "the value label returns");
+    assert.equal(w.exportWidgets.cam_fov_deg._vnccsNumberInput.value, "30.00", "the value label returns");
 
     viewer.redo();
     assert.equal(w.exportParams.cam_fov_deg, 62);
@@ -340,7 +378,7 @@ test("the SAM standard fit keeps the lens it measured with", () => {
     close(distanceToTarget(viewer), 80, 1e-6, "the capture camera keeps the measured distance");
     assert.equal(w.poses[w.activeTab].cameraParams.fov_deg, 60, "the pose stores the measured lens");
     assert.equal(w.poses[w.activeTab].cameraParams.distance, 80);
-    assert.equal(w.exportWidgets.cam_fov_deg._vnccsValueSpan.innerText, "60.00");
+    assert.equal(w.exportWidgets.cam_fov_deg._vnccsNumberInput.value, "60.00");
 
     // An aligned view does not apply to the standard front camera.
     w.setExportCaptureLens({
@@ -1232,7 +1270,7 @@ test("animation Undo and Redo restore lens gestures and Align without changing t
     assert.equal(w._animationUndoStack.length, 1);
     w.undoAnimation();
     assertSameCamera(cameraState(viewer), start, "Undo FOV");
-    assert.equal(fov._vnccsValueSpan.innerText, "30.00");
+    assert.equal(fov._vnccsNumberInput.value, "30.00");
     close(viewer.camera.fov, 45);
     w.redoAnimation();
     assert.equal(viewer.captureCamera.fov, 60);

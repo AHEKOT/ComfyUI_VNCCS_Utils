@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
 
-// Pose Studio capture lens on a real ComfyUI graph node: standard slider and value-label
+// Pose Studio capture lens on a real ComfyUI graph node: standard slider and numeric field
 // behaviour, the Camera Angle controls, editor camera Undo, and geometry at three depths
 // measured in the viewport cameras and in real RUN output. RUN uses only Pose Studio's CPU
 // capture path; nothing downloads models.
@@ -56,9 +56,8 @@ const lens = page => page.evaluate(() => {
       key,
       param: w.exportParams[key],
       slider: slider.value,
-      labelValue: slider._vnccsValueSpan.innerText,
+      labelValue: slider._vnccsNumberInput.value,
       numberInputs: field.querySelectorAll('input[type="number"]').length,
-      readOnlyValues: field.querySelectorAll(".vnccs-ps-value").length,
       sliderStep: slider.step,
     };
   });
@@ -77,20 +76,19 @@ const clickCenter = async (page, locator) => {
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 };
 
-test("capture lens: standard camera sliders and value labels stay in sync", async ({ page }) => {
+test("capture lens: standard camera sliders and editable values stay in sync", async ({ page }) => {
   test.setTimeout(180_000);
   await openPoseStudio(page);
   await openCameraAngle(page);
   const before = await lens(page);
   for (const row of before.rows) {
-    expect(row.numberInputs, `${row.key} uses the standard value label`).toBe(0);
-    expect(row.readOnlyValues, `${row.key} has one value label`).toBe(1);
+    expect(row.numberInputs, `${row.key} has one editable value`).toBe(1);
     expect(Number(row.sliderStep)).toBe(0.1);
   }
 
   // Same row and aligned: label, value and reset button.
   const geometry = await page.evaluate(() => ["cam_fov_deg", "cam_distance"].map(key => {
-    const w = window.__node.studioWidget, slider = w.exportWidgets[key], value = slider._vnccsValueSpan;
+    const w = window.__node.studioWidget, slider = w.exportWidgets[key], value = slider._vnccsNumberInput;
     const field = slider.closest(".vnccs-ps-field");
     const rect = element => element.getBoundingClientRect();
     const reset = field.querySelector(".vnccs-ps-reset-btn");
@@ -119,7 +117,17 @@ test("capture lens: standard camera sliders and value labels stay in sync", asyn
     expect(live.captureDistance).toBeCloseTo(expected, 5);
   }
 
-  // A real slider drag updates the value label on every step.
+  const fovField = page.getByRole("spinbutton", { name: "FOV", exact: true });
+  for (const value of ["41.2", "53.6"]) {
+    await fovField.fill(value);
+    const live = await lens(page);
+    expect(live.captureFov).toBe(Number(value));
+    expect(Number(live.rows[0].slider)).toBe(Number(value));
+  }
+  await fovField.press("Enter");
+  await expect(fovField).toHaveValue("53.60");
+
+  // A real slider drag updates the numeric field on every step.
   const box = await page.evaluate(() => {
     const rect = window.__node.studioWidget.exportWidgets.cam_fov_deg.getBoundingClientRect();
     return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };

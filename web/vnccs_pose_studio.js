@@ -418,13 +418,6 @@ const STYLES = `
     letter-spacing: 0.8px;
 }
 
-.vnccs-ps-value {
-    font-size: 9px;
-    color: var(--ps-accent);
-    margin-left: auto;
-    font-family: var(--ps-font-mono);
-}
-
 .vnccs-ps-label-row {
     display: flex;
     justify-content: space-between;
@@ -501,31 +494,56 @@ const STYLES = `
     box-shadow: 0 0 6px var(--ps-accent-glow);
 }
 
-.vnccs-ps-slider-val {
-    width: 35px;
-    text-align: right;
-    font-size: 10px;
+.vnccs-pose-studio input[type="number"],
+input.vnccs-ps-value-input {
     color: var(--ps-accent);
-    background: transparent;
-    border: none;
     font-family: var(--ps-font-mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+
+:is(.vnccs-pose-studio input[type="number"], input.vnccs-ps-value-input)::-webkit-inner-spin-button,
+:is(.vnccs-pose-studio input[type="number"], input.vnccs-ps-value-input)::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.vnccs-ps-input.vnccs-ps-value-input {
+    width: 52px;
+    min-width: 0;
+    max-width: 100%;
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 1px 4px;
+    font-size: 9px;
+}
+
+input.vnccs-ps-value-input:disabled {
+    opacity: 0.55;
 }
 
 /* Input */
-.vnccs-ps-input {
+.vnccs-ps-input,
+.vnccs-pose-studio input[type="number"] {
     background: var(--ps-input-bg);
     border: 1px solid var(--ps-border);
-    color: var(--ps-text);
     border-radius: var(--ps-radius-sm);
-    padding: 5px 8px;
-    font-family: var(--ps-font);
-    font-size: 10px;
-    width: 100%;
     box-sizing: border-box;
     transition: all var(--ps-transition);
 }
 
-.vnccs-ps-input:focus {
+.vnccs-ps-input {
+    color: var(--ps-text);
+    padding: 5px 8px;
+    font-family: var(--ps-font);
+    font-size: 10px;
+    width: 100%;
+}
+
+.vnccs-ps-input:focus,
+.vnccs-pose-studio input[type="number"]:focus {
     outline: none;
     border-color: var(--ps-accent-border);
     background: rgba(255, 143, 163, 0.03);
@@ -1078,16 +1096,6 @@ const STYLES = `
     font-weight: 700;
     width: 10px;
 }
-.vnccs-ps-light-value {
-    width: 42px;
-    min-width: 42px;
-    box-sizing: border-box;
-    text-align: right;
-    font-size: 9px;
-    color: var(--ps-accent);
-    font-family: var(--ps-font-mono);
-}
-
 /* Light Radar */
 .vnccs-ps-light-radar-wrap {
     display: flex;
@@ -1139,12 +1147,10 @@ const STYLES = `
 .vnccs-ps-light-slider-vert::-webkit-slider-thumb {
     width: 12px; height: 12px;
 }
-.vnccs-ps-light-h-val {
-    font-size: 10px;
-    color: var(--ps-accent);
-    height: 12px;
-    line-height: 12px;
-    font-family: var(--ps-font-mono);
+.vnccs-ps-light-slider-vert-wrap input.vnccs-ps-value-input {
+    margin: 0;
+    padding-inline: 2px;
+    text-align: center;
 }
 .vnccs-ps-light-h-label {
     font-size: 9px;
@@ -3292,16 +3298,15 @@ const STYLES = `
     font-family: var(--ps-font);
 }
 
-.vnccs-ps-library-size-control input {
+.vnccs-ps-library-size-control input[type="range"] {
     width: 100%;
     height: calc(28px * var(--vnccs-ps-library-ui-scale));
     accent-color: var(--ps-accent);
 }
 
-.vnccs-ps-library-size-value {
-    width: calc(68px * var(--vnccs-ps-library-ui-scale));
-    text-align: right;
-    color: var(--ps-accent);
+.vnccs-ps-library-size-control input.vnccs-ps-value-input {
+    font-size: inherit;
+    line-height: 1.4;
 }
 
 .vnccs-ps-library-categories {
@@ -4470,7 +4475,6 @@ class PoseStudioWidget {
         this._handSliderValues = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
         this._handSliderDefaults = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
         this._handSliderRefs = {};
-        this._handSliderValRefs = {};
         this._handBiasValues = [1.0, 1.0, 1.0];
         this._activeHandSide = null;
         this._lastSAM3DPoseData = null;
@@ -4782,9 +4786,6 @@ class PoseStudioWidget {
         label.className = "vnccs-ps-label";
         label.innerText = def.label;
 
-        const value = document.createElement("span");
-        value.className = "vnccs-ps-value";
-
         const wrap = document.createElement("div");
         wrap.className = "vnccs-ps-slider-wrap";
 
@@ -4794,6 +4795,7 @@ class PoseStudioWidget {
         slider.min = def.min;
         slider.max = def.max;
         slider.step = def.step;
+        const number = this.createSliderNumber(slider, def.label, def.key === "age" ? 0 : 2);
 
         this.trackPoseGesture(slider, { recordPose: true });
         slider.addEventListener("input", () => {
@@ -4809,20 +4811,20 @@ class PoseStudioWidget {
         });
 
         labelRow.appendChild(label);
-        labelRow.appendChild(value);
+        labelRow.appendChild(number);
         wrap.appendChild(slider);
         field.appendChild(labelRow);
         field.appendChild(wrap);
 
-        this.managerControls[def.key] = { input: slider, value, group, def };
+        this.managerControls[def.key] = { input: slider, group, def };
         return field;
     }
 
     createManagerInput(def) {
-        const field = document.createElement("div");
+        const field = document.createElement("label");
         field.className = "vnccs-ps-field";
 
-        const label = document.createElement("div");
+        const label = document.createElement("span");
         label.className = "vnccs-ps-label";
         label.innerText = def.label;
 
@@ -4857,19 +4859,10 @@ class PoseStudioWidget {
         return next;
     }
 
-    formatManagerValue(key, value) {
-        return key === "age" || key === "view_width" || key === "view_height"
-            ? String(Math.round(Number(value) || 0))
-            : Number(value || 0).toFixed(2);
-    }
-
     applyManagerMeshValue(key, value, options = {}) {
         this.meshParams[key] = value;
         const main = this.sliders?.[key];
-        if (main) {
-            main.slider.value = value;
-            main.label.innerText = this.formatManagerValue(key, value);
-        }
+        if (main) this.setNumericControlValue(main.slider, value);
         this.refreshPoseManagerControls();
         if (key === "head_size") {
             const widget = this.getNodeWidget(key);
@@ -4914,10 +4907,7 @@ class PoseStudioWidget {
 
         for (const key of sourceKeys) {
             const main = this.sliders?.[key];
-            if (main) {
-                main.slider.value = this.meshParams[key];
-                main.label.innerText = this.formatManagerValue(key, this.meshParams[key]);
-            }
+            if (main) this.setNumericControlValue(main.slider, this.meshParams[key]);
         }
 
         this.updateGenderUI();
@@ -4945,7 +4935,7 @@ class PoseStudioWidget {
     applyManagerExportValue(key, value) {
         this.exportParams[key] = value;
         const main = this.exportWidgets?.[key];
-        if (main) main.value = value;
+        if (main) this.setNumericControlValue(main, value);
         const isDimension = key === "view_width" || key === "view_height";
         if (isDimension) {
             this._lastResizeW = 0;
@@ -5009,9 +4999,7 @@ class PoseStudioWidget {
         for (const [key, info] of Object.entries(this.managerControls || {})) {
             const source = info.group === "export" ? this.exportParams : this.meshParams;
             const value = source[key];
-            if (info.input && value !== undefined
-                && !(info.input.type === "number" && document.activeElement === info.input)) info.input.value = value;
-            if (info.value) info.value.innerText = this.formatManagerValue(key, value);
+            if (info.input && value !== undefined) this.setNumericControlValue(info.input, value);
         }
 
         const isFemale = this.meshParams.gender < 0.5;
@@ -5186,18 +5174,13 @@ class PoseStudioWidget {
             labelSpan.className = "vnccs-ps-label";
             labelSpan.textContent = axis.toUpperCase();
 
-            const valueSpan = document.createElement("span");
-            valueSpan.className = "vnccs-ps-value";
-            valueSpan.textContent = "0°";
-
             const resetBtn = document.createElement("button");
             resetBtn.className = "vnccs-ps-reset-btn";
             resetBtn.innerHTML = "↺";
             resetBtn.title = "Reset to 0°";
             resetBtn.onclick = (e) => {
                 e.stopPropagation();
-                slider.value = 0;
-                valueSpan.innerText = "0°";
+                this.setNumericControlValue(slider, 0);
                 if (this.viewer) {
                     if (!this.isAnimationMode()) this.viewer.recordState();
                     this.viewer.setModelRotation(axis === 'x' ? 0 : undefined, axis === 'y' ? 0 : undefined, axis === 'z' ? 0 : undefined);
@@ -5209,9 +5192,6 @@ class PoseStudioWidget {
             valueRow.style.display = "flex";
             valueRow.style.alignItems = "center";
             valueRow.style.gap = "6px";
-            valueRow.appendChild(valueSpan);
-            valueRow.appendChild(resetBtn);
-
             labelRow.appendChild(labelSpan);
             labelRow.appendChild(valueRow);
 
@@ -5225,18 +5205,18 @@ class PoseStudioWidget {
             slider.max = 180;
             slider.step = 1;
             slider.value = 0;
+            valueRow.append(this.createSliderNumber(slider, `Model Rotation ${axis.toUpperCase()}`), resetBtn);
 
             this.trackPoseGesture(slider, { recordPose: true });
             slider.addEventListener("input", () => {
                 const val = parseFloat(slider.value);
-                valueSpan.innerText = `${val}°`;
                 if (this.viewer) {
                     this.viewer.setModelRotation(axis === 'x' ? val : undefined, axis === 'y' ? val : undefined, axis === 'z' ? val : undefined);
                     this.syncToNode();
                 }
             });
 
-            this.sliders[`rot_${axis}`] = { slider, label: valueSpan };
+            this.sliders[`rot_${axis}`] = { slider };
 
             wrap.appendChild(slider);
             field.appendChild(labelRow);
@@ -6725,10 +6705,7 @@ class PoseStudioWidget {
     syncCharacterEditorControls() {
         for (const [key, info] of Object.entries(this.sliders || {})) {
             if (key.startsWith("rot_") || !info?.def || this.meshParams[key] === undefined) continue;
-            info.slider.value = this.meshParams[key];
-            info.label.innerText = key === "age"
-                ? String(Math.round(Number(this.meshParams[key]) || 0))
-                : Number(this.meshParams[key] || 0).toFixed(2);
+            this.setNumericControlValue(info.slider, this.meshParams[key]);
         }
         this.updateGenderUI();
         this.updateGenderVisibility();
@@ -8148,12 +8125,7 @@ class PoseStudioWidget {
     syncCameraWidgets() {
         for (const key of ['cam_zoom', 'cam_offset_x', 'cam_offset_y', 'cam_yaw_deg', 'cam_pitch_deg', 'cam_fov_deg', 'cam_distance']) {
             const widget = this.exportWidgets[key];
-            if (widget) {
-                if (!(widget.type === "number" && document.activeElement === widget)) widget.value = this.exportParams[key];
-                if (widget._vnccsValueSpan) {
-                    widget._vnccsValueSpan.innerText = Number(this.exportParams[key] || 0).toFixed(2);
-                }
-            }
+            if (widget) this.setNumericControlValue(widget, this.exportParams[key]);
         }
         const maintainWidget = this.exportWidgets.cam_maintain_subject_size;
         if (maintainWidget) maintainWidget.checked = this.exportParams.cam_maintain_subject_size === true;
@@ -8169,6 +8141,7 @@ class PoseStudioWidget {
             const widget = this.exportWidgets?.[key];
             if (!widget) continue;
             widget.disabled = samLens;
+            if (widget._vnccsNumberInput) widget._vnccsNumberInput.disabled = samLens;
         }
         if (this._captureLensSamNote) this._captureLensSamNote.style.display = samLens ? "block" : "none";
         const aligned = !!this.exportParams.cam_view;
@@ -8485,6 +8458,66 @@ class PoseStudioWidget {
         control.addEventListener("blur", finish);
     }
 
+    createSliderNumber(slider, label, digits = 2) {
+        const input = document.createElement("input");
+        input.type = "number";
+        input.className = "vnccs-ps-input vnccs-ps-value-input";
+        input.min = slider.min;
+        input.max = slider.max;
+        input.step = slider.step;
+        input.setAttribute("aria-label", label);
+        slider.setAttribute("aria-label", label + " slider");
+
+        let displayValue;
+        let editing = false;
+        let changed = false;
+        const syncNumber = value => {
+            displayValue = Number(value).toFixed(digits);
+            if (!editing || document.activeElement !== input) input.value = displayValue;
+        };
+        slider._vnccsNumberInput = input;
+        slider._vnccsSyncNumber = syncNumber;
+        syncNumber(slider.value);
+        slider.addEventListener("input", () => syncNumber(slider.value));
+
+        input.addEventListener("input", () => {
+            if (input.disabled) return;
+            editing = true;
+            const value = Number(input.value);
+            if (input.value === "" || !Number.isFinite(value)) return;
+            const previous = Number(displayValue);
+            slider.value = String(Math.max(Number(slider.min), Math.min(Number(slider.max), value)));
+            if (Number(slider.value) === previous) return;
+            changed = true;
+            slider.dispatchEvent(new Event("input"));
+        });
+        const finish = () => {
+            editing = false;
+            if (changed) {
+                changed = false;
+                slider.dispatchEvent(new Event("change"));
+            }
+            input.value = displayValue;
+        };
+        input.addEventListener("blur", finish);
+        input.addEventListener("keydown", event => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            event.stopPropagation();
+            finish();
+        });
+        input.addEventListener("keyup", event => {
+            if (event.key === "ArrowUp" || event.key === "ArrowDown") finish();
+        });
+        return input;
+    }
+
+    setNumericControlValue(control, value) {
+        if (control.type === "number" && document.activeElement === control) return;
+        control.value = value;
+        control._vnccsSyncNumber?.(value);
+    }
+
     createSliderField(label, key, min, max, step, defaultValue, target, isExport = false) {
         const field = document.createElement("div");
         field.className = "vnccs-ps-field";
@@ -8496,23 +8529,15 @@ class PoseStudioWidget {
         labelRow.style.alignItems = "center";
 
         const value = target[key];
-        const displayVal = key === 'age' ? Math.round(value) : value.toFixed(2);
         const valueRow = document.createElement("div");
         valueRow.style.display = "flex";
         valueRow.style.alignItems = "center";
         valueRow.style.gap = "6px";
 
-        const valueSpan = document.createElement("span");
-        valueSpan.className = "vnccs-ps-value";
-        valueSpan.innerText = displayVal;
-
         const resetBtn = document.createElement("button");
         resetBtn.className = "vnccs-ps-reset-btn";
         resetBtn.innerHTML = "↺";
         resetBtn.title = `Reset to ${defaultValue}`;
-
-        valueRow.appendChild(valueSpan);
-        valueRow.appendChild(resetBtn);
 
         // Label Side
         const labelEl = document.createElement("span");
@@ -8533,7 +8558,7 @@ class PoseStudioWidget {
         slider.max = max;
         slider.step = step;
         slider.value = value;
-        slider._vnccsValueSpan = valueSpan;
+        valueRow.append(this.createSliderNumber(slider, label, key === "age" ? 0 : 2), resetBtn);
         this.trackPoseGesture(slider, { recordPose: true });
         const isLiveMorphSlider = !isExport && this.isLiveMorphKey?.(key);
 
@@ -8547,7 +8572,6 @@ class PoseStudioWidget {
 
         slider.addEventListener("input", () => {
             const val = parseFloat(slider.value);
-            valueSpan.innerText = key === 'age' ? Math.round(val) : val.toFixed(2);
 
             if (isExport) {
                 const previousValue = this.exportParams[key];
@@ -8612,7 +8636,7 @@ class PoseStudioWidget {
         });
 
         if (!isExport) {
-            this.sliders[key] = { slider, label: valueSpan, def: { key, label, min, max, step } };
+            this.sliders[key] = { slider, def: { key, label, min, max, step } };
         } else {
             this.exportWidgets[key] = slider;
         }
@@ -8624,10 +8648,10 @@ class PoseStudioWidget {
     }
 
     createInputField(label, key, type, min, max, step) {
-        const field = document.createElement("div");
+        const field = document.createElement("label");
         field.className = "vnccs-ps-field";
 
-        const labelEl = document.createElement("div");
+        const labelEl = document.createElement("span");
         labelEl.className = "vnccs-ps-label";
         labelEl.innerText = label;
 
@@ -9192,8 +9216,8 @@ class PoseStudioWidget {
         const defaults = this._handSliderDefaults || { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
         for (const [key, value] of Object.entries(defaults)) {
             this._handSliderValues[key] = value;
-            if (this._handSliderRefs[key]) this._handSliderRefs[key].value = String(value);
-            if (this._handSliderValRefs[key]) this._handSliderValRefs[key].textContent = value.toFixed(2);
+            const slider = this._handSliderRefs[key];
+            if (slider) this.setNumericControlValue(slider, value);
         }
     }
 
@@ -9342,23 +9366,20 @@ class PoseStudioWidget {
             slider.value = "0";
             slider.className = "vnccs-ps-slider";
 
-            const value = document.createElement("span");
-            value.style.cssText = "font-size:10px;color:var(--ps-accent);text-align:right;font-family:var(--ps-font-mono);";
-            value.textContent = "0.00";
+            const value = this.createSliderNumber(slider, label);
 
             this.trackPoseGesture(slider, { recordPose: true });
             slider.addEventListener("input", () => {
                 const numericValue = parseFloat(slider.value);
-                value.textContent = numericValue.toFixed(2);
                 onInput(numericValue);
             });
 
             row.append(lbl, slider, value);
-            return { row, slider, value };
+            return { row, slider };
         };
 
         const mkTrackedHandSlider = (label, key, initialValue) => {
-            const { row, slider, value } = mkSliderRow(label, (numericValue) => {
+            const { row, slider } = mkSliderRow(label, (numericValue) => {
                 if (key === "grasp") {
                     const oldGrasp = this._handSliderValues.grasp;
                     this._handSliderValues.grasp = numericValue;
@@ -9374,8 +9395,8 @@ class PoseStudioWidget {
                         }
                         nextValue = Math.max(0, Math.min(1, nextValue));
                         this._handSliderValues[prefix] = nextValue;
-                        if (this._handSliderRefs[prefix]) this._handSliderRefs[prefix].value = String(nextValue);
-                        if (this._handSliderValRefs[prefix]) this._handSliderValRefs[prefix].textContent = nextValue.toFixed(2);
+                        const control = this._handSliderRefs[prefix];
+                        if (control) this.setNumericControlValue(control, nextValue);
                     }
                 } else {
                     this._handSliderValues[key] = numericValue;
@@ -9383,10 +9404,8 @@ class PoseStudioWidget {
                 this.applyActiveHandSliders();
             });
 
-            slider.value = String(initialValue);
-            value.textContent = initialValue.toFixed(2);
+            this.setNumericControlValue(slider, initialValue);
             this._handSliderRefs[key] = slider;
-            this._handSliderValRefs[key] = value;
             return row;
         };
 
@@ -9985,10 +10004,7 @@ class PoseStudioWidget {
         for (const key of Object.keys(DEFAULT_POSE_STUDIO_MESH_PROPORTIONS)) {
             const value = this.meshParams[key];
             const slider = this.sliders?.[key];
-            if (slider) {
-                slider.slider.value = value;
-                slider.label.innerText = this.formatManagerValue(key, value);
-            }
+            if (slider) this.setNumericControlValue(slider.slider, value);
             const widget = this.getNodeWidget(key);
             if (widget) widget.value = value;
         }
@@ -11949,7 +11965,7 @@ class PoseStudioWidget {
         const size = this.libraryThumbSize || this.getLibraryThumbnailBounds().defaultSize;
         target.style.setProperty("--vnccs-ps-library-thumb-size", `${size}px`);
         target.style.setProperty("--vnccs-ps-library-thumb-height", `${Math.round(size * 1.3125)}px`);
-        if (this.librarySizeValue) this.librarySizeValue.textContent = `${Math.round(size)}`;
+        if (this.librarySizeInput) this.setNumericControlValue(this.librarySizeInput, size);
     }
 
     showLibraryModal() {
@@ -11972,11 +11988,10 @@ class PoseStudioWidget {
             </div>
             <div class="vnccs-ps-library-toolbar">
                 <input class="vnccs-ps-library-search" type="search" placeholder="Search poses, animations, and tags...">
-                <label class="vnccs-ps-library-size-control" title="Preview size">
+                <div class="vnccs-ps-library-size-control" title="Preview size">
                     <span>Preview</span>
                     <input class="vnccs-ps-library-size-slider" type="range" min="160" max="520" step="10">
-                    <span class="vnccs-ps-library-size-value"></span>
-                </label>
+                </div>
                 <button class="vnccs-ps-library-menu-btn" title="Pose library settings">⚙️</button>
             </div>
             <div class="vnccs-ps-library-categories"></div>
@@ -11993,15 +12008,15 @@ class PoseStudioWidget {
         this.libraryWorkspace = modal.querySelector('.vnccs-ps-library-workspace');
         this.librarySearchInput = modal.querySelector('.vnccs-ps-library-search');
         this.librarySizeInput = modal.querySelector('.vnccs-ps-library-size-slider');
-        this.librarySizeValue = modal.querySelector('.vnccs-ps-library-size-value');
         this.libraryCategoriesEl = modal.querySelector('.vnccs-ps-library-categories');
         this.librarySettingsEl = modal.querySelector('.vnccs-ps-library-settings');
         this.librarySettingsMode = false;
         this.librarySelectedName = null;
         this.libraryActiveCategory = "All";
         if (this.librarySizeInput) {
-            this.librarySizeInput.value = String(this.libraryThumbSize);
-            this.librarySizeInput.addEventListener('input', () => this.saveLibraryThumbnailSize(this.librarySizeInput.value));
+            const slider = this.librarySizeInput;
+            slider.parentElement.appendChild(this.createSliderNumber(slider, "Preview Size (px)", 0));
+            slider.addEventListener('input', () => this.saveLibraryThumbnailSize(slider.value));
         }
         this.applyLibraryThumbnailSize(this.libraryWorkspace);
 
@@ -12023,7 +12038,7 @@ class PoseStudioWidget {
             }
             this.libraryModal = null;
             this.libraryGrid = this.libraryInspector = this.libraryWorkspace = null;
-            this.librarySearchInput = this.librarySizeInput = this.librarySizeValue = null;
+            this.librarySearchInput = this.librarySizeInput = null;
             this.libraryCategoriesEl = this.librarySettingsEl = null;
             this._libraryInspectorLoadToken = (this._libraryInspectorLoadToken || 0) + 1;
             this._closeLibraryModal = null;
@@ -14999,7 +15014,7 @@ class PoseStudioWidget {
 
         const isOverridden = this.exportParams.keepOriginalLighting;
         this.lightListContainer.style.opacity = isOverridden ? "0.3" : "1.0";
-        this.lightListContainer.style.pointerEvents = isOverridden ? "none" : "auto";
+        this.lightListContainer.inert = isOverridden;
         this.lightListContainer.title = isOverridden ? "Lighting is overridden by 'Keep Original Lighting' mode" : "";
 
         this.lightParams.forEach((light, index) => {
@@ -15089,13 +15104,10 @@ class PoseStudioWidget {
             intSlider.step = isAmbient ? 0.01 : 0.1;
             intSlider.value = light.intensity ?? (isAmbient ? 0.5 : 1);
 
-            const intValue = document.createElement('span');
-            intValue.className = 'vnccs-ps-light-value';
-            intValue.innerText = parseFloat(intSlider.value).toFixed(2);
+            const intValue = this.createSliderNumber(intSlider, `Light ${index + 1} Intensity`);
 
             intSlider.oninput = () => {
                 light.intensity = parseFloat(intSlider.value);
-                intValue.innerText = light.intensity.toFixed(2);
                 this.applyLighting();
             };
 
@@ -15119,13 +15131,10 @@ class PoseStudioWidget {
                 radSlider.min = 5; radSlider.max = 300; radSlider.step = 1;
                 radSlider.value = light.radius ?? 100;
 
-                const radValue = document.createElement('span');
-                radValue.className = 'vnccs-ps-light-value';
-                radValue.innerText = radSlider.value;
+                const radValue = this.createSliderNumber(radSlider, `Light ${index + 1} Radius`, 0);
 
                 radSlider.oninput = () => {
                     light.radius = parseFloat(radSlider.value);
-                    radValue.innerText = radSlider.value;
                     this.applyLighting();
                 };
 
@@ -15155,10 +15164,6 @@ class PoseStudioWidget {
                 hLabel.className = 'vnccs-ps-light-h-label';
                 hLabel.innerText = "Y-HGT";
 
-                const hVal = document.createElement('span');
-                hVal.className = 'vnccs-ps-light-h-val';
-                hVal.innerText = light.y || 0;
-
                 const hSlider = document.createElement('input');
                 hSlider.type = 'range';
                 hSlider.className = 'vnccs-ps-light-slider-vert';
@@ -15168,10 +15173,10 @@ class PoseStudioWidget {
                 hSlider.max = isPoint ? 10 : 100;
                 hSlider.step = isPoint ? 0.1 : 1;
                 hSlider.value = light.y || 0;
+                const hVal = this.createSliderNumber(hSlider, `Light ${index + 1} Height`, isPoint ? 1 : 0);
 
                 hSlider.oninput = () => {
                     light.y = parseFloat(hSlider.value);
-                    hVal.innerText = hSlider.value;
                     this.applyLighting();
                 };
 
@@ -15245,11 +15250,7 @@ class PoseStudioWidget {
         const rotation = this.viewer.isInitialized() ? this.viewer.modelRotation : null;
         ['x', 'y', 'z'].forEach(axis => {
             const info = this.sliders[`rot_${axis}`];
-            if (info) {
-                const value = rotation?.[axis] ?? 0;
-                info.slider.value = value;
-                info.label.innerText = `${value}°`;
-            }
+            if (info) this.setNumericControlValue(info.slider, rotation?.[axis] ?? 0);
         });
     }
 
@@ -15725,8 +15726,7 @@ class PoseStudioWidget {
             if (!Number.isFinite(Number(value))) continue;
             this.meshParams[sliderKey] = Number(value);
             const info = this.sliders?.[sliderKey];
-            if (info?.slider) info.slider.value = value;
-            if (info?.label) info.label.innerText = Number(value).toFixed(2);
+            if (info?.slider) this.setNumericControlValue(info.slider, value);
         }
     }
 
@@ -16351,9 +16351,7 @@ class PoseStudioWidget {
                 for (const [key, info] of Object.entries(this.sliders)) {
                     if (key.startsWith('rot_')) continue; // Skip rotation sliders here
                     if (info.def && this.meshParams[key] !== undefined) {
-                        info.slider.value = this.meshParams[key];
-                        const val = this.meshParams[key];
-                        info.label.innerText = key === 'age' ? Math.round(val) : val.toFixed(2);
+                        this.setNumericControlValue(info.slider, this.meshParams[key]);
                     }
                 }
                 // Update gender switch
@@ -16442,7 +16440,7 @@ class PoseStudioWidget {
                         if (widget.update) {
                             widget.update(this.exportParams[key]);
                         } else {
-                            widget.value = this.exportParams[key];
+                            this.setNumericControlValue(widget, this.exportParams[key]);
                         }
                     }
                 }
