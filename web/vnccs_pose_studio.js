@@ -34,9 +34,9 @@ import {
     normalizePoseStudioCharacters,
     normalizeSAMProjectionFrame,
     serializePoseStudioCharacter,
-} from "./pose_studio/characters.mjs?v=20260908.14";
-import { CHARACTER_POSITION_LIMITS, clampCharacterPosition, modelRotationQuaternion, wrapDegrees } from "./pose_studio/character_transform.mjs?v=20261102.2";
-import { PoseCharacterTransformController } from "./pose_studio/character_transform_controller.mjs?v=20261107.2";
+} from "./pose_studio/characters.mjs?v=20261107.1";
+import { CHARACTER_POSITION_LIMITS, clampCharacterPosition, modelRotationQuaternion, wrapDegrees } from "./pose_studio/character_transform.mjs?v=20261107.1";
+import { PoseCharacterTransformController } from "./pose_studio/character_transform_controller.mjs?v=20261107.4";
 import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
@@ -93,7 +93,7 @@ import {
     serializeAnimationStateSnapshot,
     setCharacterTransformKeyframe,
     setTrackKeyframeFromEuler,
-} from "./pose_studio/animation.mjs?v=20261105.1";
+} from "./pose_studio/animation.mjs?v=20261107.1";
 
 const VNCCS_POSE_MORPH_WORKER_URL = new URL("./pose_studio/morph_worker.js", import.meta.url);
 let VNCCS_SHARED_MORPH_WORKER = null;
@@ -130,6 +130,7 @@ const LEGACY_POSE_STUDIO_MESH_PROPORTION_KEYS = Object.freeze([
     "thigh_length",
     "shin_length",
 ]);
+const CHARACTER_SLOT_OFFSETS = [0, 3, -3, 6];
 
 function getVNCCSSharedMorphWorker() {
     if (VNCCS_SHARED_MORPH_WORKER_FAILED || typeof Worker === "undefined") return null;
@@ -4370,6 +4371,7 @@ class PoseStudioWidget {
             cameraParams: {
                 offset_x: 0,
                 offset_y: 0,
+                offset_z: 0,
                 zoom: 1,
                 yaw_deg: 0,
                 pitch_deg: 0,
@@ -5671,6 +5673,7 @@ class PoseStudioWidget {
                 this.updateRotationSliders();
             }
         }
+        this.syncPromptFieldToActiveTab();
         if (sync) this.syncToNode(false, { skipCapture: normalized === "animation" });
     }
 
@@ -6192,6 +6195,7 @@ class PoseStudioWidget {
             this._animationInitialized = true;
             this.animationTimeline?.setState(this.animationState);
             this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
+            this.syncPromptFieldToActiveTab();
             const camera = restored.editorCamera;
             if (camera) {
                 const keepView = this.viewer?.isViewAtCaptureCamera?.() === false;
@@ -6706,6 +6710,7 @@ class PoseStudioWidget {
                 ...character.transform,
                 x: cameraParams.offset_x,
                 y: cameraParams.offset_y,
+                z: cameraParams.offset_z,
                 zoom: cameraParams.zoom,
             });
         }
@@ -6803,15 +6808,18 @@ class PoseStudioWidget {
                 for (const key of ["ikEffectorPositions", "poleTargetPositions"]) {
                     if (!pose[key]) continue;
                     pose[key] = Object.fromEntries(Object.entries(pose[key]).map(([name, value]) => [
-                        name, Array.isArray(value) && value.length >= 3 && value.slice(0, 3).every(Number.isFinite)
-                            ? new THREE.Vector3(...value).sub(from).applyQuaternion(delta).add(to).toArray()
+                        name, this.isValidPoseVector(value)
+                            ? new THREE.Vector3(...value.slice(0, 3).map(Number)).sub(from).applyQuaternion(delta).add(to).toArray()
                             : value,
                     ]));
                 }
             }
             if (transform) {
                 pose.cameraParams = {
-                    ...this.cameraParamsForPose(pose, character), offset_x: transform.x, offset_y: transform.y,
+                    ...this.cameraParamsForPose(pose, character),
+                    offset_x: transform.x,
+                    offset_y: transform.y,
+                    offset_z: transform.z,
                 };
                 character.transform = transform;
                 character.animationState.baseTransform = { ...transform };
@@ -6875,7 +6883,7 @@ class PoseStudioWidget {
         const slot = nextCharacterSlot(this.characters, requestedSlot);
         if (slot < 0) return false;
         const id = nextCharacterId(this.characters);
-        const spread = [0, 3, -3, 6][slot] ?? slot * 3;
+        const spread = CHARACTER_SLOT_OFFSETS[slot];
         // Inside UniCanvas the new mannequin starts as a copy of the active one (pose, height, depth,
         // zoom) standing beside it, so both fit together and only need a small adjustment.
         const clone = this.host?.embedded === true ? this.getActiveCharacter() : null;
@@ -6889,6 +6897,7 @@ class PoseStudioWidget {
                 cameraParams: {
                     offset_x: initialTransform.x,
                     offset_y: initialTransform.y,
+                    offset_z: initialTransform.z,
                     zoom: initialTransform.zoom,
                     yaw_deg: sceneCamera.yaw_deg,
                     pitch_deg: sceneCamera.pitch_deg,
@@ -7420,6 +7429,7 @@ class PoseStudioWidget {
         return {
             offset_x: this.exportParams.cam_offset_x,
             offset_y: this.exportParams.cam_offset_y,
+            offset_z: this.getActiveCharacter()?.transform.z ?? 0,
             zoom: this.exportParams.cam_zoom,
             yaw_deg: this.exportParams.cam_yaw_deg || 0,
             pitch_deg: this.exportParams.cam_pitch_deg || 0,
@@ -7474,6 +7484,7 @@ class PoseStudioWidget {
         return resolveCaptureCameraParams(pose?.cameraParams, {
             offset_x: transform.x,
             offset_y: transform.y,
+            offset_z: transform.z,
             zoom: transform.zoom,
             yaw_deg: this.exportParams.cam_yaw_deg || 0,
             pitch_deg: this.exportParams.cam_pitch_deg || 0,
@@ -7506,6 +7517,10 @@ class PoseStudioWidget {
                     }
                     pose.cameraParams = params;
                     character.poses[index] = pose;
+                } else if (["offset_x", "offset_y", "offset_z"].some(key => pose.cameraParams[key] == null)) {
+                    // Freeze legacy placement before the runtime transform starts following the selected tab.
+                    const { offset_x, offset_y, offset_z } = this.cameraParamsForPose(pose, character);
+                    Object.assign(pose.cameraParams, { offset_x, offset_y, offset_z });
                 }
             }
         }
@@ -7529,6 +7544,7 @@ class PoseStudioWidget {
             ...character.transform,
             x: params.offset_x,
             y: params.offset_y,
+            z: params.offset_z,
             zoom: params.zoom,
         });
         this.syncCameraWidgets();
@@ -7595,7 +7611,8 @@ class PoseStudioWidget {
     }
 
     syncPromptFieldToActiveTab() {
-        const prompt = this.getPosePrompt(this.activeTab);
+        const animationPrompt = this.isAnimationMode() ? this.animationState?.basePose?.prompt : undefined;
+        const prompt = String(animationPrompt ?? this.getPosePrompt(this.activeTab));
         this.exportParams.user_prompt = prompt;
         if (this.userPromptArea) {
             this.userPromptArea.value = prompt;
@@ -8537,6 +8554,7 @@ class PoseStudioWidget {
             this.poses[i] = {
                 ...pose,
                 cameraParams: {
+                    ...camera,
                     offset_x: camera.offset_x ?? this.exportParams.cam_offset_x ?? 0,
                     offset_y: camera.offset_y ?? this.exportParams.cam_offset_y ?? 0,
                     yaw_deg: camera.yaw_deg ?? this.exportParams.cam_yaw_deg ?? 0,
@@ -9996,6 +10014,7 @@ class PoseStudioWidget {
             this.exportParams.cam_pitch_deg = camera.pitch_deg || 0;
             this.setExportCaptureLens(camera);
             if (character && context?.transform) character.transform = { ...context.transform };
+            if (character && camera.offset_z != null) character.transform.z = camera.offset_z;
             this.persistActivePoseCameraParams();
             this.applyCameraToViewer(false);
             this.viewer.restoreEditorLens?.();
@@ -10075,6 +10094,7 @@ class PoseStudioWidget {
             this.syncToNode(false);
         }
 
+        const active = this.getActiveCharacter();
         const previousPoseCount = this.poses.length;
         for (const character of this.characters) {
             if (!Array.isArray(character.poses)) character.poses = [];
@@ -10082,19 +10102,21 @@ class PoseStudioWidget {
             const transform = normalizeCharacterTransform(character.transform || {});
             character.poses.push({
                 cameraParams: {
-                    offset_x: transform.x,
-                    offset_y: transform.y,
+                    offset_x: CHARACTER_SLOT_OFFSETS[character.slot] - CHARACTER_SLOT_OFFSETS[active.slot],
+                    offset_y: 0,
+                    offset_z: 0,
                     zoom: transform.zoom,
                     yaw_deg: 0,
                     pitch_deg: 0,
                 },
             });
         }
-        this.poses = this.getActiveCharacter().poses;
+        this.poses = active.poses;
         this.posePrompts.push("");
         this.activeTab = this.poses.length - 1;
         this.updateTabs();
         this.clearSAMCameraMode();
+        active.transform.z = 0;
         this.resetCameraParams();
         this.syncPromptFieldToActiveTab();
 
@@ -13666,6 +13688,7 @@ class PoseStudioWidget {
             // scene contains several characters. Pose sets are exported
             // separately with the explicit `type: "pose_set"` format.
             if (!animationMode) {
+                serialized.transform = this.characterTransformForScene(character);
                 const selectedPose = serialized.poses[this.activeTab]
                     || serialized.poses[0]
                     || {};
@@ -13869,23 +13892,26 @@ class PoseStudioWidget {
         this._animationCacheUploadTimer = null;
     }
 
-    validateImportedPose(pose) {
-        if (!pose || typeof pose !== "object" || Array.isArray(pose)) {
-            throw new TypeError("Invalid pose: expected an object.");
-        }
-        const validVector = value => Array.isArray(value) && value.length >= 3
+    isValidPoseVector(value) {
+        return Array.isArray(value) && value.length >= 3
             && value.slice(0, 3).every(component => (
                 (typeof component === "number" || typeof component === "string" && component.trim() !== "")
                 && Number.isFinite(Number(component))
             ));
-        if (pose.modelRotation != null && !validVector(pose.modelRotation)) {
+    }
+
+    validateImportedPose(pose) {
+        if (!pose || typeof pose !== "object" || Array.isArray(pose)) {
+            throw new TypeError("Invalid pose: expected an object.");
+        }
+        if (pose.modelRotation != null && !this.isValidPoseVector(pose.modelRotation)) {
             throw new TypeError("Invalid pose model rotation.");
         }
         for (const key of ["bones", "bonePositions", "ikEffectorPositions", "poleTargetPositions", "hipBonePosition"]) {
             const coordinates = pose[key];
             if (coordinates == null) continue;
             if (typeof coordinates !== "object" || Array.isArray(coordinates)
-                || !Object.values(coordinates).every(validVector)) {
+                || !Object.values(coordinates).every(value => this.isValidPoseVector(value))) {
                 throw new TypeError(`Invalid pose coordinates in ${key}.`);
             }
         }
@@ -14126,7 +14152,7 @@ class PoseStudioWidget {
                     ? extractActivePoseFromSceneAsset(data.pose)
                     : null;
                 const activeSceneTransform = activeScenePose
-                    ? extractActiveCharacterTransformFromSceneAsset(data.pose)
+                    ? extractActiveCharacterTransformFromSceneAsset(data.pose, activeScenePose)
                     : null;
                 if (isPoseSet) {
                     if (!data.pose.poses.length) throw new Error("Pose set does not contain poses.");
@@ -14194,7 +14220,8 @@ class PoseStudioWidget {
                         this.applyLibrarySAMProjection(savedSAMProjection);
                     }
                     if (typeof pose.prompt === "string" && pose.prompt.trim()) {
-                        this.setPosePrompt(this.activeTab, pose.prompt);
+                        if (this.isAnimationMode()) this.animationState.basePose.prompt = pose.prompt;
+                        else this.setPosePrompt(this.activeTab, pose.prompt);
                     }
                     this.syncPromptFieldToActiveTab();
                     this.updateRotationSliders();
@@ -16214,7 +16241,7 @@ class PoseStudioWidget {
                             const savedFraming = pose.cameraParams && typeof pose.cameraParams === "object"
                                 ? pose.cameraParams : null;
                             const sceneTransform = scenePose
-                                ? extractActiveCharacterTransformFromSceneAsset(asset) : null;
+                                ? extractActiveCharacterTransformFromSceneAsset(asset, scenePose) : null;
                             const transform = sceneTransform || (savedFraming
                                 ? cameraFramingToCharacterTransform(savedFraming, this.viewer.sceneCameraTarget)
                                 : null);
@@ -16416,6 +16443,7 @@ class PoseStudioWidget {
                 : null;
             if (animationSnapshot?.basePose) this.stripSceneCameraFromPose(animationSnapshot.basePose);
             const serialized = serializePoseStudioCharacter(character, animationSnapshot);
+            if (!animationMode) serialized.transform = this.characterTransformForScene(character);
             if (this._deferredAnimationReference) {
                 serialized.animation = character.animation ? JSON.parse(JSON.stringify(character.animation)) : null;
             } else if (animationToSave) {

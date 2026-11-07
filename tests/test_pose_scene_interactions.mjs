@@ -325,6 +325,8 @@ test("Move & Rotate All preserves each character's offsets and undoes grouped ed
     w.applyCharacterPosition({ x: 4, y: -1, z: 2 });
     w.setModelRotationAxis("y", 15);
     first.animationState.baseTransform.x = 15;
+    first.poses[0].poleTargetPositions = { arm: ["1", "2", "3"] };
+    first.poses[0].ikEffectorPositions = { hand: ["4", "5", "6"] };
     const active = w.getActiveCharacter();
     active.animationState.baseTransform.x = 21;
     const passive = viewer.passiveCharacters.get(first.id).mesh;
@@ -340,12 +342,15 @@ test("Move & Rotate All preserves each character's offsets and undoes grouped ed
         close(passive.position.x, value - 10);
     }
     x.emit("pointerup");
+    assert.deepEqual([...first.poses[0].poleTargetPositions.arm], [7, 2, 3]);
+    assert.deepEqual([...first.poses[0].ikEffectorPositions.hand], [10, 5, 6]);
     const saved = JSON.parse(node.widgets[0].value).characters.find(character => character.id === first.id);
     close(saved.poses[w.activeTab].cameraParams.offset_x, 0);
     toggle.click();
     viewer.undo();
     close(viewer.skinnedMesh.position.x, 4);
     close(passive.position.x, -6);
+    assert.deepEqual([...first.poses[0].poleTargetPositions.arm], [1, 2, 3]);
     close(first.animationState.baseTransform.x, 15);
     close(active.animationState.baseTransform.x, 21);
     viewer.redo();

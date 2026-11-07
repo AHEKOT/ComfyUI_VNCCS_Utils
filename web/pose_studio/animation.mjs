@@ -1072,10 +1072,12 @@ export function resolveCaptureCameraParams(poseParams = {}, currentParams = {}, 
         const parsed = Number(value);
         return Number.isFinite(parsed) ? parsed : fallback;
     };
+    const depth = source.offset_z ?? currentParams?.offset_z;
     return {
         zoom: number(source.zoom, 1),
         offset_x: number(source.offset_x, 0),
         offset_y: number(source.offset_y, 0),
+        ...(depth == null ? {} : { offset_z: clamp(number(depth, 0), -40, 40) }),
         yaw_deg: number(source.yaw_deg, 0),
         pitch_deg: number(source.pitch_deg, 0),
         ...normalizeCaptureLens(source),

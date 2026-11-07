@@ -4,9 +4,8 @@
  * fields in the Characters panel.
  *
  * Data model (no duplicate state):
- * - Position X / Y are the character placement the Positioning Radar edits
- *   (`exportParams.cam_offset_x / y`, stored per pose tab in `cameraParams`).
- * - Position Z is `character.transform.z` (one depth per character).
+ * - XYZ placement is stored per pose tab in `cameraParams`. The selected
+ *   pose's depth is mirrored in `character.transform.z` for the viewport.
  * - Rotation is the existing per-pose `modelRotation` (Euler XYZ, degrees).
  * Every edit goes through `persistActivePoseCameraParams()` and
  * `viewer.setModelRotation()`, the same paths the Radar and the Model Rotation
@@ -22,7 +21,7 @@ import {
     setCharacterRotationAboutPivot,
     translateCharacterPosition,
     wrapDegrees,
-} from "./character_transform.mjs?v=20261102.2";
+} from "./character_transform.mjs?v=20261107.1";
 
 // Render layer seen only by the editor camera: the gizmo never reaches a capture.
 export const CHARACTER_GIZMO_EDITOR_LAYER = 2;
@@ -458,6 +457,9 @@ export class PoseCharacterTransformController {
                 poses: this.widget.poses,
                 restoreToken: this.widget._poseDataRestoreToken,
                 position: this.currentPosition(),
+                linkedStarts: this.mode === "move"
+                    ? this.widget.linkedPassiveCharacters().map(character => this.widget.passiveCharacterPosition(character))
+                    : [],
                 rotation: this.currentRotation(),
                 pivot: this.proxy.position.clone(),
                 quaternion: this.proxy.quaternion.clone(),
@@ -504,7 +506,7 @@ export class PoseCharacterTransformController {
         const THREE = this.viewer.THREE;
         if (drag.mode === "move") {
             const delta = this.proxy.position.clone().sub(drag.pivot);
-            const position = this.widget.constrainCharacterPosition(translateCharacterPosition(drag.position, delta));
+            const position = translateCharacterPosition(drag.position, delta, drag.linkedStarts);
             if (drag.changed || !samePosition(position, drag.position)) {
                 this.beginDragEdit(drag);
                 this.applyPlacement({ position }, { poleBase: drag.poleBase });
@@ -524,6 +526,7 @@ export class PoseCharacterTransformController {
             rotation: drag.rotation,
             pivot: drag.pivot,
             delta,
+            rotationReference: this.currentRotation(),
         });
         if (!result) {
             this.syncProxyToCharacter();
@@ -719,6 +722,12 @@ export class PoseCharacterTransformController {
                 input.addEventListener("input", () => this.handleFieldInput(kind, axis, input.value));
                 input.addEventListener("change", () => this.finishFieldEdit());
                 input.addEventListener("blur", () => this.finishFieldEdit());
+                input.addEventListener("keydown", event => {
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this.finishFieldEdit();
+                });
                 field.append(axisLabel, input);
                 axes.appendChild(field);
                 inputs[kind][axis] = input;
@@ -764,14 +773,12 @@ export class PoseCharacterTransformController {
     }
 
     finishFieldEdit() {
-        if (!this._fieldEditActive) {
-            this.syncFields(true);
-            return;
+        if (this._fieldEditActive) {
+            this._fieldEditActive = false;
+            if (this.widget._finishPoseGesture === this._finishFieldEditHook) this.widget._finishPoseGesture = null;
+            this.commit();
         }
-        this._fieldEditActive = false;
-        if (this.widget._finishPoseGesture === this._finishFieldEditHook) this.widget._finishPoseGesture = null;
-        this.commit();
-        this.syncFields(true);
+        this.syncFields(true, { preserveFocused: false });
     }
 
     handleFieldInput(kind, axis, rawValue) {
@@ -828,7 +835,7 @@ export class PoseCharacterTransformController {
         return true;
     }
 
-    syncFields(force = false) {
+    syncFields(force = false, { preserveFocused = true } = {}) {
         const fields = this.fields;
         if (!fields) return;
         const available = this.isAvailable();
@@ -838,7 +845,7 @@ export class PoseCharacterTransformController {
         const signature = JSON.stringify([position, rotation, available, reason, this.activeCharacter()?.id]);
         if (!force && signature === this._fieldSignature) return;
         this._fieldSignature = signature;
-        const focused = this.document?.activeElement;
+        const focused = preserveFocused ? this.document?.activeElement : null;
         for (const axis of AXES) {
             for (const [kind, values, digits] of [["position", position, 2], ["rotation", rotation, 1]]) {
                 const input = fields.inputs[kind][axis];

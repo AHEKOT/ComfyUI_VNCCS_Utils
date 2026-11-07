@@ -1,9 +1,7 @@
 /**
  * Pure state helpers for the Pose Studio whole-character transform gizmo.
  *
- * The gizmo edits the data Pose Studio already stores: the per-character
- * `transform.x / y / z` placement and the per-pose `modelRotation` Euler
- * angles in degrees. Nothing here keeps a second copy of either value.
+ * The gizmo edits per-pose XYZ placement and `modelRotation` Euler angles.
  *
  * Three.js is passed in by the caller so Node tests can use the vendored
  * module without a DOM.
@@ -107,13 +105,25 @@ export function quaternionToModelRotation(THREE, quaternion, reference = { x: 0,
     return { x: clean(best.x), y: clean(best.y), z: clean(best.z) };
 }
 
-/** Whole-character translation: the character moves by the world delta. */
-export function translateCharacterPosition(start, delta) {
+/** Stop the whole movement at the first bound reached by any linked character. */
+export function translateCharacterPosition(start, delta, linkedStarts = []) {
     const origin = clampCharacterPosition(start);
+    const movement = AXES.map(axis => finite(delta?.[axis]));
+    let fraction = 1;
+    for (const position of [origin, ...linkedStarts]) {
+        for (const [index, axis] of AXES.entries()) {
+            const step = movement[index];
+            if (Math.abs(step) < 1e-9) continue;
+            const [minimum, maximum] = CHARACTER_POSITION_LIMITS[axis];
+            const limit = step > 0 ? maximum : minimum;
+            fraction = Math.min(fraction, (limit - position[axis]) / step);
+        }
+    }
+    fraction = Math.max(0, fraction);
     return clampCharacterPosition({
-        x: origin.x + finite(delta?.x),
-        y: origin.y + finite(delta?.y),
-        z: origin.z + finite(delta?.z),
+        x: origin.x + movement[0] * fraction,
+        y: origin.y + movement[1] * fraction,
+        z: origin.z + movement[2] * fraction,
     });
 }
 
@@ -132,6 +142,7 @@ export function rotateCharacterAboutPivot(THREE, {
     rotation,
     pivot,
     delta,
+    rotationReference = rotation,
 }) {
     const start = clampCharacterPosition(position);
     const center = new THREE.Vector3(finite(pivot?.x), finite(pivot?.y), finite(pivot?.z));
@@ -141,7 +152,7 @@ export function rotateCharacterAboutPivot(THREE, {
     const nextQuaternion = delta.clone().multiply(modelRotationQuaternion(THREE, rotation));
     return {
         position: bounded,
-        rotation: quaternionToModelRotation(THREE, nextQuaternion, rotation),
+        rotation: quaternionToModelRotation(THREE, nextQuaternion, rotationReference),
     };
 }
 

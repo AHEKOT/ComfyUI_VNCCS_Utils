@@ -162,7 +162,8 @@ test("pure mapping: limits, Euler order, continuity and pivot math", () => {
     });
     closeVector(back.position, position, "rotation round trip restores the placement");
     assert.deepEqual(back.rotation, rotation);
-    assert.deepEqual(translateCharacterPosition({ x: 49, y: 0, z: -39 }, { x: 5, y: 1, z: -5 }), { x: 50, y: 1, z: -40 });
+    assert.deepEqual(translateCharacterPosition({ x: 49, y: 0, z: -39 }, { x: 5, y: 1, z: -5 }), { x: 50, y: 0.2, z: -40 });
+    assert.deepEqual(translateCharacterPosition({ x: 50, y: 0, z: 0 }, { x: 1e-12, y: 3 }), { x: 50, y: 3, z: 0 });
 });
 
 test("Pose is the default; Move / Rotate attach the gizmo at the pelvis and release bone input", () => {
@@ -276,21 +277,105 @@ test("Move gizmo preserves the distance between linked characters during the dra
     close(viewer.skinnedMesh.position.x, start, "active character undone");
 });
 
-test("Move along Z changes depth, persists, and survives a tab switch", () => {
+test("Local Move keeps its direction when a linked character reaches the boundary", async () => {
     const scene = gizmoScene();
-    const { w, controller } = scene;
+    const { w, viewer, controller, radar } = scene;
+    const first = w.getActiveCharacter();
+    controller.applyPlacement({ position: { x: 49, y: 0, z: 0 } });
+    controller.commit();
+    await w.addCharacter();
+    controller.applyPlacement({ position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 45 } });
+    radar.children.find(child => child.textContent === "Move & Rotate All").click();
+    controller.setMode("move");
+    controller.setSpace("local");
+    const pointer = pressHandle(scene, "X");
+    const pivot = controller.proxy.position.clone();
+    const direction = new THREE.Vector3(1, 0, 0).applyQuaternion(controller.proxy.quaternion);
+    const passive = viewer.passiveCharacters.get(first.id).mesh;
+    for (const [distance, expected] of [[4, 1], [8, 1], [0.5, Math.SQRT1_2 / 2]]) {
+        controller.proxy.position.copy(pivot).addScaledVector(direction, distance);
+        controller.handleObjectChange();
+        closeVector(viewer.skinnedMesh.position, { x: expected, y: expected, z: 0 });
+        closeVector(passive.position, { x: 49 + expected, y: expected, z: 0 });
+        closeVector(controller.proxy.position, pelvisWorld(scene));
+    }
+    controller.gizmo.pointerUp(pointer);
+});
+
+test("Move along Z saves depth and IK placement only for the edited pose", () => {
+    const scene = gizmoScene();
+    const { w, viewer, controller } = scene;
+    const [poleName, pole] = Object.entries(viewer.ikController.poleTargets)[0];
+    w.addTab();
+    pole.position.set(1, 2, 3);
+    w.switchTab(0);
     // Look from the side so the Z arrow has screen extent.
-    scene.viewer.camera.position.set(40, 0, 0.01);
-    scene.viewer.camera.lookAt(0, 0, 0);
-    scene.viewer.camera.updateMatrixWorld(true);
+    viewer.camera.position.set(40, 0, 0.01);
+    viewer.camera.lookAt(0, 0, 0);
+    viewer.camera.updateMatrixWorld(true);
     controller.setMode("move");
     drag(scene, "Z", [[0.05, 0], [0.1, 0]]);
     const z = w.getActiveCharacter().transform.z;
     assert.ok(Math.abs(z) > 0.5, `z moved ${z}`);
-    close(scene.viewer.skinnedMesh.position.z, z, "mesh depth");
-    close(savedActive(scene).transform.z, z, "saved depth");
-    w.restoreActivePoseCameraParams();
-    close(w.getActiveCharacter().transform.z, z, "restoring the pose camera keeps depth");
+    close(viewer.skinnedMesh.position.z, z, "mesh depth");
+    close(savedActive(scene).poses[0].cameraParams.offset_z, z, "saved pose depth");
+    w.switchTab(1);
+    close(viewer.skinnedMesh.position.z, 0, "other pose depth");
+    assert.deepEqual(viewer.getPose().poleTargetPositions[poleName], [1, 2, 3]);
+    w.switchTab(0);
+    close(viewer.skinnedMesh.position.z, z, "restored pose depth");
+    w.addTab();
+    close(viewer.skinnedMesh.position.z, 0, "new pose depth");
+});
+
+test("linked XYZ edits and Undo stay within the active pose tab", async () => {
+    const { w, viewer, controller, radar } = gizmoScene();
+    const first = w.getActiveCharacter();
+    controller.applyPlacement({ position: { x: 8, y: -3, z: 4 } });
+    controller.commit();
+    await w.addCharacter();
+    controller.applyPlacement({ position: { x: 12, y: 2, z: 7 } });
+    controller.commit();
+    w.addTab();
+    const passive = viewer.passiveCharacters.get(first.id).mesh;
+    const placements = () => [viewer.skinnedMesh.position.toArray(), passive.position.toArray()];
+    const initial = placements();
+    assert.deepEqual(initial, [[0, 0, 0], [-3, 0, 0]]);
+    radar.children.find(child => child.textContent === "Move & Rotate All").click();
+    viewer.recordState();
+    controller.applyPlacement({ position: { x: 2, y: 3, z: 5 } });
+    controller.commit();
+    assert.deepEqual(placements(), [[2, 3, 5], [-1, 3, 5]]);
+    viewer.undo();
+    assert.deepEqual(placements(), initial);
+    viewer.redo();
+    w.switchTab(0);
+    assert.deepEqual(placements(), [[12, 2, 7], [8, -3, 4]]);
+    w.switchTab(1);
+    assert.deepEqual(placements(), [[2, 3, 5], [-1, 3, 5]]);
+
+    const captures = [];
+    viewer.capture = () => {
+        captures.push(placements());
+        return "data:image/png;base64,test";
+    };
+    w.syncToNode(true, { skipCapture: false, skipCaptureUpload: true });
+    assert.deepEqual(captures, [[[12, 2, 7], [8, -3, 4]], [[2, 3, 5], [-1, 3, 5]]]);
+    assert.deepEqual(placements(), captures[1]);
+});
+
+test("legacy placement fills missing pose coordinates once", () => {
+    const { w } = gizmoScene();
+    const character = w.getActiveCharacter();
+    character.transform = { x: 8, y: 3, z: 6, zoom: 1 };
+    w.poses[0] = { cameraParams: { offset_x: 1 } };
+    w.poses.push({ cameraParams: { offset_y: 2, offset_z: 0 } });
+    w.ensurePoseCameraParams();
+    w.applyCharacterPosition({ x: 1, y: 3, z: 10 });
+    w.switchTab(1);
+    closeVector(character.transform, { x: 8, y: 2, z: 0 }, "explicit pose depth preserved");
+    w.switchTab(0);
+    closeVector(character.transform, { x: 1, y: 3, z: 10 }, "edited pose depth preserved");
 });
 
 test("Rotate rings keep the pelvis fixed and joint poses unchanged; World and Local", () => {
@@ -425,16 +510,6 @@ test("Workflow round trip restores position and rotation; saved schema is unchan
         rotation: [rotation.x, rotation.y, rotation.z].map(v => Number(v.toFixed(1))),
     });
     assert.equal(restored.controller.mode, "pose", "a restored workflow opens in Pose mode");
-
-    // Old data without depth loads exactly as before.
-    const legacy = JSON.parse(raw);
-    for (const character of legacy.characters) delete character.transform.z;
-    const old = gizmoScene();
-    old.w.hydrateCharacterSceneModels = async () => {};
-    old.node.widgets[0].value = JSON.stringify(legacy);
-    old.w.loadFromNode();
-    assert.equal(old.w.getActiveCharacter().transform.z, 0);
-    close(old.w.getActiveCharacter().transform.x, transform.x, "legacy x");
 });
 
 test("Pose Library save and load restore the character position and rotation", async () => {
@@ -727,6 +802,45 @@ test("Rotation keeps the pelvis fixed when compensation reaches a position limit
     const resetPivot = pelvisWorld(scene);
     assert.equal(controller.resetRotation(), false);
     closeVector(pelvisWorld(scene), resetPivot, "a blocked reset also keeps the pelvis fixed");
+});
+
+test("Rotate uses the last applied angles as the drag continues", () => {
+    const scene = gizmoScene();
+    const { viewer, controller } = scene;
+    const initial = { x: 30, y: 30, z: 0 };
+    controller.applyPlacement({ rotation: initial });
+    controller.setMode("rotate");
+    const pointer = pressHandle(scene, "Y");
+    const start = modelRotationQuaternion(THREE, initial);
+    const axis = new THREE.Vector3(0, 1, 0);
+    let previous;
+    for (const angle of [77, 78, 79]) {
+        const expected = new THREE.Quaternion().setFromAxisAngle(axis, angle * Math.PI / 180).multiply(start);
+        controller.proxy.quaternion.copy(expected);
+        controller.handleObjectChange();
+        close(viewer.skinnedMesh.quaternion.angleTo(expected), 0, "model orientation");
+        const rotation = controller.currentRotation();
+        if (previous) {
+            for (const key of ["x", "y", "z"]) assert.ok(Math.abs(wrapDegrees(rotation[key] - previous[key])) < 3);
+        }
+        previous = rotation;
+    }
+    controller.gizmo.pointerUp(pointer);
+});
+
+test("Enter displays the applied Transform value while the field stays focused", () => {
+    const { controller, document, viewer } = gizmoScene();
+    const input = controller.fields.inputs.position.x;
+    document.activeElement = input;
+    for (const requested of ["80", "90"]) {
+        input.value = requested;
+        input.emit("input");
+        assert.equal(input.value, requested, "keep the value while typing");
+        input.emit("keydown", { key: "Enter" });
+        assert.equal(input.value, "50");
+        assert.equal(document.activeElement, input);
+        assert.equal(viewer.history.length, 1, "an edit beyond the bound creates no extra Undo");
+    }
 });
 
 test("An in-flight drag ends before switching pose, character or editor mode", async () => {

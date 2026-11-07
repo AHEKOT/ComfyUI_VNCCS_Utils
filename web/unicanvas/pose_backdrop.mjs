@@ -241,13 +241,15 @@ export class UniCanvasPoseBackdrop {
   movePassiveCharacter(mesh, id, shift) {
     const studio = this.editor.studio;
     const character = studio.characters?.find?.((item) => String(item.id) === String(id));
-    if (character?.transform) {
-      character.transform.x = (Number(character.transform.x) || 0) + shift.x;
-      character.transform.y = (Number(character.transform.y) || 0) + shift.y;
-      character.transform.z = (Number(character.transform.z) || 0) + shift.z;
+    if (character?.transform && studio.applyPassiveCharacterPlacement) {
+      const position = mesh.position.clone().add(shift);
+      studio.applyPassiveCharacterPlacement(character, { transform: {
+        x: position.x, y: position.y, z: position.z, zoom: mesh.scale.x,
+      } });
+    } else {
+      mesh.position.add(shift);
+      mesh.updateMatrixWorld(true);
     }
-    mesh.position.add(shift);
-    mesh.updateMatrixWorld(true);
     this.editor.scheduleBackdropSync?.();
   }
 

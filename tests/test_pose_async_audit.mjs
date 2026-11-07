@@ -67,11 +67,12 @@ test("a successfully loaded library pose clears the previous SAM camera", async 
     assert.equal(w.getPosePrompt(), "loaded pose");
 });
 
-test("a library pose only replaces the active prompt with a nonblank saved prompt", async () => {
+test("a library pose applies a nonblank saved prompt only to the current editor mode", async () => {
     for (const mode of ["image", "animation"]) {
         const { w, context } = createScene();
-        w.setEditorMode(mode);
+        w.setEditorMode(mode, { sync: false });
         w.setPosePrompt(w.activeTab, "current prompt");
+        if (mode === "animation") w.resetAnimationHistory();
         w.userPromptArea = { value: "", style: {}, scrollHeight: 0 };
         for (const prompt of [undefined, "", " \n\t", "  saved prompt\n"]) {
             context.fetch = async () => ({
@@ -79,9 +80,18 @@ test("a library pose only replaces the active prompt with a nonblank saved promp
             });
             await w.loadFromLibrary("Library pose");
             const expected = prompt?.trim() ? prompt : "current prompt";
-            assert.equal(w.getPosePrompt(), expected);
+            assert.equal(w.getPosePrompt(), mode === "image" ? expected : "current prompt");
             assert.equal(w.userPromptArea.value, expected);
             if (mode === "animation") assert.equal(w.animationState.basePose.prompt, expected);
+        }
+        if (mode === "animation") {
+            w.undoAnimation();
+            assert.equal(w.userPromptArea.value, "current prompt");
+            w.redoAnimation();
+            assert.equal(w.userPromptArea.value, "  saved prompt\n");
+            w.setEditorMode("image", { sync: false });
+            assert.equal(w.userPromptArea.value, "current prompt");
+            assert.equal(w.poses[w.activeTab].prompt, "current prompt");
         }
     }
 });
