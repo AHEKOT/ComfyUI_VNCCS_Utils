@@ -486,7 +486,6 @@ def test_unrecognized_weight_prefixes_remain_literal_in_preview_and_execution(li
 
 @pytest.mark.parametrize("source,expected", [
     ("{~first # ignored | }\n|second} # trailing }", ["first  \n", "second"]),
-    ("{~first \\# ignored | }\n|second}", ["first \\ \n", "second"]),
     ('{~"first # ignored | }\n|second}', ['"first  \n', "second"]),
     ("{~// ignored } | first\nfirst|second}", ["first", "second"]),
     ("{~/* ignored } | first */first|second}", ["first", "second"]),
@@ -497,6 +496,21 @@ def test_unrecognized_weight_prefixes_remain_literal_in_preview_and_execution(li
 ])
 def test_source_comment_boundaries_match_the_installed_dynamic_prompts_grammar(source, expected):
     raw = state(blocks=[{"id": "a", "name": "Comments", "text": source}], parts=[{"blockId": "a"}])
+    assert preview_block(raw, "a") == {"variants": expected, "truncated": False}
+    assert resolve_prompt(raw)["prompt"] in expected
+
+
+@pytest.mark.parametrize("source", [
+    "{first \\# ignored | }\n|second}",
+    "{first \\\\# ignored | }\n|second}",
+])
+def test_escaped_hash_matches_the_installed_dynamic_prompts_grammar(source):
+    from dynamicprompts.generators import CombinatorialPromptGenerator
+
+    # Escaped hash handling differs between supported Dynamic Prompts releases.
+    expected = CombinatorialPromptGenerator().generate(source, max_prompts=MAX_BLOCK_VARIANTS + 1)
+    raw = state(blocks=[{"id": "a", "name": "Comments", "text": "{~" + source[1:]}], parts=[{"blockId": "a"}])
+    assert expected
     assert preview_block(raw, "a") == {"variants": expected, "truncated": False}
     assert resolve_prompt(raw)["prompt"] in expected
 
