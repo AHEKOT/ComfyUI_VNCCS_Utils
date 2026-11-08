@@ -202,13 +202,22 @@ def test_material_adapter_uses_local_weights_and_cleans_up_on_cancel(tmp_path, m
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_mesh_pipeline_runs_refinement_only_when_enabled(tmp_path, monkeypatch, enabled):
-    published, refined, saved, crops = [], [], [], []
+@pytest.mark.parametrize("base_color_only", [False, True])
+def test_mesh_pipeline_preserves_material_modes_and_optional_refinement(tmp_path, monkeypatch, enabled, base_color_only):
+    published, refined, saved, crops, baked = [], [], [], [], []
+    voxel_colors = SimpleNamespace(voxel_colors=torch.arange(12).reshape(2, 6))
     def node(name, **kwargs):
         if name == "ImageCropToMask":
             crops.append((kwargs["width"], kwargs["height"]))
             return (torch.zeros(1, 16, 16, 3),)
-        if name == "BakeTextureFromVoxel": return "base", "metallic", "roughness"
+        if name == "VaeDecodeTextureTrellis": return (voxel_colors,)
+        if name == "BakeTextureFromVoxel":
+            colors = kwargs["voxel_colors"].voxel_colors
+            assert colors.shape[-1] == (3 if base_color_only and not enabled else 6)
+            return "base", "metallic", "roughness"
+        if name in {"BakeNormalMapFromMesh", "BakeAmbientOcclusion"}:
+            baked.append(name)
+            return (name,)
         if name == "ApplyTextureToMesh": return (kwargs,)
         if name == "MeshSmoothNormals":
             mesh = kwargs["mesh"]
@@ -232,6 +241,7 @@ def test_mesh_pipeline_runs_refinement_only_when_enabled(tmp_path, monkeypatch, 
     monkeypatch.setattr(generation, "runtime_status", lambda _provider, **_kwargs: {"ready": True})
     monkeypatch.setattr(texturing, "run_texture_pass", refine)
     settings = generation.normalize_mesh_settings({"provider": "trellis2", "remove_background": "0", "refine_textures": enabled, "seed": 1})
+    settings["base_color_only"] = base_color_only
     generation.run_mesh_generation("trellis2", Image.new("RGB", (16, 16)),
         tmp_path / "model" / "model.glb", tmp_path / "prepared.png", settings,
         emit=lambda *_args: None, check_cancel=lambda: None,
@@ -242,8 +252,16 @@ def test_mesh_pipeline_runs_refinement_only_when_enabled(tmp_path, monkeypatch, 
     final_mesh, filename = saved[-1]
     assert filename == "model.glb"
     assert final_mesh["base_color"] == ("refined base" if enabled else "base")
-    assert final_mesh["metallic"] == ("refined metallic" if enabled else "metallic")
-    assert final_mesh["roughness"] == ("refined roughness" if enabled else "roughness")
+    if base_color_only and not enabled:
+        assert not {"metallic", "roughness", "normal_map", "occlusion"} & final_mesh.keys()
+        assert not baked
+    else:
+        assert final_mesh["metallic"] == ("refined metallic" if enabled else "metallic")
+        assert final_mesh["roughness"] == ("refined roughness" if enabled else "roughness")
+        assert final_mesh["normal_map"] == "BakeNormalMapFromMesh"
+        assert final_mesh["occlusion"] == "BakeAmbientOcclusion"
+        assert len(baked) == 2
+    assert torch.equal(voxel_colors.voxel_colors, torch.arange(12).reshape(2, 6))
     assert crops == ([(1024, 1024), (2048, 2048)] if enabled else [(1024, 1024)])
     assert (tmp_path / "refinement_reference.png").exists() is enabled
     assert (final_mesh["mesh"] if enabled else final_mesh)["normals"] == "smoothed"

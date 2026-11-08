@@ -1297,6 +1297,77 @@ test("Plan framing fits XZ extents without moving the export camera", async () =
     assert.equal(view.planCameraState.zoom, 25);
 });
 
+test("Front framing fits visible mesh vertices inside portrait and landscape captures", async () => {
+    const { Factory3DViewer } = await import("../web/factory3d/viewer.js");
+    const THREE = await import("../web/vendor/spark/three.module.js");
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute([-2, -1, -4, 2, -1, -4, 0, 2, 0.3], 3));
+    const material = new THREE.MeshBasicMaterial();
+    const mesh = new THREE.Mesh(geometry, material), model = new THREE.Group();
+    mesh.position.set(1, 0.5, -2);
+    model.add(mesh);
+    model.position.set(4, 3, 7);
+    model.rotation.y = 0.3;
+    model.scale.setScalar(1.5);
+    const hidden = new THREE.Mesh(geometry, material);
+    hidden.visible = false;
+    hidden.position.z = 1000;
+    model.add(hidden);
+    model.updateMatrixWorld(true);
+    const bounds = new THREE.Box3().setFromObject(mesh), center = bounds.getCenter(new THREE.Vector3());
+    const view = Object.create(Factory3DViewer.prototype);
+    view.objects = new Map([["mesh", { model }]]);
+    view._viewBounds = () => bounds;
+    view._frameBounds = () => assert.fail("A front fit must use the mesh surface");
+    view.captureFov = 45;
+    for (const [width, height] of [[600, 1200], [1200, 600]]) {
+        view.captureWidth = width;
+        view.captureHeight = height;
+        let state;
+        view.setCameraState = (next, options) => { state = next; assert.equal(options.emit, false); };
+        assert.equal(view.fit("mesh", { front: true, emit: false }), true);
+        assert.deepEqual(state.target, center.toArray());
+        assert.deepEqual(state.position.slice(0, 2), [center.x, center.y]);
+        assert.deepEqual(state.up, [0, 1, 0]);
+        const camera = new THREE.PerspectiveCamera(view.captureFov, width / height, 0.01, 1000);
+        camera.position.fromArray(state.position);
+        camera.lookAt(center);
+        camera.updateMatrixWorld(true);
+        let extent = 0;
+        for (let index = 0; index < geometry.attributes.position.count; index++) {
+            const projected = new THREE.Vector3().fromBufferAttribute(geometry.attributes.position, index)
+                .applyMatrix4(mesh.matrixWorld).project(camera);
+            assert.ok(projected.z > -1 && projected.z < 1);
+            extent = Math.max(extent, Math.abs(projected.x), Math.abs(projected.y));
+        }
+        assert.ok(Math.abs(extent - 0.9) < 1e-6, "The visible surface should fill the capture with a margin");
+    }
+    geometry.dispose();
+    material.dispose();
+});
+
+test("Fit keeps ordinary scene framing and falls back when no front mesh is available", async () => {
+    const { Factory3DViewer } = await import("../web/factory3d/viewer.js");
+    const THREE = await import("../web/vendor/spark/three.module.js");
+    const view = Object.create(Factory3DViewer.prototype);
+    view.objects = new Map([["mesh", { model: {} }]]);
+    let bounds = new THREE.Box3(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
+    let selected;
+    view._viewBounds = options => { selected = options; return bounds; };
+    view._frameBounds = (box, options) => {
+        assert.equal(box, bounds);
+        assert.equal(options.emit, false);
+        return !box.isEmpty();
+    };
+    assert.equal(view.fit("mesh", { emit: false }), true);
+    assert.deepEqual(selected, { scope: "selection", objectId: "mesh" });
+    assert.equal(view.fit("", { emit: false }), true);
+    assert.deepEqual(selected, { scope: "scene", objectId: "" });
+    assert.equal(view.fit("missing", { front: true, emit: false }), true);
+    bounds = new THREE.Box3();
+    assert.equal(view.fit("mesh", { front: true, emit: false }), false);
+});
+
 test("Factory viewer and every vendored Three/Spark dependency can actually import", async () => {
     const module = await import(
         `${pathToFileURL(path.join(root, "web", "factory3d/viewer.js")).href}?test=${Date.now()}`

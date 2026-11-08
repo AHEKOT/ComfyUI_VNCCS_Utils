@@ -15,7 +15,7 @@ import { FactoryGenerationPreview } from "./generation_preview.mjs?v=20261107.1"
 import {
     disposeFactoryModel,
     loadFactoryModel,
-} from "./model_loader.mjs?v=20260902.2";
+} from "./model_loader.mjs?v=20261108.1";
 
 
 const EMPTY = () => {};
@@ -5854,11 +5854,31 @@ export class Factory3DViewer {
         return true;
     }
 
-    fit(objectId = "", { emit = true } = {}) {
-        return this._frameBounds(
-            this._viewBounds({ scope: objectId ? "selection" : "scene", objectId }),
-            { emit },
-        );
+    fit(objectId = "", { emit = true, front = false } = {}) {
+        const box = this._viewBounds({ scope: objectId ? "selection" : "scene", objectId });
+        const model = front ? this.objects.get(objectId)?.model : null;
+        if (!model || !hasFiniteBounds(box)) return this._frameBounds(box, { emit });
+
+        const target = box.getCenter(new THREE.Vector3());
+        const vertical = Math.tan(THREE.MathUtils.degToRad(this.captureFov / 2)) * 0.9;
+        const horizontal = vertical * this.captureWidth / this.captureHeight;
+        const vertex = new THREE.Vector3();
+        let cameraZ = box.max.z + 0.01;
+        // Fit the projected surface at each vertex's depth.
+        model.traverseVisible(child => {
+            const positions = child.isMesh && child.geometry.getAttribute("position");
+            if (!positions) return;
+            for (let i = 0; i < positions.count; i++) {
+                vertex.fromBufferAttribute(positions, i).applyMatrix4(child.matrixWorld);
+                const requiredDepth = Math.max(
+                    Math.abs(vertex.x - target.x) / horizontal,
+                    Math.abs(vertex.y - target.y) / vertical,
+                );
+                cameraZ = Math.max(cameraZ, vertex.z + requiredDepth);
+            }
+        });
+        this.setCameraState({ position: [target.x, target.y, cameraZ], target: target.toArray(), up: [0, 1, 0] }, { emit });
+        return true;
     }
 
     frameScene({ emit = true } = {}) {
