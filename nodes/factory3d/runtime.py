@@ -1099,6 +1099,8 @@ def _generate_mesh_object(
             stored_bytes=result["size"],
         )
         item["seed"] = seed
+        if "source_camera" in result:
+            item["source_camera"] = result["source_camera"]
         item["source"].update({
             "generator": provider,
             "generated": True,

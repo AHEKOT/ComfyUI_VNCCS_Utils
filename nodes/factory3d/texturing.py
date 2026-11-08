@@ -10,17 +10,28 @@ from PIL import Image
 
 from .generation import (
     QI2_DIFFUSION_MODEL, QI2_TEXT_ENCODER, QI2_VAE, QI2_WEIGHT_FILES,
-    _call_node, _image_tensor, _save_prepared_image, _seed, _sampler,
+    _call_node, _image_tensor, _save_prepared_image, _seed,
     release_runtime_memory,
 )
-from .materials import extract_materials
+from .materials import extract_materials, refine_material_maps
 
 VIEW_LABELS = ("front", "right", "back", "left", "top", "bottom")
 VIEW_FOV_RADIANS = math.radians(40.0)
-VIEW_RESOLUTION = 1024
+VIEW_RESOLUTION = 2048
 REFINE_STEPS = 8
 REFINE_CFG = 1.0
+TURBO_SIGMAS = "1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0"
 MAX_EXTRA_VIEWS = 4
+
+
+def sample_texture_view(model, positive, latent, seed):
+    """Use the distilled Turbo schedule, as in StableGen's Qwen 2.1 adapter."""
+    noise = _call_node("RandomNoise", noise_seed=seed)[0]
+    guider = _call_node("BasicGuider", model=model, conditioning=positive)[0]
+    sampler = _call_node("KSamplerSelect", sampler_name="euler")[0]
+    sigmas = _call_node("ManualSigmas", sigmas=TURBO_SIGMAS)[0]
+    return _call_node("SamplerCustomAdvanced", noise=noise, guider=guider,
+                      sampler=sampler, sigmas=sigmas, latent_image=latent)[0]
 
 
 def build_view_plan(center, radius, *, extra=False):
@@ -251,8 +262,7 @@ def run_texture_pass(
         )
         latent = _call_node("VAEEncode", pixels=rendered[None], vae=vae)[0]
         latent = _call_node("SetLatentNoiseMask", samples=latent, mask=edit_mask[None])[0]
-        samples = _sampler(model, positive, negative, latent, seed=_seed(seed, index),
-                           steps=REFINE_STEPS, cfg=REFINE_CFG, scheduler="simple")
+        samples = sample_texture_view(model, positive, latent, _seed(seed, index))
         check_cancel()
         refined = _call_node("VAEDecode", vae=vae, samples=samples)[0][0, ..., :3].to(projection.device).float()
         if not bool(torch.isfinite(refined).all()):
@@ -284,7 +294,9 @@ def run_texture_pass(
     maps = {"base_color": projection.atlas,
             "roughness": orm[0, ..., 1:2].to(projection.device) if orm is not None else torch.ones_like(projection.weights)[..., None],
             "metallic": orm[0, ..., 2:3].to(projection.device) if orm is not None else torch.zeros_like(projection.weights)[..., None]}
-    emit("texture_materials", 93, "Extracting PBR materials", "Marigold · albedo, roughness, metallic")
+    source_roughness, source_metallic = maps["roughness"], maps["metallic"]
+    estimates = {key: maps[key] for key in ("roughness", "metallic")}
+    emit("texture_materials", 93, "Refining PBR materials", "Marigold · roughness and metallic · preserving generated color")
 
     def apply_materials(record_index, predicted):
         nonlocal material_weight
@@ -292,12 +304,15 @@ def run_texture_pass(
         record = records[record_index]
         index = record["index"]
         grid, weight = record["grid"].to(projection.device), record["weight"].to(projection.device)
-        for key, value in zip(("base_color", "roughness", "metallic"), predicted):
+        # IID albedo erases drawn facial features; the Qwen color atlas stays authoritative.
+        for key, value in zip(("roughness", "metallic"), predicted[1:]):
             sampled = projection.sample(value, grid)
-            maps[key], _total = blend_projection(maps[key], sampled, weight, material_weight,
-                                                match_color=key == "base_color")
-            maps[key] = projection.fill(maps[key])
+            estimates[key], _total = blend_projection(estimates[key], sampled, weight, material_weight)
+            estimates[key] = projection.fill(estimates[key])
         material_weight += weight
+        maps["roughness"], maps["metallic"] = refine_material_maps(
+            source_roughness, source_metallic, estimates["roughness"], estimates["metallic"],
+        )
         views[index]["state"] = "complete"
         snapshots["active_view"] = index
         save_atlas(len(VIEW_LABELS) + MAX_EXTRA_VIEWS + record_index, maps)

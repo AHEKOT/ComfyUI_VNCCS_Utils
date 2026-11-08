@@ -25,6 +25,67 @@ def test_refinement_defaults_off_and_needs_no_prompt():
     assert "texture_prompt" not in settings
 
 
+def test_refinement_increases_atlas_detail_without_changing_mesh_quality():
+    for quality in ("preview", "balanced", "high"):
+        base = generation.normalize_mesh_settings({"quality": quality})
+        refined = generation.normalize_mesh_settings({"quality": quality, "refine_textures": True})
+        assert refined["texture_resolution"] >= 2048
+        assert {key: value for key, value in refined.items() if key not in {"refine_textures", "texture_resolution"}} == {
+            key: value for key, value in base.items() if key not in {"refine_textures", "texture_resolution"}
+        }
+    assert generation.normalize_mesh_settings({"quality": "preview"})["texture_resolution"] == 1024
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("fail", [False, True])
+def test_direct_node_calls_release_dynamic_vram_before_next_call(monkeypatch, asynchronous, fail):
+    import sys
+    from contextlib import nullcontext
+    from types import ModuleType, SimpleNamespace
+
+    events = []
+    occupied = False
+    def finish():
+        nonlocal occupied
+        events.append("queues")
+        occupied = False
+    comfy, aimdo = ModuleType("comfy"), ModuleType("comfy_aimdo")
+    comfy.memory_management = SimpleNamespace(aimdo_enabled=True)
+    comfy.model_prefetch = SimpleNamespace(cleanup_prefetch_queues=finish)
+    comfy.model_management = SimpleNamespace(reset_cast_buffers=lambda: events.append("buffers"))
+    aimdo.model_vbar = SimpleNamespace(vbars_reset_watermark_limits=lambda: events.append("limits"))
+    for name, module in {
+        "comfy": comfy, "comfy.memory_management": comfy.memory_management,
+        "comfy.model_prefetch": comfy.model_prefetch, "comfy.model_management": comfy.model_management,
+        "comfy_aimdo": aimdo, "comfy_aimdo.model_vbar": aimdo.model_vbar,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    def run():
+        nonlocal occupied
+        assert not occupied, "previous node left DynamicVRAM state alive"
+        occupied = True
+        events.append("run")
+        if fail: raise RuntimeError("inference failed")
+        return ("result",)
+    class Node:
+        FUNCTION = "execute"
+        def execute(self): return run()
+    class AsyncNode:
+        FUNCTION = "execute"
+        async def execute(self): return run()
+    monkeypatch.setitem(sys.modules, "nodes", SimpleNamespace(NODE_CLASS_MAPPINGS={"Synthetic": AsyncNode if asynchronous else Node}))
+    monkeypatch.setattr(generation, "_comfy_execution_context", lambda _name: nullcontext())
+    monkeypatch.setattr(generation, "_SuppressComfyProgress", nullcontext)
+    for _ in range(2):
+        if fail:
+            with pytest.raises(RuntimeError, match="inference failed"):
+                generation._call_node("Synthetic")
+        else:
+            assert generation._call_node("Synthetic") == ("result",)
+    assert events == ["run", "queues", "buffers", "limits"] * 2
+    assert not occupied
+
+
 def test_cameras_cover_axes_and_fit_bounding_sphere():
     center, radius = (2, 3, -4), 2.5
     plan = texturing.build_view_plan(center, radius)

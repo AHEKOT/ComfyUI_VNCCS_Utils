@@ -36,6 +36,19 @@ def appearance_maps(prediction: Any) -> tuple[Any, Any, Any]:
     return value[0], value[1, ..., 0:1], value[1, ..., 1:2]
 
 
+def refine_material_maps(source_roughness, source_metallic, roughness, metallic):
+    """Reject image estimates that contradict the source mesh's physical materials."""
+    import torch
+
+    disagreement = torch.maximum(
+        (roughness - source_roughness).abs(), (metallic - source_metallic).abs(),
+    )
+    # Stylized highlights can be mistaken for metal; agreement is required for both maps.
+    confidence = (1 - disagreement / 0.25).clamp(0, 1)
+    return (torch.lerp(source_roughness, roughness, confidence),
+            torch.lerp(source_metallic, metallic, confidence))
+
+
 def extract_materials(
     model_directory: Path,
     views: list[dict[str, Any]],

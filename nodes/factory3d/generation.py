@@ -12,10 +12,12 @@ from __future__ import annotations
 import asyncio
 import gc
 import inspect
+import math
 from importlib.util import find_spec
 import shutil
 import threading
 from contextlib import nullcontext
+from copy import copy
 from functools import wraps
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,6 +38,7 @@ QI2_WEIGHT_FILES = (
 REFINEMENT_WEIGHT_FILES = (*QI2_WEIGHT_FILES, *MARIGOLD_WEIGHT_SPECS)
 REFINEMENT_NODE_TYPES = (
     "CLIPLoader", "TextEncodeQwenImage21", "VAEEncode", "VAEDecode", "SetLatentNoiseMask",
+    "BasicGuider", "RandomNoise", "KSamplerSelect", "ManualSigmas", "SamplerCustomAdvanced",
 )
 
 
@@ -44,6 +47,8 @@ TRIPOSPLAT = "triposplat"
 PIXAL3D = "pixal3d"
 
 TRELLIS2 = "trellis2"
+
+_MESH_REFERENCE_PAD_FACTOR = 1.1
 
 PROVIDER_KEYS = (TRIPOSPLAT, PIXAL3D, TRELLIS2)
 
@@ -247,6 +252,9 @@ def normalize_mesh_settings(values: Any) -> dict[str, Any]:
     remove_background = str(data.get("remove_background", "1")).strip().lower() in {
         "1", "true", "yes", "on",
     }
+    refine_textures = str(data.get("refine_textures", "0")).strip().lower() in {
+        "1", "true", "yes", "on",
+    }
     return {
         "provider": normalize_provider(data.get("provider")),
         "quality": quality,
@@ -257,14 +265,12 @@ def normalize_mesh_settings(values: Any) -> dict[str, Any]:
         "target_resolution": preset["target_resolution"],
         "remesh_resolution": preset["remesh_resolution"],
         "target_face_count": preset["target_face_count"],
-        "texture_resolution": preset["texture_resolution"],
+        "texture_resolution": max(2048, preset["texture_resolution"]) if refine_textures else preset["texture_resolution"],
         "normal_resolution": preset["normal_resolution"],
         "ao_resolution": preset["ao_resolution"],
         "ao_samples": preset["ao_samples"],
         "remove_background": remove_background,
-        "refine_textures": str(data.get("refine_textures", "0")).strip().lower() in {
-            "1", "true", "yes", "on",
-        },
+        "refine_textures": refine_textures,
         "seed": max(-1, min(2**31 - 1, int(data.get("seed", -1)))),
     }
 
@@ -416,11 +422,16 @@ def _call_node(node_type: str, **kwargs: Any) -> tuple[Any, ...]:
         accepted = {key: value for key, value in kwargs.items() if key in signature.parameters}
 
     def invoke() -> Any:
+        from ..unicanvas.comfy_bridge import _release_generation_state
+
         with _comfy_execution_context(node_type), _SuppressComfyProgress():
-            result = method(**accepted)
-            if inspect.isawaitable(result):
-                return asyncio.run(result)
-            return result
+            try:
+                result = method(**accepted)
+                if inspect.isawaitable(result):
+                    return asyncio.run(result)
+                return result
+            finally:
+                _release_generation_state()
 
     try:
         return _unwrap_node_output(invoke())
@@ -568,6 +579,53 @@ def _save_file3d(value: Any, target: Path) -> None:
         raise RuntimeError("Pixal3D/TRELLIS.2 produced an invalid GLB file")
 
 
+def _pixal_source_camera(horizontal_fov: float, image_size: tuple[int, int]) -> dict[str, Any] | None:
+    if not 0.0 < horizontal_fov < 180.0:
+        return None
+    half_tan = math.tan(math.radians(horizontal_fov) / 2)
+    # ImageCropToMask pads the full image to an even square for conditioning.
+    side = 2 * math.ceil(int(max(image_size) * _MESH_REFERENCE_PAD_FACTOR) / 2)
+    vertical_fov = math.degrees(2 * math.atan(half_tan * image_size[1] / side))
+    # Pixal3DConditioning projects from +Z in the exported Y-up mesh frame.
+    return {"position": [0.0, 0.0, 0.5 / half_tan], "target": [0.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0], "fov": vertical_fov}
+
+
+def _bake_mesh_textures(low_poly, high_poly, mesh, voxel_colors, settings, *, base_color_only):
+    if base_color_only:
+        voxel_colors = copy(voxel_colors)
+        voxel_colors.voxel_colors = voxel_colors.voxel_colors[..., :3]
+    base_color, metallic, roughness = _call_node(
+        "BakeTextureFromVoxel",
+        mesh=low_poly,
+        voxel_colors=voxel_colors,
+        reference_mesh=mesh,
+        texture_size=settings["texture_resolution"],
+    )[:3]
+    if base_color_only:
+        return base_color, {}
+
+    normal_map = _call_node(
+        "BakeNormalMapFromMesh",
+        low_poly=low_poly,
+        high_poly=high_poly,
+        resolution=settings["normal_resolution"],
+        cage_distance=0.05,
+        ignore_backfaces=True,
+    )[0]
+    occlusion = _call_node(
+        "BakeAmbientOcclusion",
+        low_poly=low_poly,
+        high_poly=high_poly,
+        resolution=settings["ao_resolution"],
+        samples=settings["ao_samples"],
+        max_distance=0.71,
+        strength=1.0,
+        bias=0.01,
+    )[0]
+    return base_color, {"metallic": metallic, "roughness": roughness, "occlusion": occlusion, "normal_map": normal_map}
+
+
 @_torch_inference
 def run_mesh_generation(
     provider: str,
@@ -618,7 +676,7 @@ def run_mesh_generation(
             masks=mask,
             width=1024,
             height=1024,
-            pad_factor=1.1,
+            pad_factor=_MESH_REFERENCE_PAD_FACTOR,
             grow_mask=0,
             background="#000000",
         )[0]
@@ -626,12 +684,24 @@ def run_mesh_generation(
     _save_prepared_image(prepared, prepared_path)
     prepared_width = int(prepared.shape[2])
     prepared_height = int(prepared.shape[1])
+    refinement_reference = prepared_path.with_name("refinement_reference.png")
+    if settings.get("refine_textures", False):
+        from .texturing import VIEW_RESOLUTION
+
+        reference = _call_node(
+            "ImageCropToMask", images=source_image, masks=mask,
+            width=VIEW_RESOLUTION, height=VIEW_RESOLUTION,
+            pad_factor=_MESH_REFERENCE_PAD_FACTOR, grow_mask=0, background="#000000",
+        )[0]
+        _save_prepared_image(reference, refinement_reference)
+        del reference
     if settings["remove_background"]:
         del bg_model
     del mask, source_alpha
     release_runtime_memory()
     check_cancel()
 
+    source_camera = None
     emit("conditioning", 18, "Encoding model conditioning", key)
     if key == PIXAL3D:
         moge = _call_node(
@@ -668,6 +738,8 @@ def run_mesh_generation(
             image=prepared,
             camera_angle_x=fov,
         )[:2]
+        if settings.get("capture_source_camera") and not settings["remove_background"]:
+            source_camera = _pixal_source_camera(float(fov), image.size)
         del fov
     else:
         positive, negative = _call_node(
@@ -867,46 +939,17 @@ def run_mesh_generation(
     )[0]
     check_cancel()
 
+    base_color_only = settings.get("base_color_only", False) and not settings.get("refine_textures", False)
     emit(
         "bake",
         86,
-        "Baking PBR textures",
+        "Baking base color" if base_color_only else "Baking PBR textures",
         f"{settings['texture_resolution']} texture atlas",
     )
-    base_color, metallic, roughness = _call_node(
-        "BakeTextureFromVoxel",
-        mesh=low_poly,
-        voxel_colors=voxel_colors,
-        reference_mesh=mesh,
-        texture_size=settings["texture_resolution"],
-    )[:3]
-    normal_map = _call_node(
-        "BakeNormalMapFromMesh",
-        low_poly=low_poly,
-        high_poly=high_poly,
-        resolution=settings["normal_resolution"],
-        cage_distance=0.05,
-        ignore_backfaces=True,
-    )[0]
-    occlusion = _call_node(
-        "BakeAmbientOcclusion",
-        low_poly=low_poly,
-        high_poly=high_poly,
-        resolution=settings["ao_resolution"],
-        samples=settings["ao_samples"],
-        max_distance=0.71,
-        strength=1.0,
-        bias=0.01,
-    )[0]
-    textured = _call_node(
-        "ApplyTextureToMesh",
-        mesh=low_poly,
-        base_color=base_color,
-        metallic=metallic,
-        roughness=roughness,
-        occlusion=occlusion,
-        normal_map=normal_map,
-    )[0]
+    base_color, material_maps = _bake_mesh_textures(
+        low_poly, high_poly, mesh, voxel_colors, settings, base_color_only=base_color_only,
+    )
+    textured = _call_node("ApplyTextureToMesh", mesh=low_poly, base_color=base_color, **material_maps)[0]
     textured = _call_node("MeshSmoothNormals", mesh=textured, crease_angle=180.0)[0]
     check_cancel()
 
@@ -919,13 +962,14 @@ def run_mesh_generation(
         _save_file3d(_call_node("MeshToFile3D", mesh=textured)[0], texturing_dir / "preview.glb")
         publish({"preview": "preview.glb", "views": []})
         base_color, roughness, metallic = run_texture_pass(
-            textured, texturing_dir, prepared_path, settings["seed"],
+            textured, texturing_dir, refinement_reference, settings["seed"],
             material_model_directory=material_model_directory,
             emit=emit, check_cancel=check_cancel, publish=publish,
         )
         textured = _call_node(
-            "ApplyTextureToMesh", mesh=low_poly, base_color=base_color,
-            metallic=metallic, roughness=roughness, occlusion=occlusion, normal_map=normal_map,
+            "ApplyTextureToMesh", mesh=textured, base_color=base_color,
+            metallic=metallic, roughness=roughness,
+            occlusion=material_maps["occlusion"], normal_map=material_maps["normal_map"],
         )[0]
         check_cancel()
 
@@ -942,4 +986,5 @@ def run_mesh_generation(
         "size": file_size,
         "prepared_width": prepared_width,
         "prepared_height": prepared_height,
+        **({"source_camera": source_camera} if source_camera is not None else {}),
     }

@@ -71,6 +71,19 @@ def test_marigold_channel_contract_is_linear_material_and_srgb_albedo():
         materials.appearance_maps(prediction)
 
 
+def test_material_refinement_rejects_metallic_hair_and_preserves_real_metal():
+    source_rough = torch.tensor([.62, 1., .25, .6])
+    source_metal = torch.tensor([0., 0., 1., 0.])
+    rough, metal = materials.refine_material_maps(
+        source_rough, source_metal,
+        torch.tensor([.48, .60, .30, .55]), torch.tensor([.87, .10, .95, 0.]),
+    )
+    assert torch.equal(rough[:2], source_rough[:2])
+    assert torch.equal(metal[:2], source_metal[:2])
+    assert .25 < rough[2] < .30 and .95 < metal[2] <= 1
+    assert .55 < rough[3] < .6 and metal[3] == 0
+
+
 @pytest.fixture
 def comfy_stubs(monkeypatch):
     comfy, extras = ModuleType("comfy"), ModuleType("comfy_extras")
@@ -87,6 +100,7 @@ def comfy_stubs(monkeypatch):
 @pytest.mark.parametrize("cancel", [False, True])
 def test_views_are_sequential_and_materials_publish_after_files(tmp_path, monkeypatch, comfy_stubs, cancel):
     calls, rendered_atlases, snapshots = [], [], []
+    detailed_color = (torch.arange(16).remainder(2)[None, :, None].expand(16, 16, 3).float() * .6 + .2)
     class Projection:
         def __init__(self, *_args):
             self.device = torch.device("cpu")
@@ -108,14 +122,14 @@ def test_views_are_sequential_and_materials_publish_after_files(tmp_path, monkey
         if name == "UNETLoader":
             return (SimpleNamespace(clone=lambda: SimpleNamespace(set_model_unet_function_wrapper=lambda callback: None)),)
         if name == "TextEncodeQwenImage21": return "positive", "negative", {"samples": "empty"}
-        if name == "VAEDecode": return (torch.full((1, 16, 16, 4), .8),)
+        if name == "VAEDecode": return (detailed_color[None],)
         if name == "VAEEncode": return ({"samples": args["pixels"]},)
-        if name == "SetLatentNoiseMask": return (args["samples"],)
+        if name == "SetLatentNoiseMask": return ({**args["samples"], "noise_mask": args["mask"]},)
+        if name == "SamplerCustomAdvanced":
+            if cancel: raise RuntimeError("cancelled")
+            assert "noise_mask" in args["latent_image"]
+            return ("sample",)
         return (object(),)
-    def sampler(*_args, **params):
-        assert params["steps"] == 8 and params["cfg"] == 1
-        if cancel: raise RuntimeError("cancelled")
-        return "sample"
     def extract(_directory, records, _output, _seed, *, check_cancel, on_view):
         for index, _record in enumerate(records):
             on_view(index, (torch.full((16, 16, 3), .2), torch.full((16, 16, 1), .7), torch.full((16, 16, 1), .9)))
@@ -126,7 +140,6 @@ def test_views_are_sequential_and_materials_publish_after_files(tmp_path, monkey
         for name in snapshot.get("atlas", {}).values(): assert (tmp_path / name).is_file()
         snapshots.append(copy.deepcopy(snapshot))
     monkeypatch.setattr(texturing, "_call_node", node)
-    monkeypatch.setattr(texturing, "_sampler", sampler)
     monkeypatch.setattr(texturing, "extract_materials", extract)
     monkeypatch.setattr(texturing, "release_runtime_memory", lambda: None)
     Image.new("RGB", (16, 16), "red").save(tmp_path / "reference.png")
@@ -144,11 +157,19 @@ def test_views_are_sequential_and_materials_publish_after_files(tmp_path, monkey
     assert snapshots[-1]["phase"] == "complete"
     assert snapshots[-1]["coverage"] == 1
     assert all(view["state"] == "complete" for view in snapshots[-1]["views"])
-    for value, expected in zip(result, (.2, .7, .9)):
-        assert torch.allclose(value, torch.full_like(value, expected))
+    assert torch.allclose(result[0][0], detailed_color)
+    assert torch.all(result[1] == 1) and torch.all(result[2] == 0)
+    assert (tmp_path / snapshots[-1]["atlas"]["base_color"]).read_bytes() == (tmp_path / "atlas_5_base_color.png").read_bytes()
     assert calls[0][1]["unet_name"] == "qwen_image_2.1_turbo_int8_convrot.safetensors"
     assert not any("lora" in name.lower() for name, _ in calls)
     assert len([call for call in calls if call[0] == "TextEncodeQwenImage21"]) == 6
+    sigmas = [args["sigmas"] for name, args in calls if name == "ManualSigmas"]
+    assert len(sigmas) == 6
+    assert [float(value) for value in sigmas[0].split(",")] == pytest.approx(
+        [1., .978453, .95418, .926626, .89508, .845148, .704534, .414568, 0.],
+    )
+    assert not any(name == "KSampler" for name, _ in calls)
+    assert [args["noise_seed"] for name, args in calls if name == "RandomNoise"] == list(range(7, 13))
 
 
 def test_material_adapter_uses_local_weights_and_cleans_up_on_cancel(tmp_path, monkeypatch, comfy_stubs):
@@ -182,18 +203,26 @@ def test_material_adapter_uses_local_weights_and_cleans_up_on_cancel(tmp_path, m
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_mesh_pipeline_runs_refinement_only_when_enabled(tmp_path, monkeypatch, enabled):
-    published, refined, saved = [], [], []
+    published, refined, saved, crops = [], [], [], []
     def node(name, **kwargs):
-        if name == "ImageCropToMask": return (torch.zeros(1, 16, 16, 3),)
+        if name == "ImageCropToMask":
+            crops.append((kwargs["width"], kwargs["height"]))
+            return (torch.zeros(1, 16, 16, 3),)
         if name == "BakeTextureFromVoxel": return "base", "metallic", "roughness"
         if name == "ApplyTextureToMesh": return (kwargs,)
-        if name in ("MeshToFile3D", "MeshSmoothNormals"): return (kwargs["mesh"],)
+        if name == "MeshSmoothNormals":
+            mesh = kwargs["mesh"]
+            return ({**mesh, "normals": "smoothed"} if isinstance(mesh, dict) else mesh,)
+        if name == "MeshToFile3D": return (kwargs["mesh"],)
         return ("first", "second", "third", "fourth")
     def save(mesh, path):
         saved.append((mesh, path.name))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"glTF" + b"\0" * 32)
-    def refine(*_args, **_kwargs):
+    def refine(mesh, _output, reference, *_args, **_kwargs):
+        assert mesh["normals"] == "smoothed"
+        assert reference == tmp_path / "refinement_reference.png"
+        assert reference.is_file()
         refined.append(True)
         return "refined base", "refined roughness", "refined metallic"
     monkeypatch.setattr(generation, "_call_node", node)
@@ -215,3 +244,6 @@ def test_mesh_pipeline_runs_refinement_only_when_enabled(tmp_path, monkeypatch, 
     assert final_mesh["base_color"] == ("refined base" if enabled else "base")
     assert final_mesh["metallic"] == ("refined metallic" if enabled else "metallic")
     assert final_mesh["roughness"] == ("refined roughness" if enabled else "roughness")
+    assert crops == ([(1024, 1024), (2048, 2048)] if enabled else [(1024, 1024)])
+    assert (tmp_path / "refinement_reference.png").exists() is enabled
+    assert (final_mesh["mesh"] if enabled else final_mesh)["normals"] == "smoothed"

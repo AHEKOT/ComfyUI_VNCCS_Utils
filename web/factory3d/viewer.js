@@ -4408,6 +4408,7 @@ export class Factory3DViewer {
                     const entry = {
                         mesh: objectRoot,
                         model: objectRoot,
+                        modelSpace: loaded.modelSpace,
                         splat: null,
                         data: item,
                         localBounds: loaded.bounds,
@@ -6052,6 +6053,18 @@ export class Factory3DViewer {
             zoom_sensitivity: this.zoomSensitivity,
             camera: this.getCameraState(),
         };
+    }
+
+    getModelSourceCamera(objectId) {
+        const entry = this.objects.get(objectId);
+        const source = entry?.data.source_camera, space = entry?.modelSpace;
+        if (!space || !source || !Number.isFinite(source.fov)
+            || ![source.position, source.target, source.up].every(vector =>
+                Array.isArray(vector) && vector.length === 3 && vector.every(Number.isFinite))) return null;
+        const position = space.localToWorld(new THREE.Vector3().fromArray(source.position)).toArray();
+        const target = space.localToWorld(new THREE.Vector3().fromArray(source.target)).toArray();
+        const up = new THREE.Vector3().fromArray(source.up).transformDirection(space.matrixWorld).toArray();
+        return { position, target, up, fov: source.fov };
     }
 
     getCameraState() {

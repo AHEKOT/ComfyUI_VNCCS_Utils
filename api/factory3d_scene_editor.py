@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import urllib.parse
 from typing import Any
 from ..nodes.factory3d import storage as factory, runtime, generation as factory3d_generation
 

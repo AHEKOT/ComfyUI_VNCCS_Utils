@@ -105,6 +105,7 @@ function normalizeModel(root) {
     sceneRoot.updateMatrixWorld(true);
     return {
         root: sceneRoot,
+        modelSpace: normalized,
         bounds: new THREE.Box3().setFromObject(sceneRoot),
         importScale: scale,
     };
