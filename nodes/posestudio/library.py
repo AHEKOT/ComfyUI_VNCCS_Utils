@@ -408,6 +408,29 @@ def download_hf_file(repo_id, path_in_repo, token=None, revision=None):
         raise
 
 
+def _is_publishable_pose_asset(pose_data):
+    if not isinstance(pose_data, dict):
+        return False
+    meta = get_raw_library_meta(pose_data)
+    if meta.get("repository") == LOCAL_USER_REPOSITORY and meta.get("asset_type") in (POSE_ASSET_TYPE, ANIMATION_ASSET_TYPE):
+        return True
+    if any(isinstance(pose_data.get(key), dict) for key in (
+        "bones", "bonePositions", "ikEffectorPositions", "poleTargetPositions", "hipBonePosition", "animation",
+    )) or isinstance(pose_data.get("modelRotation"), list):
+        return True
+    if pose_data.get("type") == "pose_set":
+        poses = pose_data.get("poses")
+        return isinstance(poses, list) and bool(poses) and all(isinstance(pose, dict) for pose in poses)
+    characters = pose_data.get("characters")
+    return isinstance(characters, list) and any(
+        isinstance(character, dict) and (
+            isinstance(character.get("animation"), dict)
+            or (isinstance(character.get("poses"), list) and any(isinstance(pose, dict) for pose in character["poses"]))
+        )
+        for character in characters
+    )
+
+
 def collect_local_pose_files():
     lib_path = get_library_path()
     local_root = os.path.join(lib_path, LOCAL_USER_REPOSITORY)
@@ -440,6 +463,7 @@ def collect_local_pose_files():
                 "category": category,
                 "tags": meta.get("tags") or [],
                 "asset_type": asset_type,
+                "publishable": _is_publishable_pose_asset(pose_data),
                 "json_path": path,
                 "preview_path": preview_path,
                 "preview_type": preview_type,
@@ -774,6 +798,7 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
         with tempfile.TemporaryDirectory(prefix="vnccs_pose_publish_") as snapshot:
             operations, entries = [], []
             total_bytes = 0
+            ignored_json_count = 0
             with _LIBRARY_SAVE_LOCK:
                 local_poses = collect_local_pose_files()
                 local_root = os.path.realpath(os.path.join(get_library_path(), LOCAL_USER_REPOSITORY))
@@ -787,6 +812,9 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
                     raise ValueError("Local library contains unreadable pose files. Repair them before publishing.")
                 destinations = set()
                 for pose in local_poses:
+                    if not pose["publishable"]:
+                        ignored_json_count += 1
+                        continue
                     entry = {key: pose[key] for key in ("name", "category", "tags", "asset_type")}
                     for kind in ("json", "preview"):
                         path = pose[f"{kind}_path"]
@@ -804,6 +832,8 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
                             raise ValueError("Pose library exceeds the repository transfer size limit")
                         target = os.path.join(snapshot, str(len(operations)))
                         shutil.copyfile(path, target)
+                        if kind == "json" and not _is_publishable_pose_asset(read_pose_json(target)):
+                            raise ValueError("Local library changed while preparing publication. Try again.")
                         entry[f"{kind}_path"] = hub_path
                         entry[f"{kind}_sha256"] = sha256_file(target)
                         operations.append(CommitOperationAdd(path_in_repo=hub_path, path_or_fileobj=target))
@@ -832,6 +862,7 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
                 "pose_count": sum(entry["asset_type"] != ANIMATION_ASSET_TYPE for entry in entries),
                 "animation_count": sum(entry["asset_type"] == ANIMATION_ASSET_TYPE for entry in entries),
                 "uploaded_count": len(operations), "deleted_count": 0, "skipped_count": 0,
+                "ignored_json_count": ignored_json_count,
             }
         try:
             with _REPOSITORY_SETTINGS_LOCK:
@@ -843,7 +874,10 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
                 write_private_json(get_user_repositories_path(), settings)
         except Exception as exc:
             raise RuntimeError(f"Library was published, but its target could not be saved locally: {exc}") from None
-        repository_progress_finish(task_id, f"Published {len(entries)} library items to {repo_id}.")
+        message = f"Published {len(entries)} library items to {repo_id}."
+        if ignored_json_count:
+            message += f" Ignored {ignored_json_count} JSON files outside the pose and animation formats."
+        repository_progress_finish(task_id, message)
         return result
     except Exception as exc:
         message = str(exc).replace(token, "[redacted]")

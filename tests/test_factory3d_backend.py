@@ -967,6 +967,21 @@ class FactoryBackendTests(unittest.TestCase):
         source = (ROOT / "nodes/factory3d/runtime.py").read_text(encoding="utf-8")
         self.assertIn('"scene": backend._public_scene(scene)', source)
 
+    def test_fast_mesh_bakes_base_color_and_skips_material_maps(self):
+        generation = self.factory.factory3d_generation
+        colors = types.SimpleNamespace(voxel_colors=np.arange(12).reshape(2, 6))
+        settings = generation.QUALITY_PRESETS["preview"]
+
+        with mock.patch.object(generation, "_call_node", return_value=("base", "metallic", "roughness")) as call:
+            base, maps = generation._bake_mesh_textures("low", "high", "original", colors, settings, base_color_only=True)
+
+        self.assertEqual((base, maps), ("base", {}))
+        self.assertEqual(len(call.call_args_list), 1)
+        self.assertEqual(call.call_args.args, ("BakeTextureFromVoxel",))
+        self.assertEqual(call.call_args.kwargs["texture_size"], 1024)
+        np.testing.assert_array_equal(call.call_args.kwargs["voxel_colors"].voxel_colors, colors.voxel_colors[:, :3])
+        self.assertEqual(colors.voxel_colors.shape, (2, 6))
+
     def test_pixal_generation_commits_a_textured_mesh_asset(self):
         scene = self.factory.create_scene("Pixal")
         object_id = self.factory._new_id()
@@ -978,8 +993,12 @@ class FactoryBackendTests(unittest.TestCase):
             "seed": "7",
         })
         job = self.runtime._new_job("generation", scene["scene_id"])
+        settings.update(capture_source_camera=True, remove_background=False)
 
         def fake_generate(_provider, _image, target, prepared, _settings, **_callbacks):
+            self.assertTrue(_settings["capture_source_camera"])
+            self.assertFalse(_settings["refine_textures"])
+            self.assertIsNone(_callbacks["material_model_directory"])
             target.write_bytes(b"glTF" + b"\0" * 32)
             Image.new("RGB", (1024, 1024), (0, 0, 0)).save(prepared, format="PNG")
             return {
@@ -988,6 +1007,7 @@ class FactoryBackendTests(unittest.TestCase):
                 "size": target.stat().st_size,
                 "prepared_width": 1024,
                 "prepared_height": 1024,
+                "source_camera": self.factory.factory3d_generation._pixal_source_camera(60, _image.size),
             }
 
         with mock.patch.object(
@@ -1016,8 +1036,41 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(item["settings"]["source"], "model_import")
         self.assertEqual(item["settings"]["generation_source"], "pixal3d")
         self.assertIn("/asset/model", item["urls"]["model"])
+        camera = item["source_camera"]
+        self.assertEqual(camera["target"], [0, 0, 0])
+        self.assertEqual(camera["up"], [0, 1, 0])
+        self.assertEqual(camera["position"][:2], [0, 0])
+        self.assertAlmostEqual(camera["position"][2], 0.8660254038)
+        self.assertAlmostEqual(camera["fov"], 38.43596957)
         stored = self.factory.load_scene(scene["scene_id"])["objects"][0]
+        self.assertEqual(stored["source_camera"], camera)
         self.assertTrue(self.factory._object_file(scene["scene_id"], stored, "model").is_file())
+        self.assertNotIn("texturing", job)
+        self.assertNotIn("texturing", stored)
+
+    def test_cancelled_mesh_texturing_discards_preview_and_preserves_scene(self):
+        scene = self.factory.create_scene("Existing")
+        scene_root = self.factory.resolve_scene_dir(scene["scene_id"])
+        before = (scene_root / "scene.json").read_bytes()
+        object_id = self.factory._new_id()
+        image_stream = io.BytesIO()
+        Image.new("RGB", (16, 16)).save(image_stream, format="PNG")
+        job = self.runtime._new_job("generation", scene["scene_id"])
+
+        def cancelled(_provider, _image, target, _prepared, _settings, **callbacks):
+            directory = target.parents[1] / "texturing"
+            directory.mkdir()
+            (directory / "preview.glb").write_bytes(b"glTF")
+            callbacks["publish"]({"preview": "preview.glb", "views": []})
+            raise self.runtime.JobCancelled("cancelled")
+
+        with mock.patch.object(self.runtime, "_provider_weights_status", return_value={"ready": True}), \
+             mock.patch.object(self.factory.factory3d_generation, "run_mesh_generation", side_effect=cancelled):
+            with self.assertRaises(self.runtime.JobCancelled):
+                self.runtime._generate_mesh_object(job, image_stream.getvalue(), object_id, "New",
+                    self.factory._generation_settings({"provider": "trellis2", "seed": 1, "refine_textures": "1"}))
+        self.assertEqual((scene_root / "scene.json").read_bytes(), before)
+        self.assertFalse((scene_root / "objects" / object_id).exists())
 
     def test_object_updates_cannot_replace_server_file_metadata(self):
         scene = self.factory.create_scene("Scene")

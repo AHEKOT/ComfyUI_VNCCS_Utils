@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import gc
 import os
+import re
 import secrets
 import shutil
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -13,6 +15,8 @@ from pathlib import Path
 from typing import Any, Callable
 from PIL import Image, ImageOps
 from . import generation as factory3d_generation
+from . import texturing as factory3d_texturing
+from .materials import MARIGOLD_DIRECTORY, MARIGOLD_WEIGHT_SPECS
 from .gaussian_scene import inspect_ply, normalize_transform, validate_ply_payload
 from .schema import normalize_object_editor_properties
 
@@ -137,29 +141,38 @@ def _weight_paths() -> dict[str, Path]:
     return output
 
 
-def _provider_weight_files(provider: Any) -> tuple[str, ...]:
+def _provider_weight_files(provider: Any, *, refine_textures: bool = False) -> tuple[str, ...]:
     key = factory3d_generation.normalize_provider(provider)
     if key == factory3d_generation.TRIPOSPLAT:
         return backend._WEIGHT_FILES
-    return factory3d_generation.PROVIDER_WEIGHT_FILES[key]
+    return (*factory3d_generation.PROVIDER_WEIGHT_FILES[key],
+            *(factory3d_generation.REFINEMENT_WEIGHT_FILES if refine_textures else ()))
 
 
-def _provider_weight_paths(provider: Any) -> dict[str, Path]:
-    return {
+def _provider_weight_paths(provider: Any, *, refine_textures: bool = False) -> dict[str, Path]:
+    paths = {
         relative: next(
             (path for path in _weight_candidates(relative) if _valid_weight(path)),
             _weight_candidates(relative)[0],
         )
-        for relative in _provider_weight_files(provider)
+        for relative in _provider_weight_files(provider, refine_textures=refine_textures)
     }
+    if f"{MARIGOLD_DIRECTORY}/model_index.json" in paths:
+        directories = [path.parent for path in _weight_candidates(f"{MARIGOLD_DIRECTORY}/model_index.json")]
+        directory = next((root for root in directories if all(
+            _valid_weight(root / spec["filename"]) for spec in MARIGOLD_WEIGHT_SPECS.values()
+        )), directories[0])
+        paths.update({relative: directory / spec["filename"]
+                      for relative, spec in MARIGOLD_WEIGHT_SPECS.items()})
+    return paths
 
 
-def _provider_weights_status(provider: Any) -> dict[str, Any]:
+def _provider_weights_status(provider: Any, *, refine_textures: bool = False) -> dict[str, Any]:
     key = factory3d_generation.normalize_provider(provider)
     files = []
     ready = True
     total_size = 0
-    for relative, path in _provider_weight_paths(key).items():
+    for relative, path in _provider_weight_paths(key, refine_textures=refine_textures).items():
         exists = _valid_weight(path)
         size = path.stat().st_size if exists else 0
         total_size += size
@@ -191,6 +204,16 @@ def _weights_status() -> dict[str, Any]:
     return _provider_weights_status(factory3d_generation.TRIPOSPLAT)
 
 
+def _texturing_weights_status() -> dict[str, Any]:
+    files = []
+    ready = True
+    for relative in (*factory3d_texturing.QI2_WEIGHT_FILES, *MARIGOLD_WEIGHT_SPECS):
+        path = next((candidate for candidate in _weight_candidates(relative) if _valid_weight(candidate)), None)
+        ready = ready and path is not None
+        files.append({"path": relative, "ready": path is not None})
+    return {"ready": ready, "files": files}
+
+
 def capabilities() -> dict[str, Any]:
     device = "unknown"
     torch_version = ""
@@ -217,6 +240,11 @@ def capabilities() -> dict[str, Any]:
         public = dict(factory3d_generation.PROVIDER_PUBLIC[provider])
         public["weights"] = _provider_weights_status(provider)
         public["runtime"] = factory3d_generation.runtime_status(provider)
+        if provider in factory3d_generation.MESH_PROVIDER_KEYS:
+            public["refinement"] = {
+                "weights": _provider_weights_status(provider, refine_textures=True),
+                "runtime": factory3d_generation.runtime_status(provider, refine_textures=True),
+            }
         public["defaults"] = (
             {
                 "steps": 20,
@@ -267,6 +295,7 @@ def capabilities() -> dict[str, Any]:
         "runtime_error": error,
         "weights": _weights_status(),
         "splat_cache": backend.splat_cache_status(),
+        "texturing": _texturing_weights_status(),
     }
 
 
@@ -415,18 +444,24 @@ def _track_task(coroutine: Any) -> None:
     task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
-def _download_provider_weights(job: dict[str, Any], provider: Any) -> dict[str, Any]:
+def _download_provider_weights(job: dict[str, Any], provider: Any, *, refine_textures: bool = False) -> dict[str, Any]:
     from huggingface_hub import hf_hub_download
 
     key = factory3d_generation.normalize_provider(provider)
     provider_name = factory3d_generation.PROVIDER_PUBLIC[key]["name"]
-    files = _provider_weight_files(key)
+    paths = _provider_weight_paths(key, refine_textures=refine_textures)
+    files = [relative for relative, path in paths.items() if not _valid_weight(path)]
     root = backend._model_root()
     root.mkdir(parents=True, exist_ok=True)
     job["provider"] = key
     _emit(job, "weights", 2, f"Preparing {provider_name} weights", detail=str(root))
     for index, relative in enumerate(files):
         _check_cancel(job)
+        if _valid_weight(_provider_weight_paths(key, refine_textures=refine_textures)[relative]):
+            continue
+        target = root / relative
+        if os.path.lexists(target):
+            raise RuntimeError(f"Existing model path was left unchanged: {target}")
         start = 5 + index / len(files) * 90
         _emit(
             job,
@@ -436,13 +471,42 @@ def _download_provider_weights(job: dict[str, Any], provider: Any) -> dict[str, 
             detail=relative,
         )
         spec = factory3d_generation.WEIGHT_SPECS.get(relative)
-        hf_hub_download(
+        cached = Path(hf_hub_download(
             repo_id=str(spec["repo_id"]) if spec else backend.UPSTREAM_REPOSITORY,
             filename=str(spec["filename"]) if spec else relative,
-            local_dir=str(root),
             revision=str(spec["revision"]) if spec else backend.UPSTREAM_HF_REVISION,
             token=False,
-        )
+        ))
+        _check_cancel(job)
+        if _valid_weight(_provider_weight_paths(key, refine_textures=refine_textures)[relative]):
+            continue
+        if not _valid_weight(cached):
+            raise RuntimeError(f"Downloaded model file is empty or missing: {relative}")
+        expected_size = cached.stat().st_size
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, partial = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".part", dir=target.parent)
+        try:
+            copied = 0
+            with os.fdopen(descriptor, "wb") as destination, cached.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    _check_cancel(job)
+                    destination.write(chunk)
+                    copied += len(chunk)
+                destination.flush()
+                os.fsync(destination.fileno())
+            if copied != expected_size:
+                raise RuntimeError(f"Downloaded model changed during installation: {relative}")
+            _check_cancel(job)
+            if _valid_weight(_provider_weight_paths(key, refine_textures=refine_textures)[relative]):
+                continue
+            # Control Center's skip-existing publication: never replace a user's file.
+            try:
+                os.link(partial, target)
+            except FileExistsError:
+                if not _valid_weight(target):
+                    raise RuntimeError(f"Existing model path was left unchanged: {target}") from None
+        finally:
+            Path(partial).unlink(missing_ok=True)
         _emit(
             job,
             "weights",
@@ -450,7 +514,7 @@ def _download_provider_weights(job: dict[str, Any], provider: Any) -> dict[str, 
             f"Verified {index + 1}/{len(files)}",
             detail=relative,
         )
-    status = _provider_weights_status(key)
+    status = _provider_weights_status(key, refine_textures=refine_textures)
     if not status["ready"]:
         raise RuntimeError(f"{provider_name} weight download finished with missing files")
     return {"provider": key, "weights": status}
@@ -921,6 +985,39 @@ def _generate_object(
         raise
 
 
+def texturing_asset_path(scene_id: str, object_id: str, name: str) -> Path:
+    if not re.fullmatch(
+        r"(?:preview\.glb|view_[0-9]{1,2}_(?:base|refined)\.png|"
+        r"atlas_[0-9]{1,2}_(?:base_color|roughness|metallic)\.png)", name,
+    ):
+        raise FileNotFoundError("unknown texturing asset")
+    root = backend.resolve_scene_dir(backend._validate_id(scene_id, "scene id")).resolve()
+    path = root / "objects" / backend._validate_id(object_id, "object id") / "texturing" / name
+    if not path.resolve().is_relative_to(root) or not path.is_file():
+        raise FileNotFoundError("texturing asset is not available")
+    return path
+
+
+def _publish_texturing(job: dict[str, Any], object_id: str, snapshot: dict[str, Any]) -> None:
+    def asset(name: str) -> str:
+        texturing_asset_path(job["scene_id"], object_id, name)
+        return (f"{backend.API_BASE}/scenes/{job['scene_id']}/objects/{object_id}"
+                f"/asset/texturing?file={name}")
+
+    public = {key: snapshot[key] for key in ("phase", "coverage", "active_view") if key in snapshot}
+    public["object_id"] = object_id
+    public["preview_url"] = asset(snapshot["preview"])
+    public["views"] = [
+        {"label": view["label"], "state": view.get("state", "pending"),
+         **{f"{key}_url": asset(view[key]) for key in ("base", "refined") if key in view}}
+        for view in snapshot.get("views", [])
+    ]
+    public["atlas"] = {key: asset(name) for key, name in snapshot.get("atlas", {}).items()}
+    # Replace the complete snapshot only after every referenced file exists.
+    with _STATE_LOCK:
+        job["texturing"] = public
+
+
 def _generate_mesh_object(
     job: dict[str, Any],
     image_bytes: bytes,
@@ -931,7 +1028,8 @@ def _generate_mesh_object(
     scene_id = job["scene_id"]
     provider = factory3d_generation.normalize_provider(settings.get("provider"))
     provider_name = factory3d_generation.PROVIDER_PUBLIC[provider]["name"]
-    weights = _provider_weights_status(provider)
+    refine_textures = settings.get("refine_textures", False)
+    weights = _provider_weights_status(provider, refine_textures=refine_textures)
     if not weights["ready"]:
         raise RuntimeError(f"{provider_name} weights are not installed")
 
@@ -967,6 +1065,9 @@ def _generate_mesh_object(
                 f"{settings['upsample_steps']}/{settings['texture_steps']}"
             ),
         )
+        def _emit_stage(stage: str, progress: float, message: str, detail: str = "") -> None:
+            _emit(job, stage, progress, message, detail=detail)
+
         with _FactoryModelOperation(job):
             _release_cached_triposplat_pipeline()
             result = factory3d_generation.run_mesh_generation(
@@ -975,14 +1076,13 @@ def _generate_mesh_object(
                 model_path,
                 prepared_path,
                 effective_settings,
-                emit=lambda stage, progress, message, detail="": _emit(
-                    job,
-                    stage,
-                    progress,
-                    message,
-                    detail=detail,
-                ),
+                emit=_emit_stage,
                 check_cancel=lambda: _check_cancel(job),
+                material_model_directory=(
+                    _provider_weight_paths(provider, refine_textures=True)[f"{MARIGOLD_DIRECTORY}/model_index.json"].parent
+                    if refine_textures else None
+                ),
+                publish=lambda snapshot: _publish_texturing(job, object_id, snapshot),
             )
         _check_cancel(job)
 
@@ -999,6 +1099,8 @@ def _generate_mesh_object(
             stored_bytes=result["size"],
         )
         item["seed"] = seed
+        if "source_camera" in result:
+            item["source_camera"] = result["source_camera"]
         item["source"].update({
             "generator": provider,
             "generated": True,

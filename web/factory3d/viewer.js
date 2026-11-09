@@ -11,10 +11,11 @@ import {
 import { FactoryArchitectureRuntime } from "./plan_geometry.mjs?v=20260908.3";
 import { solveDropToSurface } from "./support_solver.mjs?v=20260905.4";
 import { allocateLocalLightShadows } from "./lighting_policy.mjs?v=20260905.1";
+import { FactoryGenerationPreview } from "./generation_preview.mjs?v=20261107.1";
 import {
     disposeFactoryModel,
     loadFactoryModel,
-} from "./model_loader.mjs?v=20260902.2";
+} from "./model_loader.mjs?v=20261108.1";
 
 
 const EMPTY = () => {};
@@ -31,7 +32,7 @@ const LIGHTING_BASE_RESPONSE = 0.65;
 const MAX_PLAN_GRID_LINES_PER_AXIS = 800;
 const CUTAWAY_MAX_VERTICAL_DOT = 0.7;
 const MIN_DIRECTIONAL_SHADOW_HALF_SPAN = 2;
-export const FACTORY_VIEWER_BUILD = "20260908.4";
+export const FACTORY_VIEWER_BUILD = "20261107.1";
 
 const MAX_OBJECT_AREA_LIGHTS = 32;
 const PLAN_BACKGROUND = "#0b0d14";
@@ -4407,6 +4408,7 @@ export class Factory3DViewer {
                     const entry = {
                         mesh: objectRoot,
                         model: objectRoot,
+                        modelSpace: loaded.modelSpace,
                         splat: null,
                         data: item,
                         localBounds: loaded.bounds,
@@ -5852,11 +5854,31 @@ export class Factory3DViewer {
         return true;
     }
 
-    fit(objectId = "", { emit = true } = {}) {
-        return this._frameBounds(
-            this._viewBounds({ scope: objectId ? "selection" : "scene", objectId }),
-            { emit },
-        );
+    fit(objectId = "", { emit = true, front = false } = {}) {
+        const box = this._viewBounds({ scope: objectId ? "selection" : "scene", objectId });
+        const model = front ? this.objects.get(objectId)?.model : null;
+        if (!model || !hasFiniteBounds(box)) return this._frameBounds(box, { emit });
+
+        const target = box.getCenter(new THREE.Vector3());
+        const vertical = Math.tan(THREE.MathUtils.degToRad(this.captureFov / 2)) * 0.9;
+        const horizontal = vertical * this.captureWidth / this.captureHeight;
+        const vertex = new THREE.Vector3();
+        let cameraZ = box.max.z + 0.01;
+        // Fit the projected surface at each vertex's depth.
+        model.traverseVisible(child => {
+            const positions = child.isMesh && child.geometry.getAttribute("position");
+            if (!positions) return;
+            for (let i = 0; i < positions.count; i++) {
+                vertex.fromBufferAttribute(positions, i).applyMatrix4(child.matrixWorld);
+                const requiredDepth = Math.max(
+                    Math.abs(vertex.x - target.x) / horizontal,
+                    Math.abs(vertex.y - target.y) / vertical,
+                );
+                cameraZ = Math.max(cameraZ, vertex.z + requiredDepth);
+            }
+        });
+        this.setCameraState({ position: [target.x, target.y, cameraZ], target: target.toArray(), up: [0, 1, 0] }, { emit });
+        return true;
     }
 
     frameScene({ emit = true } = {}) {
@@ -6051,6 +6073,18 @@ export class Factory3DViewer {
             zoom_sensitivity: this.zoomSensitivity,
             camera: this.getCameraState(),
         };
+    }
+
+    getModelSourceCamera(objectId) {
+        const entry = this.objects.get(objectId);
+        const source = entry?.data.source_camera, space = entry?.modelSpace;
+        if (!space || !source || !Number.isFinite(source.fov)
+            || ![source.position, source.target, source.up].every(vector =>
+                Array.isArray(vector) && vector.length === 3 && vector.every(Number.isFinite))) return null;
+        const position = space.localToWorld(new THREE.Vector3().fromArray(source.position)).toArray();
+        const target = space.localToWorld(new THREE.Vector3().fromArray(source.target)).toArray();
+        const up = new THREE.Vector3().fromArray(source.up).transformDirection(space.matrixWorld).toArray();
+        return { position, target, up, fov: source.fov };
     }
 
     getCameraState() {
@@ -6977,9 +7011,19 @@ export class Factory3DViewer {
         }
     }
 
+    updateGenerationPreview(snapshot) {
+        this._generationPreview ||= new FactoryGenerationPreview(this);
+        return this._generationPreview.update(snapshot);
+    }
+
+    clearGenerationPreview() {
+        this._generationPreview?.clear();
+    }
+
     dispose() {
         if (this._disposed) return;
         this._disposed = true;
+        this.clearGenerationPreview();
         this._loadingToken += 1;
         this._skydomeLoadToken += 1;
         this._loadController?.abort();

@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import urllib.parse
 from typing import Any
 from ..nodes.factory3d import storage as factory, runtime, generation as factory3d_generation
 
@@ -72,13 +73,14 @@ def register_routes(routes: Any) -> None:
     async def factory_generator_weights_download(request: Any) -> Any:
         try:
             provider = factory3d_generation.normalize_provider(request.match_info["provider"])
+            refine_textures = request.query.get("refine_textures", "0") == "1"
             job = runtime._new_job("weights")
             job["provider"] = provider
             runtime._track_task(
                 asyncio.to_thread(
                     runtime._run_job,
                     job,
-                    lambda current: runtime._download_provider_weights(current, provider),
+                    lambda current: runtime._download_provider_weights(current, provider, refine_textures=refine_textures),
                 )
             )
             return web.json_response(runtime._job_public(job), status=202)
@@ -532,8 +534,18 @@ def register_routes(routes: Any) -> None:
             kind = request.match_info["kind"]
             if kind not in {
                 "ply", "splat", "prepared", "reference", "thumbnail", "model", "resource",
+                "texturing",
             }:
                 raise FileNotFoundError("unknown object asset")
+            if kind == "texturing":
+                path = runtime.texturing_asset_path(
+                    request.match_info["scene_id"], request.match_info["object_id"],
+                    request.query.get("file", ""),
+                )
+                return web.FileResponse(
+                    path,
+                    headers={"Cache-Control": "private, max-age=31536000, immutable"},
+                )
             scene = await asyncio.to_thread(factory.load_scene, request.match_info["scene_id"])
             item = factory._object_by_id(scene, request.match_info["object_id"])
             if kind == "splat":
