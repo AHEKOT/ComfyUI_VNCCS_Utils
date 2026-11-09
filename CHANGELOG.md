@@ -1,3 +1,16 @@
+# Version 0.7.6
+
+## 3D Factory
+
+* **Texture and material refinement.** Enable **Refine Textures and Materials** for Pixal3D and TRELLIS.2 meshes. Qwen Image 2.1 Turbo refines rendered views using the source image as an appearance reference, then projects the results into the mesh's UV atlas. Marigold refines roughness and metallic maps while preserving the refined base color. The option is off by default.
+* **Adjustable refinement resolution.** Set **Resolution Scale** from 1.0 to 4.0 MP per view. The default is 4.0 MP. The generator checks for the extra model weights and dependencies when refinement is enabled.
+* **Live refinement preview.** Watch the mesh texture and material maps update in the viewport during generation. The progress panel shows base and refined images for each view and tracks surface coverage.
+* **Pixal3D compatibility.** Supply the refinement step count required by newer ComfyUI versions of MoGeInference.
+
+## Pose Studio
+
+* **Safer Pose Library publishing.** Hugging Face uploads skip unrelated JSON files and their previews. The completion status reports how many JSON files were skipped.
+
 # Version 0.7.5
 
 ## Pose Studio
