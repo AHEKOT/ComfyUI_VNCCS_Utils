@@ -77,6 +77,62 @@ def test_publish_commits_a_consistent_catalog_and_remembers_only_the_target(publ
     assert progress.get_repository_progress("publish-success")["status"] == "success"
 
 
+def test_publish_filters_unrelated_json_and_downloads_the_result(publishing, tmp_path, monkeypatch):
+    p = publishing
+    legacy_dir = p.root / library.LOCAL_USER_REPOSITORY / "Standing"
+    legacy_dir.mkdir()
+    legacy_assets = {
+        "Legacy": b'{"bonePositions": {"hip": [0, 0, 0]}, "custom": "keep"}',
+        "Set": b'{"type": "pose_set", "poses": [{"bones": {}}]}',
+        "Scene": b'{"type": "scene_pose", "characters": [{"poses": [{"bones": {}}]}]}',
+    }
+    for name, data in legacy_assets.items():
+        (legacy_dir / f"{name}.json").write_bytes(data)
+    saved, status = library.save_pose({"name": "Saved", "category": "Standing", "pose": {"prompt": "keep"}})
+    assert status == 200
+    saved_bytes = (p.root / saved["path"]).read_bytes()
+
+    unrelated = p.target.with_name("settings.json")
+    unrelated.write_bytes(b'{"sample_setting": "private"}')
+    unrelated.with_suffix(".png").write_bytes(b"unrelated preview")
+    remote = {}
+
+    def commit(**kwargs):
+        for operation in kwargs["operations"]:
+            source = operation.path_or_fileobj
+            remote[operation.path_in_repo] = source if isinstance(source, bytes) else Path(source).read_bytes()
+
+    p.api.create_commit.side_effect = commit
+    result = library.publish_local_repository_to_hf("owner/new", token="write-secret", task_id="publish-filtered")
+    assert result["ignored_json_count"] == 1
+    assert "Ignored 1 JSON" in progress.get_repository_progress("publish-filtered")["message"]
+    assert unrelated.read_bytes() == b'{"sample_setting": "private"}'
+    assert unrelated.with_suffix(".png").read_bytes() == b"unrelated preview"
+    manifest = json.loads(remote.pop("pose_library.json"))
+    expected = {
+        **{f"poses/Standing/{name}.json": data for name, data in legacy_assets.items()},
+        "poses/Standing/Saved.json": saved_bytes,
+        "poses/Standing/Wave.json": p.target.read_bytes(),
+        "previews/Standing/Wave.png": p.target.with_suffix(".png").read_bytes(),
+        "animations/Standing/Walk.json": b'{"animation": {"frames": []}}',
+    }
+    assert remote == expected
+
+    def download(_repo_id, path, **_kwargs):
+        staged = tmp_path / "download"
+        staged.write_bytes(remote[path])
+        return str(staged)
+
+    monkeypatch.setattr(library, "download_hf_file", download)
+    synced = library.sync_pose_repository_files({"repo_id": "owner/new"}, manifest, False)
+    assert synced["errors"] == []
+    assert synced["downloaded_count"] == result["asset_count"] == 6
+    downloaded = p.root / "owner__new"
+    for path, data in expected.items():
+        local_path = path.replace("previews/", "poses/", 1) if path.startswith("previews/") else path
+        assert (downloaded / local_path).read_bytes() == data
+
+
 @pytest.mark.parametrize("failure", ["create", "upload", "corrupt pose", "empty library", "oversize"])
 def test_failed_publish_keeps_the_previous_link_and_redacts_credentials(publishing, monkeypatch, failure):
     p = publishing
