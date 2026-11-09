@@ -102,7 +102,8 @@ def test_views_are_sequential_and_materials_publish_after_files(tmp_path, monkey
     calls, rendered_atlases, snapshots = [], [], []
     detailed_color = (torch.arange(16).remainder(2)[None, :, None].expand(16, 16, 3).float() * .6 + .2)
     class Projection:
-        def __init__(self, *_args):
+        def __init__(self, *_args, view_resolution):
+            assert view_resolution == 1440
             self.device = torch.device("cpu")
             self.atlas = torch.full((16, 16, 3), .3)
             self.weights = torch.zeros(16, 16)
@@ -121,7 +122,15 @@ def test_views_are_sequential_and_materials_publish_after_files(tmp_path, monkey
         calls.append((name, args))
         if name == "UNETLoader":
             return (SimpleNamespace(clone=lambda: SimpleNamespace(set_model_unet_function_wrapper=lambda callback: None)),)
-        if name == "TextEncodeQwenImage21": return "positive", "negative", {"samples": "empty"}
+        if name == "QwenImage21Cache":
+            model = args["model"].clone()
+            model.cache_device = args["device"]
+            return (model,)
+        if name == "BasicGuider":
+            assert args["model"].cache_device == "off"
+        if name == "TextEncodeQwenImage21":
+            assert args["resolution"] == 1440
+            return "positive", "negative", {"samples": "empty"}
         if name == "VAEDecode": return (detailed_color[None],)
         if name == "VAEEncode": return ({"samples": args["pixels"]},)
         if name == "SetLatentNoiseMask": return ({**args["samples"], "noise_mask": args["mask"]},)
@@ -143,7 +152,7 @@ def test_views_are_sequential_and_materials_publish_after_files(tmp_path, monkey
     monkeypatch.setattr(texturing, "extract_materials", extract)
     monkeypatch.setattr(texturing, "release_runtime_memory", lambda: None)
     Image.new("RGB", (16, 16), "red").save(tmp_path / "reference.png")
-    kwargs = dict(material_model_directory=tmp_path, emit=lambda *_args: None,
+    kwargs = dict(view_resolution=1440, material_model_directory=tmp_path, emit=lambda *_args: None,
                   check_cancel=lambda: None, publish=publish)
     if cancel:
         with pytest.raises(RuntimeError, match="cancelled"):
@@ -232,6 +241,7 @@ def test_mesh_pipeline_preserves_material_modes_and_optional_refinement(tmp_path
         assert mesh["normals"] == "smoothed"
         assert reference == tmp_path / "refinement_reference.png"
         assert reference.is_file()
+        assert _kwargs["view_resolution"] == 1440
         refined.append(True)
         return "refined base", "refined roughness", "refined metallic"
     monkeypatch.setattr(generation, "_call_node", node)
@@ -240,7 +250,7 @@ def test_mesh_pipeline_preserves_material_modes_and_optional_refinement(tmp_path
     monkeypatch.setattr(generation, "release_runtime_memory", lambda: None)
     monkeypatch.setattr(generation, "runtime_status", lambda _provider, **_kwargs: {"ready": True})
     monkeypatch.setattr(texturing, "run_texture_pass", refine)
-    settings = generation.normalize_mesh_settings({"provider": "trellis2", "remove_background": "0", "refine_textures": enabled, "seed": 1})
+    settings = generation.normalize_mesh_settings({"provider": "trellis2", "remove_background": "0", "refine_textures": enabled, "refine_resolution_mp": 2, "seed": 1})
     settings["base_color_only"] = base_color_only
     generation.run_mesh_generation("trellis2", Image.new("RGB", (16, 16)),
         tmp_path / "model" / "model.glb", tmp_path / "prepared.png", settings,
@@ -262,6 +272,6 @@ def test_mesh_pipeline_preserves_material_modes_and_optional_refinement(tmp_path
         assert final_mesh["occlusion"] == "BakeAmbientOcclusion"
         assert len(baked) == 2
     assert torch.equal(voxel_colors.voxel_colors, torch.arange(12).reshape(2, 6))
-    assert crops == ([(1024, 1024), (2048, 2048)] if enabled else [(1024, 1024)])
+    assert crops == ([(1024, 1024), (1440, 1440)] if enabled else [(1024, 1024)])
     assert (tmp_path / "refinement_reference.png").exists() is enabled
     assert (final_mesh["mesh"] if enabled else final_mesh)["normals"] == "smoothed"

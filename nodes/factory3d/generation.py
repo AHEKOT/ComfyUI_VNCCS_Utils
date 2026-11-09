@@ -37,7 +37,7 @@ QI2_WEIGHT_FILES = (
 )
 REFINEMENT_WEIGHT_FILES = (*QI2_WEIGHT_FILES, *MARIGOLD_WEIGHT_SPECS)
 REFINEMENT_NODE_TYPES = (
-    "CLIPLoader", "TextEncodeQwenImage21", "VAEEncode", "VAEDecode", "SetLatentNoiseMask",
+    "CLIPLoader", "TextEncodeQwenImage21", "QwenImage21Cache", "VAEEncode", "VAEDecode", "SetLatentNoiseMask",
     "BasicGuider", "RandomNoise", "KSamplerSelect", "ManualSigmas", "SamplerCustomAdvanced",
 )
 
@@ -255,6 +255,10 @@ def normalize_mesh_settings(values: Any) -> dict[str, Any]:
     refine_textures = str(data.get("refine_textures", "0")).strip().lower() in {
         "1", "true", "yes", "on",
     }
+    refine_scale = float(data.get("refine_resolution_mp", 4.0))
+    if not math.isfinite(refine_scale):
+        raise ValueError("refine_resolution_mp must be finite")
+    refine_scale = math.floor(max(1.0, min(4.0, refine_scale)) * 10 + 0.5) / 10
     return {
         "provider": normalize_provider(data.get("provider")),
         "quality": quality,
@@ -271,6 +275,7 @@ def normalize_mesh_settings(values: Any) -> dict[str, Any]:
         "ao_samples": preset["ao_samples"],
         "remove_background": remove_background,
         "refine_textures": refine_textures,
+        "refine_resolution": 32 * round(32 * math.sqrt(refine_scale)),
         "seed": max(-1, min(2**31 - 1, int(data.get("seed", -1)))),
     }
 
@@ -686,11 +691,9 @@ def run_mesh_generation(
     prepared_height = int(prepared.shape[1])
     refinement_reference = prepared_path.with_name("refinement_reference.png")
     if settings.get("refine_textures", False):
-        from .texturing import VIEW_RESOLUTION
-
         reference = _call_node(
             "ImageCropToMask", images=source_image, masks=mask,
-            width=VIEW_RESOLUTION, height=VIEW_RESOLUTION,
+            width=settings["refine_resolution"], height=settings["refine_resolution"],
             pad_factor=_MESH_REFERENCE_PAD_FACTOR, grow_mask=0, background="#000000",
         )[0]
         _save_prepared_image(reference, refinement_reference)
@@ -963,6 +966,7 @@ def run_mesh_generation(
         publish({"preview": "preview.glb", "views": []})
         base_color, roughness, metallic = run_texture_pass(
             textured, texturing_dir, refinement_reference, settings["seed"],
+            view_resolution=settings["refine_resolution"],
             material_model_directory=material_model_directory,
             emit=emit, check_cancel=check_cancel, publish=publish,
         )

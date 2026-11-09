@@ -108,6 +108,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     mesh_upsample_steps: 12,
     mesh_texture_steps: 12,
     mesh_refine_textures: false,
+    mesh_refine_resolution_mp: 4,
 });
 const DEFAULT_EXPORT_SETTINGS = Object.freeze({
     width: 1024,
@@ -792,6 +793,10 @@ class Factory3DWidget {
                                 <button class="vnccs-i3s__switch vnccs-i3s__refine-textures" type="button" role="switch" aria-checked="false" aria-label="Refine Textures and Materials"></button>
                             </div>
                             <div class="vnccs-i3s__hint">Automatic multiview textures and PBR materials</div>
+                            <label class="vnccs-i3s__field vnccs-i3s__refine-resolution-field" hidden>
+                                <span class="vnccs-i3s__label"><span>Resolution Scale</span><span class="vnccs-i3s__refine-resolution-value">4.0 MP</span></span>
+                                <input class="vnccs-i3s__range vnccs-i3s__refine-resolution" type="range" min="1" max="4" step="0.1" value="4" aria-label="Refine resolution scale in megapixels" />
+                            </label>
                         </div>
                         <div class="vnccs-i3s__switch-row vnccs-i3s__background-row">
                             <span class="vnccs-i3s__background-title">Remove background</span>
@@ -1268,6 +1273,9 @@ class Factory3DWidget {
             meshUpsampleSteps: $(".vnccs-i3s__mesh-upsample-steps"),
             meshTextureSteps: $(".vnccs-i3s__mesh-texture-steps"),
             refineTextures: $(".vnccs-i3s__refine-textures"),
+            refineResolutionField: $(".vnccs-i3s__refine-resolution-field"),
+            refineResolution: $(".vnccs-i3s__refine-resolution"),
+            refineResolutionValue: $(".vnccs-i3s__refine-resolution-value"),
             texturingViews: $(".vnccs-i3s__texturing-views"),
             removeBackground: $(".vnccs-i3s__remove-background"),
             seed: $(".vnccs-i3s__seed"),
@@ -1585,6 +1593,7 @@ class Factory3DWidget {
             [this.els.meshShapeSteps, "mesh_shape_steps", "integer"],
             [this.els.meshUpsampleSteps, "mesh_upsample_steps", "integer"],
             [this.els.meshTextureSteps, "mesh_texture_steps", "integer"],
+            [this.els.refineResolution, "mesh_refine_resolution_mp", "number"],
         ];
         for (const [control, key, kind] of settings) {
             const update = () => {
@@ -1593,6 +1602,7 @@ class Factory3DWidget {
                 this.els.guidanceValue.textContent = Number(this.settings.guidance_scale).toFixed(1);
                 if (key === "num_gaussians") this._syncDensityMode();
                 if (key === "mesh_quality") this._syncMeshQuality();
+                if (key === "mesh_refine_resolution_mp") this._syncRefineTextures();
                 this._scheduleStateSave();
             };
             this._listen(control, "input", update);
@@ -9427,6 +9437,7 @@ class Factory3DWidget {
             form.append("upsample_steps", String(this.settings.mesh_upsample_steps));
             form.append("texture_steps", String(this.settings.mesh_texture_steps));
             form.append("refine_textures", this.settings.mesh_refine_textures === true ? "1" : "0");
+            form.append("refine_resolution_mp", String(this.settings.mesh_refine_resolution_mp));
         }
         form.append("seed", String(this.settings.seed));
         form.append("remove_background", this.settings.remove_background ? "1" : "0");
@@ -12084,7 +12095,15 @@ class Factory3DWidget {
     }
 
     _syncRefineTextures() {
-        this.els.refineTextures.setAttribute("aria-checked", String(this.settings.mesh_refine_textures === true));
+        const enabled = this.settings.mesh_refine_textures === true;
+        this.els.refineTextures.setAttribute("aria-checked", String(enabled));
+        this.els.refineResolutionField.hidden = !enabled;
+        const value = Number(this.settings.mesh_refine_resolution_mp ?? 4);
+        const scale = Number.isFinite(value) ? Math.round(clamp(value, 1, 4) * 10) / 10 : 4;
+        this.settings.mesh_refine_resolution_mp = scale;
+        this.els.refineResolution.value = scale.toFixed(1);
+        this.els.refineResolutionValue.textContent = `${scale.toFixed(1)} MP`;
+        this.els.refineResolution.setAttribute("aria-valuetext", `${scale.toFixed(1)} megapixels`);
     }
 
     _renderTexturingViews(texturing) {

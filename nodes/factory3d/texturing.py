@@ -17,7 +17,6 @@ from .materials import extract_materials, refine_material_maps
 
 VIEW_LABELS = ("front", "right", "back", "left", "top", "bottom")
 VIEW_FOV_RADIANS = math.radians(40.0)
-VIEW_RESOLUTION = 2048
 REFINE_STEPS = 8
 REFINE_CFG = 1.0
 TURBO_SIGMAS = "1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0"
@@ -95,10 +94,11 @@ def projection_coordinates(positions, normals, covered, eye, basis, fov):
 
 
 class _Projection:
-    def __init__(self, mesh, core, mesh_save, device):
+    def __init__(self, mesh, core, mesh_save, device, *, view_resolution):
         import torch
 
         self.core, self.device = core, device
+        self.view_resolution = view_resolution
         vertices, faces, _colors, uvs, normals = mesh_save.get_mesh_batch_item(mesh, 0)
         if uvs is None or normals is None or mesh.texture is None:
             raise RuntimeError("Multiview texturing requires UVs, normals and a baked atlas")
@@ -130,7 +130,7 @@ class _Projection:
     def render(self, eye, basis, atlas):
         return self.core._render_view(
             self.triangles, self.bvh, self.uvs, self.faces, atlas,
-            eye, *basis, VIEW_FOV_RADIANS, VIEW_RESOLUTION, VIEW_RESOLUTION,
+            eye, *basis, VIEW_FOV_RADIANS, self.view_resolution, self.view_resolution,
         )[:2]
 
     def project(self, eye, basis, hit, check_cancel):
@@ -172,6 +172,7 @@ class _Projection:
 
 def run_texture_pass(
     mesh: Any, output_dir: Path, prepared_path: Path, seed: int, *,
+    view_resolution: int,
     material_model_directory: Path,
     emit: Callable[[str, float, str, str], None],
     check_cancel: Callable[[], None],
@@ -184,7 +185,7 @@ def run_texture_pass(
     import comfy_extras.nodes_save_3d as mesh_save
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    projection = _Projection(mesh, core, mesh_save, model_management.get_torch_device())
+    projection = _Projection(mesh, core, mesh_save, model_management.get_torch_device(), view_resolution=view_resolution)
     plan = build_view_plan(projection.center.tolist(), projection.radius)
     candidates = build_view_plan(projection.center.tolist(), projection.radius, extra=True)
     views = [{"label": label, "state": "pending"} for label, _eye, _distance in plan]
@@ -206,7 +207,8 @@ def run_texture_pass(
     check_cancel()
     publish_state()
     emit("texture_models", 87, "Loading view generation models", "Qwen Image 2.1 Turbo · 8 steps · CFG 1")
-    model = _call_node("UNETLoader", unet_name=QI2_DIFFUSION_MODEL, weight_dtype="default")[0].clone()
+    model = _call_node("UNETLoader", unet_name=QI2_DIFFUSION_MODEL, weight_dtype="default")[0]
+    model = _call_node("QwenImage21Cache", model=model, device="off", dtype="default")[0]
 
     def cancellable_step(model_function, arguments):
         check_cancel()
@@ -257,7 +259,7 @@ def run_texture_pass(
         publish_state()
         positive, negative, _empty = _call_node(
             "TextEncodeQwenImage21", clip=clip, vae=vae, prompt=build_texture_prompt(label),
-            negative_prompt="", resolution=VIEW_RESOLUTION,
+            negative_prompt="", resolution=view_resolution,
             images={"image_1": rendered[None], "image_2": reference},
         )
         latent = _call_node("VAEEncode", pixels=rendered[None], vae=vae)[0]

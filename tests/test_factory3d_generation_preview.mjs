@@ -132,6 +132,7 @@ test("Refinement switch updates immediately, persists, and selects its own model
     const syncEnd = studio.indexOf("    _renderTexturingViews(", syncStart);
     const methods = vm.runInNewContext(`({${studio.slice(start, end)},${studio.slice(syncStart, syncEnd)}})`, {
         safeObject: value => value && typeof value === "object" ? value : {},
+        clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
     });
     const control = new Element("button");
     const basic = { weights: { ready: true }, runtime: { ready: true }, refinement: {
@@ -139,8 +140,13 @@ test("Refinement switch updates immediately, persists, and selects its own model
     } };
     let saved = 0, synced = 0;
     const widget = { ...methods, settings: { generator: "trellis2", mesh_refine_textures: false },
-        els: { refineTextures: control }, capabilities: { generators: { trellis2: basic, triposplat: basic } },
+        els: { refineTextures: control, refineResolutionField: new Element("label"),
+            refineResolution: new Element("input"), refineResolutionValue: new Element("span"),
+            guidanceValue: new Element("span") }, capabilities: { generators: { trellis2: basic, triposplat: basic } },
         _syncGeneratorUI() { synced++; }, _scheduleStateSave() { saved++; } };
+    widget._syncRefineTextures();
+    assert.equal(widget.els.refineResolutionField.hidden, true);
+    assert.equal(widget.els.refineResolutionValue.textContent, "4.0 MP");
     assert.equal(widget._generatorCapability().weights.ready, true);
     const bindingStart = studio.indexOf('        this._listen(this.els.refineTextures, "click", () => {');
     const bindingEnd = studio.indexOf("        });", bindingStart) + "        });".length;
@@ -149,12 +155,27 @@ test("Refinement switch updates immediately, persists, and selects its own model
     vm.runInNewContext(`(function() {${studio.slice(bindingStart, bindingEnd)}})`).call(widget);
     click();
     assert.equal(control["aria-checked"], "true");
+    assert.equal(widget.els.refineResolutionField.hidden, false);
     assert.equal(widget._generatorCapability().weights.ready, false);
     assert.equal(widget._generatorCapability("triposplat").weights.ready, true);
     assert.equal(JSON.parse(JSON.stringify(widget.settings)).mesh_refine_textures, true);
+    const settingsStart = studio.indexOf("        const settings = [");
+    const settingsEnd = studio.indexOf('        this._listen(this.els.removeBackground, "click"', settingsStart);
+    let input;
+    widget._listen = (element, event, callback) => {
+        if (element === widget.els.refineResolution && event === "input") input = callback;
+    };
+    vm.runInNewContext(`(function() {${studio.slice(settingsStart, settingsEnd)}})`).call(widget);
+    widget.els.refineResolution.value = "2";
+    input();
+    assert.equal(widget.els.refineResolutionValue.textContent, "2.0 MP");
+    assert.equal(widget.els.refineResolution["aria-valuetext"], "2.0 megapixels");
+    assert.equal(JSON.parse(JSON.stringify(widget.settings)).mesh_refine_resolution_mp, 2);
     click();
     assert.equal(control["aria-checked"], "false");
+    assert.equal(widget.els.refineResolutionField.hidden, true);
+    assert.equal(widget.settings.mesh_refine_resolution_mp, 2);
     assert.equal(widget._generatorCapability().weights.ready, true);
-    assert.equal(saved, 2);
+    assert.equal(saved, 3);
     assert.equal(synced, 2);
 });

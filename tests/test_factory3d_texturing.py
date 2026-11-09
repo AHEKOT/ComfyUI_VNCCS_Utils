@@ -36,6 +36,19 @@ def test_refinement_increases_atlas_detail_without_changing_mesh_quality():
     assert generation.normalize_mesh_settings({"quality": "preview"})["texture_resolution"] == 1024
 
 
+@pytest.mark.parametrize("scale,resolution", [(0, 1024), (1, 1024), (1.5, 1248), (2, 1440), (3, 1760), (4, 2048), (5, 2048)])
+def test_refine_resolution_uses_vnccs_megapixel_scale(scale, resolution):
+    settings = generation.normalize_mesh_settings({"refine_textures": True, "refine_resolution_mp": str(scale)})
+    assert settings["refine_resolution"] == resolution
+    assert generation.normalize_mesh_settings({})["refine_resolution"] == 2048
+
+
+@pytest.mark.parametrize("scale", ["nan", "inf", "-inf", "invalid"])
+def test_refine_resolution_rejects_invalid_values(scale):
+    with pytest.raises(ValueError):
+        generation.normalize_mesh_settings({"refine_resolution_mp": scale})
+
+
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("fail", [False, True])
 def test_direct_node_calls_release_dynamic_vram_before_next_call(monkeypatch, asynchronous, fail):
