@@ -1,3 +1,9 @@
+# Version 0.7.7
+
+## UniCanvas
+
+* **Fixed Qwen Image 2.1 inference scaling.** UniCanvas now calculates the encoder resolution from the inference scale for all reference images and creates a separate empty latent at the working resolution. This also applies to background removal.
+
 # Version 0.7.6
 
 ## 3D Factory

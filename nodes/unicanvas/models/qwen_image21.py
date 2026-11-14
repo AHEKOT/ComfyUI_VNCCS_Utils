@@ -10,6 +10,7 @@ VAELoader, driven through ``DiffusionModelUniCanvasLoader``.
 
 from __future__ import annotations
 
+import math
 import os
 import threading
 from dataclasses import dataclass, field
@@ -165,16 +166,6 @@ def resolve_qwen21_pose_lora() -> str:
     )
 
 
-def _qwen21_image_size(image: Any) -> tuple[int, int]:
-    """Return (height, width) of a (B,H,W,C) or (H,W,C) image tensor."""
-    shape = tuple(int(value) for value in (getattr(image, "shape", ()) or ()))
-    if len(shape) >= 4:
-        return shape[1], shape[2]
-    if len(shape) == 3:
-        return shape[0], shape[1]
-    return 0, 0
-
-
 # Editing prompts are short imperatives with a preserve clause (Qwen-Image-2.1 prompt guide,
 # https://github.com/kjranyone/qwen-image-2.1-prompt-guide - image-editing.md).
 QWEN_IMAGE21_EDIT_PROMPT_GUIDE = PromptGuide(
@@ -258,7 +249,6 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         "_qwen21_prompts",
         "_qwen21_prompt",
         "_qwen21_negative_prompt",
-        "_qwen21_latent",
         "_qwen21_pose_edit",
         "_attention_backend",
     )
@@ -361,10 +351,6 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
     def uses_differential_diffusion(self, mode: str) -> bool:
         return False
 
-    def resolve_generation_size(self, width: int, height: int, gen_settings: dict[str, Any] | None) -> tuple[int, int]:
-        # Size comes from the canvas box and the inference scale; no fixed aspect presets.
-        return int(width), int(height)
-
     def reference_image_slots(self, image_tensor: Any, gen_settings: dict[str, Any] | None) -> dict[int, Any]:
         """Match the native encoder's consecutive numbering of connected images."""
         pose_images = (gen_settings or {}).get("_pose_edit_images")
@@ -407,6 +393,13 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         gen_settings: dict[str, Any],
         draw_id: str = "unknown",
     ) -> tuple[Any, Any]:
+        try:
+            scale = float(gen_settings.get("inference_scale", 1.0))
+        except (TypeError, ValueError, OverflowError):
+            scale = 1.0
+        scale = max(0.5, min(3.0, scale)) if math.isfinite(scale) and scale else 1.0
+        megapixels = math.floor(scale ** 2 * 10 + 0.5) / 10
+        resolution = 32 * round(32 * math.sqrt(megapixels))
         if vae is None:
             raise RuntimeError("[VNCCS UniCanvas] Qwen-Image-2.1 requires the 64-channel RGBA image VAE.")
         clip = gen_settings.get("_qwen21_clip") or (gen_settings.get("_external") or {}).get("clip")
@@ -416,33 +409,26 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         use_layers = gen_settings.get("edit_use_layers_as_reference") is not False
         outpaint = str(gen_settings.get("draw_mode") or "") in {"inpaint", "outpaint"}
         pose_edit = bool(gen_settings.get("_pose_edit_images"))
-        canvas_reference = pose_edit or (bool(slots) and slots.get(1) is image_tensor)
         instruction = str(gen_settings.get("_qwen21_prompt") or "") if pose_edit else self.assemble_instruction(
             gen_settings.get("_qwen21_prompt"), slots, outpaint=outpaint, use_layers=use_layers,
         )
         negative_prompt = str(gen_settings.get("_qwen21_negative_prompt") or "")
         condition_images = {slot: self._prepare_qi21_condition_image(tensor) for slot, tensor in slots.items()}
-        image_h, image_w = _qwen21_image_size(image_tensor)
-        target_w, target_h = self.resolve_generation_size(image_w, image_h, gen_settings)
-        positive, negative, latent = self._encode_qi21(
+        positive, negative = self._encode_qi21(
             clip=clip,
             vae=vae,
             prompt=instruction,
             negative_prompt=negative_prompt,
             images=condition_images,
-            resolution=0 if canvas_reference else 1024,
+            resolution=resolution,
             draw_id=draw_id,
         )
-        if canvas_reference:
-            if latent is None:
-                raise RuntimeError("[VNCCS UniCanvas] Qwen-Image-2.1 encoder returned no canvas-aligned latent.")
-            gen_settings["_qwen21_latent"] = latent
         _uc_log(
             draw_id,
             "Qwen-Image-2.1 conditioning prepared",
             {
                 "slots": sorted(slots),
-                "generation_size": [target_w, target_h],
+                "encoder_resolution": resolution,
                 "positive": _conditioning_debug(positive),
                 "negative": _conditioning_debug(negative),
             },
@@ -533,11 +519,10 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         gen_settings["_qwen21_clip"] = clip
         gen_settings["_qwen21_prompt"] = str(gen_settings.get("prompt") or "").strip() or QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT
         gen_settings["_qwen21_negative_prompt"] = ""
+        height, width = pixels.shape[1:3]
+        gen_settings.setdefault("inference_scale", math.sqrt(width * height) / 1024)
         positive, negative = self.prepare_reference_conditioning(None, None, vae, pixels, gen_settings, draw_id)
-        pixels_h, pixels_w = _qwen21_image_size(pixels)
-        latent = gen_settings.pop("_qwen21_latent", None)
-        if latent is None:
-            latent = self.create_empty_latent(int(pixels_w), int(pixels_h), gen_settings, draw_id)
+        latent = self.create_empty_latent(width, height, gen_settings, draw_id)
         sampled = self.sample_latent(
             model=model,
             positive=positive,
@@ -586,7 +571,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         images: dict[int, Any],
         resolution: int,
         draw_id: str = "unknown",
-    ) -> tuple[Any, Any, Any]:
+    ) -> tuple[Any, Any]:
         """Encode the instruction and <image N> condition images with the
         Qwen3-VL 8B text encoder through ComfyUI core's TextEncodeQwenImage21.
 
@@ -615,8 +600,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             negative = None
         if negative is None:
             negative = [(torch.zeros_like(cond[0]), cond[1]) for cond in positive]
-        latent = encoded[2] if isinstance(encoded, (list, tuple)) and len(encoded) > 2 else None
-        return positive, negative, latent
+        return positive, negative
 
     def sample_latent(
         self,
@@ -662,8 +646,6 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
 
     def prepare_generation_latent(self, ctx) -> Any:
         ctx.denoise = ctx.settings["denoise"] = 1.0
-        latent = ctx.settings.pop("_qwen21_latent", None)
-        if latent is None:
-            latent = self.create_empty_latent(ctx.width, ctx.height, ctx.settings, draw_id=ctx.draw_id)
+        latent = self.create_empty_latent(ctx.width, ctx.height, ctx.settings, draw_id=ctx.draw_id)
         _uc_log(ctx.draw_id, "Qwen-Image-2.1 latent prepared", {"mode": ctx.mode, "latent": _latent_debug(latent)})
         return latent

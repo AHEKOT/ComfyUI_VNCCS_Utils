@@ -97,17 +97,20 @@ def test_qwen_inpaint_keeps_bbox_geometry_and_applies_only_the_mask(use_layers, 
     module.on_mask_prepared(ctx)
     pipeline.prepare_inputs()
     seen = {}
-    empty = {"samples": np.zeros((1, 64, 24, 32))}
+    empty = {"samples": np.zeros((1, 4, 48, 64))}
     def encode(self, **kwargs):
         seen.update(kwargs)
-        return [], [], empty
+        return [], []
+    def create_empty_latent(self, width, height, settings, draw_id):
+        assert (width, height) == mask.size
+        return empty
     monkeypatch.setattr(type(module), "_encode_qi21", encode)
     monkeypatch.setattr(type(module), "_prepare_qi21_condition_image", lambda self, image: image)
-    monkeypatch.setattr(type(module), "create_empty_latent", lambda *a, **kw: pytest.fail("Use the encoder's aligned latent"))
+    monkeypatch.setattr(type(module), "create_empty_latent", create_empty_latent)
     module.prepare_reference_conditioning([], [], object(), ctx.reference_image_tensor, ctx.settings)
     assert module.prepare_generation_latent(ctx) is empty
     assert ctx.denoise == 1.0
-    assert seen["resolution"] == 0
+    assert seen["resolution"] == 1024
     assert seen["images"][1].shape == (1, 384, 512, 3)
     assert tuple(seen["images"][1][0, 80, 225]) == (128, 128, 128)
     assert ctx.settings["edit_use_layers_as_reference"] is use_layers, "The next draw's preference is unchanged"
