@@ -8,6 +8,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
     POSE_STUDIO_CAPTURE_FOV,
+    POSE_STUDIO_EDITOR_ONLY_LAYER,
     PoseViewerCore,
     buildEquivalentPerspectiveProjectionFrame,
 } from "./pose_studio/core.js?v=20261107.1";
@@ -56,6 +57,7 @@ import {
     waitForVideoMetadata,
     zoomVideoTimelineViewport,
 } from "./pose_studio/imports/video.mjs";
+import { PoseReferenceLayerController } from "./pose_studio/reference_layers_controller.mjs?v=20261105.1";
 import {
     boneNameForPositionTrack,
     bonePositionTrackName,
@@ -4602,6 +4604,7 @@ class PoseStudioWidget {
         this._closeLibraryModal?.();
         void this.flushAnimationCacheUpload?.();
         this.animationTimeline?.destroy?.();
+        this.referenceLayers?.dispose();
         this._customSelectController?.disconnect();
         this._customSelectController = null;
         if (this._containerResizeObserver) {
@@ -5366,6 +5369,12 @@ class PoseStudioWidget {
 
         leftPanel.appendChild(exportSection.el);
         this.hideSectionInUniCanvas(exportSection);
+
+        // --- REFERENCE LAYERS SECTION (editor-only tracing images) ---
+        this.referenceLayers = new PoseReferenceLayerController(this, { editorOnlyLayer: POSE_STUDIO_EDITOR_ONLY_LAYER, api });
+        const referenceSection = this.referenceLayers.createSection();
+        leftPanel.appendChild(referenceSection.el);
+        this.hideSectionInUniCanvas(referenceSection);
     }
 
     _createCenterPanel() {
@@ -6156,6 +6165,8 @@ class PoseStudioWidget {
         state.characterAnimations = (this.characters || [])
             .filter(character => character.animationState && character.id !== this.activeCharacterId)
             .map(character => ({ id: character.id, animation: JSON.parse(this.animationSnapshot(character.animationState)) }));
+        const referenceLayers = this.referenceLayers?.historySnapshot();
+        if (referenceLayers) state.referenceLayers = referenceLayers;
         return JSON.stringify(state);
     }
 
@@ -6181,6 +6192,7 @@ class PoseStudioWidget {
             const restored = JSON.parse(snapshot);
             const editorMesh = restored.editorMesh;
             if (editorMesh) this.restoreMeshHistory(editorMesh);
+            if (Array.isArray(restored.referenceLayers)) this.referenceLayers?.restoreHistory(restored.referenceLayers);
             this.animationState = restoreAnimationStateSnapshot(snapshot, {
                 currentFrame,
                 fallbackPose: this.animationState.basePose || {},
@@ -6458,7 +6470,9 @@ class PoseStudioWidget {
         // Initialize viewer
         this.viewer = new PoseViewerCore(this.canvas, {
             // Model/pose/camera restoration can finish after the initial pad draw.
+            onBeforeViewportRender: () => this.referenceLayers?.syncFrame(),
             onViewportRender: () => {
+                this.referenceLayers?.drawOverlay();
                 this.radarRedraw?.();
                 this.host.onViewportRender?.();
                 this.characterTransform?.onViewportRender();
@@ -6503,6 +6517,7 @@ class PoseStudioWidget {
         });
 
         this._viewerInitPromise = this.viewer.init();
+        this.referenceLayers?.attachViewer(this.viewer, this.canvasContainer);
         this.viewer.setUseHandControlPopover?.(this.exportParams.hand_controls_v2 !== false);
         if (this.lightParams) {
             this.viewer.updateLights(this.effectiveLights());
@@ -10034,6 +10049,7 @@ class PoseStudioWidget {
             if (transform || rotation) this.applyPassiveCharacterPlacement(passive, { transform, rotation });
             if (placement.animationBaseTransform) passive.animationState.baseTransform = placement.animationBaseTransform;
         }
+        if (Array.isArray(context?.referenceLayers)) this.referenceLayers?.restoreHistory(context.referenceLayers);
         if (context?.prompt !== undefined) this.setPosePrompt(this.activeTab, context.prompt);
         this.syncCharacterEditorControls();
         this.syncPromptFieldToActiveTab();
@@ -16559,7 +16575,9 @@ class PoseStudioWidget {
             activeTab: this.activeTab,
             capture_id: captureId,
             lighting_prompts: this.lightingPrompts,
-            background_url: this.exportParams.background_url || null
+            background_url: this.exportParams.background_url || null,
+            // Scene-level like background_url; omitted when there are no layers.
+            reference_layers: this.referenceLayers?.serialize(),
         };
 
         // Upload captures only when image or prompt content changed. State-only
@@ -16699,7 +16717,7 @@ class PoseStudioWidget {
             if (this.container) this.container.inert = true;
             const knownRootKeys = new Set([
                 "schema_version", "mesh", "export", "poses", "image_poses", "animation",
-                "lights", "activeTab", "capture_id", "lighting_prompts", "background_url",
+                "lights", "activeTab", "capture_id", "lighting_prompts", "background_url", "reference_layers",
                 "captured_images", "node_id", "characters", "active_character_id", "timeline", "pose_prompts",
             ]);
             this._passthroughPoseData = Object.fromEntries(
@@ -16909,6 +16927,8 @@ class PoseStudioWidget {
                 }
             }
 
+            this.referenceLayers?.load(data.reference_layers);
+
             // Restore background image if present
             const bgUrl = data.background_url ?? data.export?.background_url ?? null;
             if (bgUrl && this.viewer) {
@@ -16962,6 +16982,7 @@ class PoseStudioWidget {
                 if (this._disposed || restoreToken !== this._poseDataRestoreToken) return;
                 this._poseDataRestorePending = false;
                 if (this.container) this.container.inert = false;
+                void this.referenceLayers?.migrateInlineLayers();
             }).catch(error => {
                 if (this._disposed || restoreToken !== this._poseDataRestoreToken) return;
                 this._poseDataRestorePending = false;

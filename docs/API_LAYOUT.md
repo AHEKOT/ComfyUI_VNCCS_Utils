@@ -20,6 +20,8 @@ model execution live in feature services.
 - `pose_library.py`: pose/animation library items and repositories.
 - `pose_capture_sync.py`: browser capture synchronization for graph execution,
   including the historical debug-route alias.
+- `pose_reference_assets.py`: Pose Studio reference layer image upload and read;
+  the durable, content-addressed storage is in `nodes/posestudio/reference_assets.py`.
 - `pose_unicanvas_caches.py`: Pose capture/animation and UniCanvas state cache
   uploads/reads, plus the canvas build identity endpoint.
 
