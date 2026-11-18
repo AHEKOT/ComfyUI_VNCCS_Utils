@@ -110,7 +110,7 @@ def test_qwen_inpaint_keeps_bbox_geometry_and_applies_only_the_mask(use_layers, 
     module.prepare_reference_conditioning([], [], object(), ctx.reference_image_tensor, ctx.settings)
     assert module.prepare_generation_latent(ctx) is empty
     assert ctx.denoise == 1.0
-    assert seen["resolution"] == 1024
+    assert seen["resolution"] == 0
     assert seen["images"][1].shape == (1, 384, 512, 3)
     assert tuple(seen["images"][1][0, 80, 225]) == (128, 128, 128)
     assert ctx.settings["edit_use_layers_as_reference"] is use_layers, "The next draw's preference is unchanged"

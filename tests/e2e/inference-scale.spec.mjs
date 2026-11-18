@@ -5,7 +5,7 @@ import { STANDALONE_STYLES } from "../../web/unicanvas/standalone_theme.mjs";
 const source = await readFile(new URL("../../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const scaleModule = await readFile(new URL("../../web/unicanvas/scale_edit.mjs", import.meta.url), "utf8");
 const styles = source.match(/const STYLES = `([\s\S]*?)`;/)[1];
-const methods = source.slice(source.indexOf("  getOptimalDimension() {"), source.indexOf("  getDenoiseControlSetting() {"));
+const methods = source.slice(source.indexOf("  getGridSize() {"), source.indexOf("  getDenoiseControlSetting() {"));
 const hudMethod = source.slice(source.indexOf("  updateHud() {"), source.indexOf("  getStageViewportSize() {"));
 const listeners = source.slice(source.indexOf('    this.left.addEventListener("input", (e) => {'), source.indexOf("    this.setTool(this.tool, true);"));
 const control = source.match(/<label class="vnccs-uc-infer-scale">[^\n]+/)[0].replace(/\$\{.*?\}/, "1");
@@ -43,7 +43,7 @@ test("fixture: inference scale matches VNCCS steps and updates during dragging a
           syncSettingsToWidget() { this.saves++; }
           clearInputHistoryMarker() {} requestRender() {}
           updateZoomResetButton() {}
-          getGridSize() { return 8; }
+          getModelBase() { return this.settings.generation_mode; }
           roundToMultiple(value, grid) { return Math.round(value/grid)*grid; }
           ${methods}${hudMethod}
         }
@@ -96,5 +96,11 @@ test("fixture: inference scale matches VNCCS steps and updates during dragging a
   await expect(labels).toHaveText(["1.5 MP", "1.5 MP"]);
   await expect(sliders.first()).toHaveValue("1.5");
   expect(await page.evaluate(() => widget.getInferenceSize())).toEqual({ width:1256, height:1256 });
+  await page.evaluate(() => {
+    widget.settings.generation_mode = "qwen_image21";
+    widget.syncInferenceControls();
+  });
+  await expect(hud).toContainText("infer 1248×1248");
+  expect(await page.evaluate(() => widget.bbox)).toEqual({ width:1024, height:1024 });
   await page.screenshot({ path:testInfo.outputPath("after.png") });
 });

@@ -88,8 +88,8 @@ QWEN21_OUTPAINT_INSTRUCTION = "Outpaint the image: replace the solid gray areas 
 QWEN_IMAGE21_DEFAULTS["qwen21_outpaint_lora_name"] = QWEN21_OUTPAINT_LORA_NAME
 
 QWEN21_POSE_LORA_REPO_ID = "MIUProject/VNCCS_PoseStudio_QI2.1"
-QWEN21_POSE_LORA_REVISION = "b0518fd047fa75d7dcd909d68390a7c1d337e5cd"
-QWEN21_POSE_LORA_FILENAME = "VNCCS_QI2_PoseStudioV1.1.safetensors"
+QWEN21_POSE_LORA_REVISION = "7bec8407e327be44d0b5dd75adb43341fe6919a4"
+QWEN21_POSE_LORA_FILENAME = "VNCCS_QI2_PoseStudioV3.safetensors"
 QWEN21_POSE_LORA_NAME = f"QI2.1/VNCCS/{QWEN21_POSE_LORA_FILENAME}"
 _QWEN21_POSE_LORA_LOCK = threading.Lock()
 _QWEN21_POSE_LORA_DOWNLOAD: dict[str, Any] = {"status": "missing", "progress": 0.0, "message": "Missing"}
@@ -392,6 +392,8 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         image_tensor: torch.Tensor,
         gen_settings: dict[str, Any],
         draw_id: str = "unknown",
+        *,
+        preserve_canvas_size: bool = True,
     ) -> tuple[Any, Any]:
         try:
             scale = float(gen_settings.get("inference_scale", 1.0))
@@ -414,6 +416,22 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         )
         negative_prompt = str(gen_settings.get("_qwen21_negative_prompt") or "")
         condition_images = {slot: self._prepare_qi21_condition_image(tensor) for slot, tensor in slots.items()}
+        if preserve_canvas_size and pose_edit:
+            resolution = 0
+        elif preserve_canvas_size and slots and slots.get(1) is image_tensor:
+            # The encoder has one resolution for every slot, so scale only the extra references here.
+            for slot, image in condition_images.items():
+                if slot == 1:
+                    continue
+                height, width = image.shape[1:3]
+                ratio = math.sqrt(width / height)
+                target_w = max(32, 32 * round(resolution * ratio / 32))
+                target_h = max(32, 32 * round(resolution / ratio / 32))
+                if (width, height) != (target_w, target_h):
+                    condition_images[slot] = _call_comfy_node(
+                        "ImageScale", image=image[:1], width=target_w, height=target_h, upscale_method="lanczos", crop="disabled",
+                    )[0]
+            resolution = 0
         positive, negative = self._encode_qi21(
             clip=clip,
             vae=vae,
@@ -521,7 +539,9 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         gen_settings["_qwen21_negative_prompt"] = ""
         height, width = pixels.shape[1:3]
         gen_settings.setdefault("inference_scale", math.sqrt(width * height) / 1024)
-        positive, negative = self.prepare_reference_conditioning(None, None, vae, pixels, gen_settings, draw_id)
+        positive, negative = self.prepare_reference_conditioning(
+            None, None, vae, pixels, gen_settings, draw_id, preserve_canvas_size=False,
+        )
         latent = self.create_empty_latent(width, height, gen_settings, draw_id)
         sampled = self.sample_latent(
             model=model,
@@ -646,6 +666,8 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
 
     def prepare_generation_latent(self, ctx) -> Any:
         ctx.denoise = ctx.settings["denoise"] = 1.0
-        latent = self.create_empty_latent(ctx.width, ctx.height, ctx.settings, draw_id=ctx.draw_id)
+        # Match the native encoder's 32 px rounding for callers with older inference sizes.
+        width, height = (max(32, 32 * round(side / 32)) for side in (ctx.width, ctx.height))
+        latent = self.create_empty_latent(width, height, ctx.settings, draw_id=ctx.draw_id)
         _uc_log(ctx.draw_id, "Qwen-Image-2.1 latent prepared", {"mode": ctx.mode, "latent": _latent_debug(latent)})
         return latent

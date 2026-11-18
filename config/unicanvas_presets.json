@@ -120,11 +120,80 @@
         },
         {
           "role": "lora",
-          "name": "Qwen Edit 2.1 Pose Studio LoRA v1.1",
+          "name": "Qwen Edit 2.1 Pose Studio LoRA V3",
           "hf_repo": "MIUProject/VNCCS_PoseStudio_QI2.1",
-          "hf_revision": "b0518fd047fa75d7dcd909d68390a7c1d337e5cd",
-          "hf_path": "VNCCS_QI2_PoseStudioV1.1.safetensors",
-          "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_PoseStudioV1.1.safetensors",
+          "hf_revision": "7bec8407e327be44d0b5dd75adb43341fe6919a4",
+          "hf_path": "VNCCS_QI2_PoseStudioV3.safetensors",
+          "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_PoseStudioV3.safetensors",
+          "description": "Applied automatically when generating from a pose layer."
+        }
+      ]
+    },
+    {
+      "id": "qwen_image21_turbo",
+      "label": "Qwen Edit 2.1 Turbo",
+      "group": "Qwen Edit 2.1",
+      "title": "Qwen Edit 2.1 Turbo",
+      "description": "Qwen Image 2.1 Turbo INT8 ConvRot with the Qwen3-VL 8B text encoder and the Qwen Image 2.1 VAE. Runs 8 steps at CFG 1.",
+      "settings": {
+        "generation_mode": "qwen_image21",
+        "model_loader": "diffusion_model",
+        "diffusion_model_name": "qwen_image_2.1_turbo_int8_convrot.safetensors",
+        "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+        "vae_name": "qwen_image_2.1_vae_bf16.safetensors",
+        "clip_type": "qwen_image",
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "steps": 8,
+        "cfg": 1.0,
+        "denoise": 1.0,
+        "qwen21_turbo_enabled": false,
+        "qwen_lora_name": "",
+        "qwen_lora_strength": 0
+      },
+      "assets": [
+        {
+          "role": "diffusion_model",
+          "name": "Qwen Image 2.1 Turbo INT8 ConvRot",
+          "hf_repo": "Comfy-Org/Qwen-Image-2.1",
+          "hf_path": "diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
+          "local_path": "models/diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
+          "description": "Qwen Image 2.1 Turbo INT8 ConvRot diffusion model. Uses standard sampling with 8 steps and CFG 1."
+        },
+        {
+          "role": "clip",
+          "name": "QI2 Qwen3-VL 8B Text Encoder",
+          "hf_repo": "Comfy-Org/Qwen-Image-2.1",
+          "hf_path": "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+          "local_path": "models/text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+          "description": "Qwen3-VL 8B text encoder for Qwen Image 2.1."
+        },
+        {
+          "role": "vae",
+          "name": "QI2 VAE",
+          "hf_repo": "Comfy-Org/Qwen-Image-2.1",
+          "hf_path": "vae/qwen_image_2.1_vae_bf16.safetensors",
+          "local_path": "models/vae/qwen_image_2.1_vae_bf16.safetensors",
+          "description": "Qwen Image 2.1 VAE."
+        }
+      ],
+      "dependencies": [
+        {
+          "role": "lora",
+          "name": "Qwen Edit 2.1 Outpaint LoRA v2",
+          "hf_repo": "ausboss/Qwen-Image-2.1-Outpaint-LoRA",
+          "hf_revision": "449336db42ff074aee970ba0facc0ac0feb77863",
+          "hf_path": "qwen-image-2.1-outpaint-v2.safetensors",
+          "local_path": "models/loras/ausboss/qwen-image-2.1-outpaint-v2.safetensors",
+          "description": "Used for outpaint; downloaded separately from the base model."
+        },
+        {
+          "role": "lora",
+          "name": "Qwen Edit 2.1 Pose Studio LoRA V3",
+          "hf_repo": "MIUProject/VNCCS_PoseStudio_QI2.1",
+          "hf_revision": "7bec8407e327be44d0b5dd75adb43341fe6919a4",
+          "hf_path": "VNCCS_QI2_PoseStudioV3.safetensors",
+          "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_PoseStudioV3.safetensors",
           "description": "Applied automatically when generating from a pose layer."
         }
       ]

@@ -200,11 +200,23 @@ test("sidebar polish: denoise field fits 0.65, preset picker shows a chevron, Lo
     assert.ok(/index > 0 \? `<button[^`]*lora-remove/.test(source), "the first row cannot be removed");
 });
 
-test("the generation box moves freely unless Snap to grid is on", () => {
-    const step = source.match(/bboxGridStep\(event, moving\) \{([\s\S]*?)\n  \}/)[1];
-    assert.ok(step.includes("if (this.snapToGrid)") && step.includes("moving ? 1 :"), "snap off: pixel-exact moves, 8 px multiple for sizes");
-    assert.ok(source.includes("this.bboxGridStep(e, true)") && source.includes("this.bboxGridStep(event, false)"), "move and resize both use the step");
-    assert.ok(!/const grid = e\.ctrlKey \|\| e\.metaKey \? 8 : 64/.test(source), "no hard-coded 64 px snapping may remain");
+test("the generation box resizes on the model grid and keeps its movement steps", () => {
+    const grid = source.slice(source.indexOf("  getGridSize() {"), source.indexOf("  getOptimalDimension() {"));
+    const bbox = source.slice(source.indexOf("  bboxGridStep(event, moving) {"), source.indexOf("  onWheel(e) {"));
+    const widget = runInNewContext(`new (class { ${grid}${bbox} })()`, { MOVE_SNAP_GRID_SIZE: 64 });
+    widget.dragStart = { bbox: { x: 3, y: 5, width: 128, height: 128 }, bboxHandle: "se" };
+    for (const [family, size] of [["qwen_image21", 160], ["sdxl", 152]]) {
+        widget.getModelBase = () => family;
+        widget.snapToGrid = false;
+        widget.resizeBbox({ x: 154, y: 156 }, {});
+        assert.deepEqual({ ...widget.bbox }, { x: 3, y: 5, width: size, height: size });
+        assert.equal(widget.bboxGridStep({}, true), 1);
+        widget.snapToGrid = true;
+        assert.equal(widget.bboxGridStep({}, true), 64);
+        assert.equal(widget.bboxGridStep({ ctrlKey: true }, true), 8);
+        widget.resizeBbox({ x: 154, y: 156 }, { metaKey: true });
+        assert.deepEqual({ ...widget.bbox }, { x: 3, y: 5, width: size, height: size });
+    }
 });
 
 test("the settings popover is an accordion that fits its content", () => {

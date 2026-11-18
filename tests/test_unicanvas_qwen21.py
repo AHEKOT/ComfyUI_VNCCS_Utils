@@ -60,14 +60,14 @@ def test_defaults_follow_qi21_recipe():
     assert "qwen21_opaque_output" not in defaults
 
 
-@pytest.mark.parametrize("scale,width,height,resolution", [
-    (None, 1024, 1024, 1024),
-    (1.3125 ** 0.5, 1176, 1176, 1152),
-    (2 ** 0.5, 1776, 1184, 1440),
-    (2, 2048, 2048, 2048),
+@pytest.mark.parametrize("scale,width,height,latent_size", [
+    (None, 1024, 1024, (1024, 1024)),
+    (0.5, 512, 512, (512, 512)),
+    (2 ** 0.5, 1792, 1184, (1792, 1184)),
+    (2 ** 0.5, 1776, 1184, (1792, 1184)),  # Older input rounded the width to 8.
 ])
 @pytest.mark.parametrize("mode", ["img2img", "inpaint", "outpaint"])
-def test_canvas_reference_resolution_and_sampling_latent_follow_inference_scale(monkeypatch, scale, width, height, resolution, mode):
+def test_canvas_reference_keeps_its_size_and_sampler_matches_encoder_rounding(monkeypatch, scale, width, height, latent_size, mode):
     from types import SimpleNamespace
     from nodes.unicanvas.models import qwen_image21
 
@@ -80,11 +80,13 @@ def test_canvas_reference_resolution_and_sampling_latent_follow_inference_scale(
     if scale is not None:
         settings["inference_scale"] = scale
     module.prepare_reference_conditioning(None, None, object(), image, settings)
-    assert calls[0][1]["resolution"] == resolution
+    assert calls[0][1]["resolution"] == 0
+    assert calls[0][1]["images"]["image_1"].shape == (1, height, width, 3)
     ctx = SimpleNamespace(settings=settings, width=width, height=height, mode=mode, denoise=0.3, draw_id="geometry")
     latent = module.prepare_generation_latent(ctx)
     assert latent is not native
-    assert latent["samples"].shape == (1, 4, height // 8, width // 8)
+    latent_w, latent_h = latent_size
+    assert latent["samples"].shape == (1, 4, latent_h // 8, latent_w // 8)
     assert latent["downscale_ratio_spacial"] == 8
     assert ctx.denoise == 1.0 and "noise_mask" not in latent
 
@@ -158,6 +160,8 @@ def test_reference_wiring_slots_and_prompt():
 
 @pytest.mark.parametrize("mode", ["img2img", "inpaint", "outpaint"])
 def test_prepare_reference_conditioning_wires_slots_and_preserves_user_prompt(monkeypatch, mode):
+    from nodes.unicanvas.models import qwen_image21
+
     module = _get_unicanvas_model_module("qwen_image21")
     captured = {}
 
@@ -177,11 +181,20 @@ def test_prepare_reference_conditioning_wires_slots_and_preserves_user_prompt(mo
         def encode(self, pixels):
             pytest.fail("A reference must not also become the sampling latent")
 
+    def scale_reference(name, *, image, width, height, upscale_method, crop):
+        assert name == "ImageScale"
+        assert torch.equal(image, ref)
+        assert (width, height, upscale_method, crop) == (800, 416, "lanczos", "disabled")
+        return (scaled_ref,)
+
     monkeypatch.setattr(QwenImage21UniCanvasModule, "_encode_qi21", fake_encode)
-    working = torch.rand(1, 8, 8, 3)
-    ref = torch.rand(1, 8, 8, 3)
+    monkeypatch.setattr(qwen_image21, "_call_comfy_node", scale_reference)
+    working = torch.rand(1, 512, 512, 3)
+    ref = torch.rand(1, 64, 128, 3)
+    scaled_ref = torch.zeros(1, 416, 800, 3)
     gen_settings = {
         "draw_mode": mode,
+        "inference_scale": 0.5,
         "_qwen21_clip": "CLIP",
         "_qwen21_prompt": "Keep the face from <image2>.",
         "_qwen21_negative_prompt": "blurry",
@@ -192,13 +205,13 @@ def test_prepare_reference_conditioning_wires_slots_and_preserves_user_prompt(mo
     assert captured["clip"] == "CLIP"
     assert captured["negative_prompt"] == "blurry"
     assert torch.equal(captured["images"][1], working)
-    assert torch.equal(captured["images"][2], ref)
+    assert captured["images"][2] is scaled_ref
     expected_prompt = "Keep the face from <image2>."
     if mode in {"inpaint", "outpaint"}:
         from nodes.unicanvas.models.qwen_image21 import QWEN21_OUTPAINT_INSTRUCTION
         expected_prompt = f"{QWEN21_OUTPAINT_INSTRUCTION} {expected_prompt}"
     assert captured["prompt"] == expected_prompt
-    assert captured["resolution"] == 1024
+    assert captured["resolution"] == 0
 
 
 def test_prepare_reference_conditioning_txt2img_scales_external_reference(monkeypatch):
@@ -265,7 +278,7 @@ def test_rgba_reference_geometry_is_independent_of_pixel_content(monkeypatch, pi
     monkeypatch.setattr(qwen_image21, "_call_comfy_node", lambda name, **kw: seen.append((name, kw)) or ("POS", "NEG", native))
     settings = {"draw_mode": "img2img", "_qwen21_clip": "CLIP", "_qwen21_prompt": "edit"}
     _get_unicanvas_model_module("qwen_image21").prepare_reference_conditioning(None, None, object(), image, settings)
-    assert seen[0][1]["resolution"] == 1024
+    assert seen[0][1]["resolution"] == 0
     assert torch.equal(seen[0][1]["images"]["image_1"], image)
 
 
@@ -615,7 +628,7 @@ def test_pose_uses_the_same_two_images_and_unmodified_pose_studio_prompt(monkeyp
     assert list(encoded["images"]) == ["image_1", "image_2"]
     assert torch.equal(encoded["images"]["image_1"], pose)
     assert torch.equal(encoded["images"]["image_2"], character)
-    assert encoded["resolution"] == 2048
+    assert encoded["resolution"] == 0
     latent = module.prepare_generation_latent(ctx)
     assert latent["samples"].shape == (1, 4, 8, 8)
     assert not torch.any(latent["samples"])
