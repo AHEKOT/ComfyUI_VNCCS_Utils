@@ -1,3 +1,13 @@
+# Version 0.7.7
+
+## UniCanvas
+
+* **Qwen Edit 2.1 Turbo preset.** Select the Turbo INT8 ConvRot model from the standard model cards. The preset uses Euler with the Simple scheduler, 8 steps, and CFG 1. Viggle Turbo LoRA is off for this preset.
+* **32-pixel alignment for Qwen Image 2.1.** The generation box resizes in 32-pixel increments. UniCanvas applies **Inference Scale** and rounds the working dimensions to multiples of 32. Canvas crops and pose inputs keep those dimensions through encoding, and sampling uses a separate empty latent at the working size. Additional reference images are scaled independently.
+* **Qwen Image 2.1 background removal.** UniCanvas uses the layer's working dimensions to set the default encoder resolution and creates a separate sampling latent at those dimensions.
+* **Pose Studio LoRA V3.** Generating from a pose layer now automatically uses V3 with both Qwen Edit 2.1 presets.
+* **Updated frontend cache version.** The UniCanvas widget, its module imports, and its standalone theme use the updated build version.
+
 # Version 0.7.6
 
 ## 3D Factory

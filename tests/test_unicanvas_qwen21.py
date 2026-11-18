@@ -60,29 +60,35 @@ def test_defaults_follow_qi21_recipe():
     assert "qwen21_opaque_output" not in defaults
 
 
-def test_generation_size_follows_the_canvas():
-    module = _get_unicanvas_model_module("qwen_image21")
-    assert module.resolve_generation_size(1024, 768, {"qwen21_aspect_preset": "2400x1792"}) == (1024, 768)
-
-
-@pytest.mark.parametrize("width,height", [(2048, 2048), (1984, 1536)])
+@pytest.mark.parametrize("scale,width,height,latent_size", [
+    (None, 1024, 1024, (1024, 1024)),
+    (0.5, 512, 512, (512, 512)),
+    (2 ** 0.5, 1792, 1184, (1792, 1184)),
+    (2 ** 0.5, 1776, 1184, (1792, 1184)),  # Older input rounded the width to 8.
+])
 @pytest.mark.parametrize("mode", ["img2img", "inpaint", "outpaint"])
-def test_canvas_reference_and_sampling_share_native_encoder_geometry(monkeypatch, width, height, mode):
+def test_canvas_reference_keeps_its_size_and_sampler_matches_encoder_rounding(monkeypatch, scale, width, height, latent_size, mode):
     from types import SimpleNamespace
     from nodes.unicanvas.models import qwen_image21
 
-    native = {"samples": torch.zeros(1, 64, height // 16, width // 16)}
+    native = {"samples": torch.zeros(1, 64, 2, 2)}
     calls = []
     monkeypatch.setattr(qwen_image21, "_call_comfy_node", lambda name, **kwargs: calls.append((name, kwargs)) or ("POS", "NEG", native))
     module = _get_unicanvas_model_module("qwen_image21")
-    image = torch.zeros(1, height, width, 3)
+    image = torch.zeros(1, 1, 1, 3).expand(1, height, width, 3)
     settings = {"draw_mode": mode, "_qwen21_clip": "CLIP", "_qwen21_prompt": "Continue the scene."}
+    if scale is not None:
+        settings["inference_scale"] = scale
     module.prepare_reference_conditioning(None, None, object(), image, settings)
-    assert calls[0][1]["resolution"] == 0, "Resizing the reference separately shifts the generated pixels"
+    assert calls[0][1]["resolution"] == 0
+    assert calls[0][1]["images"]["image_1"].shape == (1, height, width, 3)
     ctx = SimpleNamespace(settings=settings, width=width, height=height, mode=mode, denoise=0.3, draw_id="geometry")
-    assert module.prepare_generation_latent(ctx) is native
-    assert ctx.denoise == 1.0 and "_qwen21_latent" not in settings
-    assert "noise_mask" not in native
+    latent = module.prepare_generation_latent(ctx)
+    assert latent is not native
+    latent_w, latent_h = latent_size
+    assert latent["samples"].shape == (1, 4, latent_h // 8, latent_w // 8)
+    assert latent["downscale_ratio_spacial"] == 8
+    assert ctx.denoise == 1.0 and "noise_mask" not in latent
 
 
 @pytest.mark.parametrize("mode", ["inpaint", "outpaint"])
@@ -154,6 +160,8 @@ def test_reference_wiring_slots_and_prompt():
 
 @pytest.mark.parametrize("mode", ["img2img", "inpaint", "outpaint"])
 def test_prepare_reference_conditioning_wires_slots_and_preserves_user_prompt(monkeypatch, mode):
+    from nodes.unicanvas.models import qwen_image21
+
     module = _get_unicanvas_model_module("qwen_image21")
     captured = {}
 
@@ -167,17 +175,26 @@ def test_prepare_reference_conditioning_wires_slots_and_preserves_user_prompt(mo
                 "resolution": resolution,
             }
         )
-        return "POS", "NEG", {"samples": torch.zeros(1, 64, 2, 2)}
+        return "POS", "NEG"
 
     class FakeVae:
         def encode(self, pixels):
             pytest.fail("A reference must not also become the sampling latent")
 
+    def scale_reference(name, *, image, width, height, upscale_method, crop):
+        assert name == "ImageScale"
+        assert torch.equal(image, ref)
+        assert (width, height, upscale_method, crop) == (800, 416, "lanczos", "disabled")
+        return (scaled_ref,)
+
     monkeypatch.setattr(QwenImage21UniCanvasModule, "_encode_qi21", fake_encode)
-    working = torch.rand(1, 8, 8, 3)
-    ref = torch.rand(1, 8, 8, 3)
+    monkeypatch.setattr(qwen_image21, "_call_comfy_node", scale_reference)
+    working = torch.rand(1, 512, 512, 3)
+    ref = torch.rand(1, 64, 128, 3)
+    scaled_ref = torch.zeros(1, 416, 800, 3)
     gen_settings = {
         "draw_mode": mode,
+        "inference_scale": 0.5,
         "_qwen21_clip": "CLIP",
         "_qwen21_prompt": "Keep the face from <image2>.",
         "_qwen21_negative_prompt": "blurry",
@@ -188,23 +205,22 @@ def test_prepare_reference_conditioning_wires_slots_and_preserves_user_prompt(mo
     assert captured["clip"] == "CLIP"
     assert captured["negative_prompt"] == "blurry"
     assert torch.equal(captured["images"][1], working)
-    assert torch.equal(captured["images"][2], ref)
+    assert captured["images"][2] is scaled_ref
     expected_prompt = "Keep the face from <image2>."
     if mode in {"inpaint", "outpaint"}:
         from nodes.unicanvas.models.qwen_image21 import QWEN21_OUTPAINT_INSTRUCTION
         expected_prompt = f"{QWEN21_OUTPAINT_INSTRUCTION} {expected_prompt}"
     assert captured["prompt"] == expected_prompt
     assert captured["resolution"] == 0
-    assert gen_settings["_qwen21_latent"]["samples"].shape == (1, 64, 2, 2)
 
 
-def test_prepare_reference_conditioning_txt2img_drops_working_area(monkeypatch):
+def test_prepare_reference_conditioning_txt2img_scales_external_reference(monkeypatch):
     module = _get_unicanvas_model_module("qwen_image21")
     captured = {}
 
     def fake_encode(self, clip, vae, prompt, negative_prompt, images, resolution, draw_id="unknown"):
-        captured["images"] = images
-        return "POS", "NEG", None
+        captured.update(images=images, resolution=resolution)
+        return "POS", "NEG"
 
     class FakeVae:
         def encode(self, pixels):
@@ -214,6 +230,7 @@ def test_prepare_reference_conditioning_txt2img_drops_working_area(monkeypatch):
     ref = torch.rand(1, 8, 8, 3)
     gen_settings = {
         "draw_mode": "txt2img",
+        "inference_scale": 2 ** 0.5,
         "_qwen21_clip": "CLIP",
         "_qwen21_prompt": "a cat",
         "_external": {"references": {"reference_image_1": ref}},
@@ -221,7 +238,7 @@ def test_prepare_reference_conditioning_txt2img_drops_working_area(monkeypatch):
     module.prepare_reference_conditioning(None, None, FakeVae(), torch.zeros(1, 8, 8, 3), gen_settings, "t")
     assert list(captured["images"]) == [1]
     assert torch.equal(captured["images"][1], ref)
-    assert "_qwen21_latent" not in gen_settings
+    assert captured["resolution"] == 1440
 
 
 def test_encode_prompt_collects_positive_then_negative():
@@ -263,7 +280,6 @@ def test_rgba_reference_geometry_is_independent_of_pixel_content(monkeypatch, pi
     _get_unicanvas_model_module("qwen_image21").prepare_reference_conditioning(None, None, object(), image, settings)
     assert seen[0][1]["resolution"] == 0
     assert torch.equal(seen[0][1]["images"]["image_1"], image)
-    assert settings["_qwen21_latent"] is native
 
 
 def test_model_uses_native_qi2_cache_and_never_easycache(monkeypatch):
@@ -350,14 +366,16 @@ def test_remove_background_contract(monkeypatch):
     assert torch.all((rgba >= 0.0) & (rgba <= 1.0))
 
 
-def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
+@pytest.mark.parametrize("settings,resolution", [(None, 1440), ({"inference_scale": 1}, 1024)])
+def test_remove_background_runs_over_the_real_image_geometry(monkeypatch, settings, resolution):
     """The (H,W,3) contract input must reach the QI2.1 flow as real geometry.
 
-    Exercise the reference encoder, its empty latent, KV cache and
+    Exercise the reference encoder, separate sampling latent, KV cache and
     standard decoder without loading model weights.
     """
     module = _get_unicanvas_model_module("qwen_image21")
     captured = {}
+    height, width = 1152, 1792  # About 2 MP, as in the layer operation.
     # The default turbo LoRA resolves (no download) and applies to the fake model as a no-op.
     monkeypatch.setattr("nodes.unicanvas.models.qwen_image21.resolve_qwen21_turbo_lora", lambda: "viggle/turbo.safetensors")
     monkeypatch.setattr("nodes.unicanvas.loras._apply_lora_cached", lambda model, clip, *args, **kwargs: (model, clip))
@@ -368,7 +386,7 @@ def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
             pytest.fail("Must sample an empty latent")
 
         def decode(self, samples):
-            decoded = torch.zeros(1, 48, 80, 4)
+            decoded = torch.zeros(1, height, width, 4)
             decoded[..., :3] = 0.25
             decoded[..., 3] = 0.5
             return decoded
@@ -384,6 +402,9 @@ def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
             return ("POS", "NEG", {"samples": torch.zeros(1, 64, 4, 4)})
         if class_name in {"QwenImage21Cache", "ModelAttentionBackend"}:
             return (kwargs["model"],)
+        if class_name == "EmptyLatentImage":
+            assert kwargs == {"width": width, "height": height, "batch_size": 1}
+            return ({"samples": torch.zeros(1, 4, height // 8, width // 8), "downscale_ratio_spacial": 8},)
         if class_name == "KSampler":
             captured["sample_latent"] = kwargs["latent_image"]
             return (kwargs["latent_image"],)
@@ -395,14 +416,17 @@ def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
     monkeypatch.setattr("nodes.unicanvas.models.base._call_comfy_node", fake_call_comfy_node)
     monkeypatch.setattr("nodes.unicanvas.sampling._call_comfy_node", fake_call_comfy_node)
 
-    image = torch.rand(48, 80, 3)  # (H,W,3) contract input
-    rgba = module.remove_background(image)
+    image = torch.rand(height, width, 3)
+    rgba = module.remove_background(image, settings)
 
     encode = next(kwargs for name, kwargs in captured["calls"] if name == "TextEncodeQwenImage21")
-    assert encode["resolution"] == 0
-    assert captured["sample_latent"]["samples"].shape == (1, 64, 4, 4)
-    assert [name for name, _ in captured["calls"]] == ["QwenImage21Cache", "ModelAttentionBackend", "TextEncodeQwenImage21", "KSampler", "VAEDecode"]
-    assert tuple(rgba.shape) == (48, 80, 4)
+    assert encode["resolution"] == resolution
+    assert encode["images"]["image_1"].shape == (1, height, width, 3)
+    assert captured["sample_latent"]["samples"].shape == (1, 4, height // 8, width // 8)
+    assert [name for name, _ in captured["calls"]] == [
+        "QwenImage21Cache", "ModelAttentionBackend", "TextEncodeQwenImage21", "EmptyLatentImage", "KSampler", "VAEDecode",
+    ]
+    assert tuple(rgba.shape) == (height, width, 4)
     assert torch.all(rgba[..., 3] == 0.5)
 
 
@@ -584,7 +608,7 @@ def test_pose_uses_the_same_two_images_and_unmodified_pose_studio_prompt(monkeyp
 
     module = _get_unicanvas_model_module("qwen_image21")
     assert module.capabilities.supports_pose_edit
-    settings = {"draw_mode": "img2img", "_qwen21_clip": "CLIP", "_qwen21_prompt": "Draw character from image2\nsoft lighting",
+    settings = {"draw_mode": "img2img", "inference_scale": 2, "_qwen21_clip": "CLIP", "_qwen21_prompt": "Draw character from image2\nsoft lighting",
                 "_qwen21_negative_prompt": "blurry", "edit_use_layers_as_reference": False}
     ctx = SimpleNamespace(settings=settings, denoise=0.4, mode="img2img", width=64, height=64, draw_id="pose")
     module.prepare_pose_edit(ctx)
@@ -606,7 +630,7 @@ def test_pose_uses_the_same_two_images_and_unmodified_pose_studio_prompt(monkeyp
     assert torch.equal(encoded["images"]["image_2"], character)
     assert encoded["resolution"] == 0
     latent = module.prepare_generation_latent(ctx)
-    assert latent is native and "_qwen21_latent" not in settings
+    assert latent["samples"].shape == (1, 4, 8, 8)
     assert not torch.any(latent["samples"])
     assert "_qwen21_pose_edit" in module.sampling_scratch_keys
 

@@ -148,7 +148,7 @@ test("MiniMax H3 preset ships the 3-step TaoMate Turbo LoRA on the shared turbo 
 });
 
 
-test("rendered model menu pins Qwen second and Krea2 Turbo third even with an old server catalog", async () => {
+test("rendered model menu keeps the Qwen variants together before Krea2", async () => {
     const source = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
     const presets = JSON.parse(await readFile(new URL("../config/unicanvas_presets.json", import.meta.url), "utf8")).presets;
     const prototype = runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension("))
@@ -160,9 +160,8 @@ test("rendered model menu pins Qwen second and Krea2 Turbo third even with an ol
     for (const catalog of [oldCatalog, presets]) {
         widget.presets = catalog;
         const rows = [...widget.groupPresetsByType().values()].flat();
-        assert.deepEqual(rows.slice(0, 3).map(preset => preset.id), ["sdxl", "qwen_image21", "krea2_edit"]);
-        assert.equal(rows[3].id, "krea2_edit_raw", "Raw stays beside its Turbo family");
-        assert.deepEqual(rows.slice(4).map(preset => preset.id), ["anima", "flux_klein", "z_image", "minimax_h3"]);
+        const qwen = catalog === oldCatalog ? ["qwen_image21"] : ["qwen_image21", "qwen_image21_turbo"];
+        assert.deepEqual(rows.map(preset => preset.id), ["sdxl", ...qwen, "krea2_edit", "krea2_edit_raw", "anima", "flux_klein", "z_image", "minimax_h3"]);
     }
     assert.equal(JSON.stringify(oldCatalog), snapshot, "rendering never mutates the server catalog");
     widget.presets = presets.filter(preset => !["sdxl", "qwen_image21", "krea2_edit"].includes(preset.id));
