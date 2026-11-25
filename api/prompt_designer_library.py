@@ -5,7 +5,7 @@ import json
 
 from aiohttp import web
 
-from .pose_capture_sync import expected_content_length
+from ..nodes.shared.request_body import limit_request_body
 from ..nodes.prompt_designer import MAX_STATE_CHARS
 from ..nodes.prompt_designer_storage import RevisionConflict, list_cards, list_prompts, load_document, save_document
 from ..nodes.prompt_designer_defaults import list_default_cards
@@ -18,7 +18,8 @@ async def document(request):
             result = await asyncio.to_thread(load_document, document_id)
         else:
             limit = (MAX_STATE_CHARS + 1024) * 4
-            if not expected_content_length(request, limit):
+            request = await limit_request_body(request, limit)
+            if request is None:
                 return web.json_response({"error": "Document is too large."}, status=413)
             raw = await request.read()
             if len(raw) > limit:

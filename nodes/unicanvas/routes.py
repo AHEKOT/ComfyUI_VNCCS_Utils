@@ -10,6 +10,7 @@ import threading
 import time
 from typing import Any
 
+from ..shared.request_body import limit_request_body
 from .assets import _get_checkpoint_names, _get_unicanvas_assets
 from .color_match import _run_unicanvas_color_match
 from .constants import _MAX_UPLOAD_BYTES
@@ -49,16 +50,6 @@ def _run_draw_cancellable(payload: dict[str, Any]) -> dict[str, Any]:
     except (DrawCancelled,) + interrupt_types():
         return {"cancelled": True}
 _UNICANVAS_LAYER_ROUTES_REGISTERED = False
-
-
-def _content_length_ok(request, max_bytes: int) -> bool:
-    try:
-        raw_length = request.headers.get("Content-Length")
-        if raw_length is None:
-            return not getattr(request, "can_read_body", False)
-        return int(raw_length) <= max_bytes
-    except Exception:
-        return False
 
 
 def _payload_summary(payload: Any) -> dict[str, Any]:
@@ -192,7 +183,8 @@ def register_unicanvas_routes() -> None:
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/draw")
     async def vnccs_unicanvas_draw(request):
-        if not _content_length_ok(request, _MAX_UPLOAD_BYTES * 2 + 1024 * 1024):
+        request = await limit_request_body(request, _MAX_UPLOAD_BYTES * 2 + 1024 * 1024)
+        if request is None:
             return web.json_response({"error": "UniCanvas draw payload is too large"}, status=413)
         payload: dict[str, Any] = {}
         try:
@@ -213,7 +205,8 @@ def register_unicanvas_routes() -> None:
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/interrupt")
     async def vnccs_unicanvas_interrupt(request):
-        if not _content_length_ok(request, 64 * 1024):
+        request = await limit_request_body(request, 64 * 1024)
+        if request is None:
             return web.json_response({"error": "Interrupt payload is too large"}, status=413)
         try:
             payload = await request.json()
@@ -228,7 +221,8 @@ def register_unicanvas_routes() -> None:
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/segment")
     async def vnccs_unicanvas_segment(request):
-        if not _content_length_ok(request, _MAX_UPLOAD_BYTES + 1024 * 1024):
+        request = await limit_request_body(request, _MAX_UPLOAD_BYTES + 1024 * 1024)
+        if request is None:
             return web.json_response({"error": "UniCanvas SAM payload is too large"}, status=413)
         try:
             payload = await request.json()
@@ -257,7 +251,8 @@ def register_unicanvas_routes() -> None:
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/model_memory")
     async def vnccs_unicanvas_model_memory_set(request):
-        if not _content_length_ok(request, 64 * 1024):
+        request = await limit_request_body(request, 64 * 1024)
+        if request is None:
             return web.json_response({"error": "[VNCCS UniCanvas] model memory payload is too large"}, status=413)
         try:
             body = await request.json()
@@ -270,7 +265,8 @@ def register_unicanvas_routes() -> None:
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/save_output")
     async def vnccs_unicanvas_save_output(request):
-        if not _content_length_ok(request, _MAX_UPLOAD_BYTES + 1024 * 1024):
+        request = await limit_request_body(request, _MAX_UPLOAD_BYTES + 1024 * 1024)
+        if request is None:
             return web.json_response({"error": "[VNCCS UniCanvas] save_output payload is too large"}, status=413)
         payload: dict[str, Any] = {}
         try:
@@ -305,7 +301,8 @@ def register_unicanvas_layer_routes() -> None:
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/remove_bg")
     async def vnccs_unicanvas_remove_bg(request):
-        if not _content_length_ok(request, _MAX_UPLOAD_BYTES + 1024 * 1024):
+        request = await limit_request_body(request, _MAX_UPLOAD_BYTES + 1024 * 1024)
+        if request is None:
             return web.json_response({"error": "[VNCCS UniCanvas] Remove bg payload is too large."}, status=413)
         try:
             payload = await request.json()
@@ -319,7 +316,8 @@ def register_unicanvas_layer_routes() -> None:
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/describe_layers")
     async def vnccs_unicanvas_describe_layers(request):
-        if not _content_length_ok(request, _MAX_UPLOAD_BYTES + 1024 * 1024):
+        request = await limit_request_body(request, _MAX_UPLOAD_BYTES + 1024 * 1024)
+        if request is None:
             return web.json_response({"error": "[VNCCS UniCanvas] Layer naming payload is too large."}, status=413)
         try:
             payload = await request.json()
@@ -334,7 +332,8 @@ def register_unicanvas_layer_routes() -> None:
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/enhance_prompt")
     async def vnccs_unicanvas_enhance_prompt(request):
-        if not _content_length_ok(request, _MAX_UPLOAD_BYTES + 1024 * 1024):
+        request = await limit_request_body(request, _MAX_UPLOAD_BYTES + 1024 * 1024)
+        if request is None:
             return web.json_response({"error": "[VNCCS UniCanvas] Prompt enhance payload is too large."}, status=413)
         try:
             payload = await request.json()
@@ -387,7 +386,8 @@ def register_unicanvas_layer_routes() -> None:
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/color_match")
     async def vnccs_unicanvas_color_match(request):
-        if not _content_length_ok(request, _MAX_UPLOAD_BYTES * 2 + 1024 * 1024):
+        request = await limit_request_body(request, _MAX_UPLOAD_BYTES * 2 + 1024 * 1024)
+        if request is None:
             return web.json_response({"error": "[VNCCS UniCanvas] Color match payload is too large."}, status=413)
         try:
             payload = await request.json()

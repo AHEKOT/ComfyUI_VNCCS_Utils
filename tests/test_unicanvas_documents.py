@@ -14,9 +14,12 @@ from helpers.runtime_caches import load_runtime_caches
 
 
 class Request:
-    def __init__(self, payload=None, *, canvas_id=None, raw=None, length=None):
+    def __init__(self, payload=None, *, canvas_id=None, raw=None, length=None, chunked=False):
         self.raw = json.dumps(payload).encode() if raw is None else raw
-        self.headers = {"Content-Length": str(len(self.raw) if length is None else length)}
+        self.headers = (
+            {"Transfer-Encoding": "chunked"} if chunked else
+            {"Content-Length": str(len(self.raw) if length is None else length)}
+        )
         self.match_info = {"canvas_id": canvas_id}
         self.offset = 0
         self.content = self
@@ -367,6 +370,17 @@ class UniCanvasDocumentTests(unittest.TestCase):
         self.assertEqual(self.call("POST", payload={}, length=4097).status, 413)
         self.assertEqual(self.call("POST", raw=b" " * 4097, length=100).status, 413)
         self.assertEqual(self.call("POST", payload={"state_id": "missing"}).status, 404)
+
+    def test_http_accepts_chunked_document_creation_within_body_limit(self):
+        self.save("first")
+        raw = b'{"state_id":"first","name":"Chunked canvas"}'.ljust(4096)
+
+        self.assertEqual(self.call("POST", raw=raw + b" ", chunked=True).status, 413)
+        self.assertEqual(self.documents.list_documents()["documents"], [])
+        response = self.call("POST", raw=raw, chunked=True)
+        self.assertEqual(response.status, 200)
+        document = json.loads(response.body)["document"]
+        self.assertEqual(self.documents.get_document(document["canvas_id"])["name"], "Chunked canvas")
 
     def test_http_storage_work_runs_off_the_event_loop_thread(self):
         self.save("first")

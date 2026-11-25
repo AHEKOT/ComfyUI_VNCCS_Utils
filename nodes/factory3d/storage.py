@@ -2586,8 +2586,12 @@ def _ensure_object_splat(scene_id: str, object_id: str) -> Path:
     with _STATE_LOCK:
         scene = load_scene(scene_id)
         item = _object_by_id(scene, object_id)
-        source = _object_file(scene_id, item, "ply")
-        checksum = str(item.get("checksums", {}).get("ply_sha256") or "")
+        if item.get("splat_format") == "2dgs":
+            source = _object_file(scene_id, item, "worldmirror_ply")
+            checksum = ""
+        else:
+            source = _object_file(scene_id, item, "ply")
+            checksum = str(item.get("checksums", {}).get("ply_sha256") or "")
     return _ensure_cached_splat(source, ply_sha256=checksum)
 
 
