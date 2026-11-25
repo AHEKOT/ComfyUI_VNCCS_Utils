@@ -5,8 +5,11 @@ import json
 from ..nodes.posestudio import caches as pose_cache
 from ..nodes.unicanvas import cache as canvas_cache, build_info, documents
 from ..nodes.shared.paths import _vnccs_safe_id
+from ..nodes.shared.request_body import limit_request_body
+
 
 def _vnccs_content_length_ok(request, max_bytes):
+    # The SAM3D multipart route must check size without consuming the stream.
     try:
         raw_length = request.headers.get("Content-Length")
         if raw_length is None:
@@ -14,7 +17,7 @@ def _vnccs_content_length_ok(request, max_bytes):
         length = int(raw_length)
     except Exception:
         return False
-    return 0 <= length <= int(max_bytes or 0)
+    return 0 <= length <= max_bytes
 
 
 def _vnccs_register_capture_cache():
@@ -27,7 +30,8 @@ def _vnccs_register_capture_cache():
     @PromptServer.instance.routes.post("/vnccs/pose_captures_upload")
     async def vnccs_pose_captures_upload(request):
         try:
-            if not _vnccs_content_length_ok(request, pose_cache._CAPTURE_CACHE_MAX_TOTAL_CHARS + 1024 * 1024):
+            request = await limit_request_body(request, pose_cache._CAPTURE_CACHE_MAX_TOTAL_CHARS + 1024 * 1024)
+            if request is None:
                 return web.json_response({"error": "captured_images payload is too large"}, status=413)
             try:
                 data = await request.json()
@@ -78,7 +82,8 @@ def _vnccs_register_pose_animation_cache():
     @PromptServer.instance.routes.post("/vnccs/pose_animation_upload")
     async def vnccs_pose_animation_upload(request):
         try:
-            if not _vnccs_content_length_ok(request, pose_cache._POSE_ANIMATION_CACHE_MAX_TOTAL_CHARS + 1024 * 1024):
+            request = await limit_request_body(request, pose_cache._POSE_ANIMATION_CACHE_MAX_TOTAL_CHARS + 1024 * 1024)
+            if request is None:
                 return web.json_response({"error": "animation payload is too large"}, status=413)
             try:
                 data = await request.json()
@@ -223,7 +228,8 @@ def _vnccs_register_unicanvas_state_cache():
     @PromptServer.instance.routes.post("/vnccs/unicanvas_state_upload")
     async def vnccs_unicanvas_state_upload(request):
         try:
-            if not _vnccs_content_length_ok(request, canvas_cache._UNICANVAS_STATE_CACHE_MAX_TOTAL_CHARS + 1024 * 1024):
+            request = await limit_request_body(request, canvas_cache._UNICANVAS_STATE_CACHE_MAX_TOTAL_CHARS + 1024 * 1024)
+            if request is None:
                 return web.json_response({"error": "unicanvas state payload is too large"}, status=413)
             return await asyncio.to_thread(upload_state, await request.read())
         except ValueError as exc:
@@ -264,7 +270,8 @@ def _vnccs_register_unicanvas_state_cache():
     @PromptServer.instance.routes.post("/vnccs/unicanvas_state_delete")
     async def vnccs_unicanvas_state_delete(request):
         try:
-            if not _vnccs_content_length_ok(request, 1024):
+            request = await limit_request_body(request, 1024)
+            if request is None:
                 return web.json_response({"error": "cache deletion payload is too large"}, status=413)
             try:
                 data = await request.json()

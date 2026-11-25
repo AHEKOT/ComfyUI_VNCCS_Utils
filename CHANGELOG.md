@@ -1,3 +1,10 @@
+# Version 0.7.8
+
+## Fixes
+
+* **Pose Studio capture sync through SwarmUI.** Fixed a spurious HTTP 413 when proxies forwarded captures or sync error reports as chunked requests without a `Content-Length` header. Sync errors now reach ComfyUI without waiting for the capture timeout. Fixes [#126](https://github.com/AHEKOT/ComfyUI_VNCCS_Utils/issues/126).
+* **Chunked request handling.** The affected Pose Library, runtime cache, UniCanvas, and Prompt Designer endpoints now accept chunked requests within their existing size limits.
+
 # Version 0.7.7
 
 ## UniCanvas

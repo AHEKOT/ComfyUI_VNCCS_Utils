@@ -12,7 +12,7 @@ def register_routes(routes):
 
     async def body(request):
         try:
-            length = int(request.headers.get("Content-Length", "-1"))
+            length = int(request.headers.get("Content-Length", "0"))
         except (ValueError, TypeError):
             length = -1
         if not 0 <= length <= _MAX_BODY_BYTES:

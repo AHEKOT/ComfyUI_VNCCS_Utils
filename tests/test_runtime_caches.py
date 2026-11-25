@@ -45,13 +45,12 @@ class RuntimeCacheTests(unittest.TestCase):
         for directory in ("_POSE_ANIMATION_CACHE_DIR", "_UNICANVAS_STATE_CACHE_DIR"):
             self.assertEqual(list(Path(self.cache[directory]).glob("*.json")), [])
 
-    def test_content_length_rejects_negative_and_unbounded_bodies(self):
-        validate = self.cache["_vnccs_content_length_ok"]
+    def test_content_length_rejects_invalid_and_oversized_values(self):
+        validate = self.cache["limit_request_body"]
         for raw in ("-1", "101", "invalid"):
-            self.assertFalse(validate(mock.Mock(headers={"Content-Length": raw}), 100))
-        self.assertTrue(validate(mock.Mock(headers={"Content-Length": "100"}), 100))
-        self.assertFalse(validate(mock.Mock(headers={}, can_read_body=True), 100))
-        self.assertTrue(validate(mock.Mock(headers={}, can_read_body=False), 100))
+            self.assertIsNone(asyncio.run(validate(mock.Mock(headers={"Content-Length": raw}), 100)))
+        for request in (mock.Mock(headers={"Content-Length": "100"}), mock.Mock(headers={}, can_read_body=False)):
+            self.assertIs(asyncio.run(validate(request, 100)), request)
 
     def test_corrupt_saved_cache_remains_a_server_failure_and_is_preserved(self):
         class Request(JsonRequest):

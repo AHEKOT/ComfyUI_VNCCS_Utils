@@ -7,20 +7,11 @@ import tempfile
 
 from aiohttp import web
 
+from ..nodes.shared.request_body import limit_request_body
+
 
 SAFE_NODE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 MAX_SYNC_CAPTURE_CHARS = 64 * 1024 * 1024
-
-
-def expected_content_length(request, max_chars):
-    try:
-        raw_length = request.headers.get("Content-Length")
-        if raw_length is None:
-            return not getattr(request, "can_read_body", False)
-        length = int(raw_length)
-    except Exception:
-        return False
-    return 0 <= length <= int(max_chars or 0)
 
 
 def sanitize_node_id(value):
@@ -31,10 +22,13 @@ def sanitize_node_id(value):
 async def upload_pose_sync(request):
     """Save browser-rendered Pose Studio captures for the current execution."""
     try:
-        if not expected_content_length(request, MAX_SYNC_CAPTURE_CHARS):
+        request = await limit_request_body(request, MAX_SYNC_CAPTURE_CHARS)
+        if request is None:
             return web.json_response({"error": "capture payload is too large"}, status=413)
         try:
             data = await request.json()
+        except web.HTTPRequestEntityTooLarge:
+            return web.json_response({"error": "capture payload is too large"}, status=413)
         except (ValueError, TypeError):
             return web.json_response({"error": "Invalid JSON"}, status=400)
         if not isinstance(data, dict):

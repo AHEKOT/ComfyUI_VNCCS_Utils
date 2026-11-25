@@ -6,16 +6,7 @@ import uuid
 from aiohttp import web
 from ..nodes.posestudio import library
 from ..nodes.shared import repository_progress as progress
-
-def expected_content_length(request, max_chars):
-    try:
-        raw_length = request.headers.get("Content-Length")
-        if raw_length is None:
-            return not getattr(request, "can_read_body", False)
-        length = int(raw_length)
-    except Exception:
-        return False
-    return 0 <= length <= int(max_chars or 0)
+from ..nodes.shared.request_body import limit_request_body
 
 
 async def list_pose_repositories(request):
@@ -34,7 +25,8 @@ async def repository_progress_status(request):
 
 async def add_pose_repository(request):
     try:
-        if not expected_content_length(request, 1024 * 1024):
+        request = await limit_request_body(request, 1024 * 1024)
+        if request is None:
             return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
         if not isinstance(data, dict):
@@ -87,7 +79,8 @@ async def add_pose_repository(request):
 
 async def toggle_pose_repository(request):
     try:
-        if not expected_content_length(request, 1024 * 1024):
+        request = await limit_request_body(request, 1024 * 1024)
+        if request is None:
             return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
         if not isinstance(data, dict):
@@ -148,7 +141,8 @@ async def delete_pose_repository(request):
 async def auto_refresh_enabled_pose_repositories(request):
     now = time.time()
     try:
-        if not expected_content_length(request, 1024 * 1024):
+        request = await limit_request_body(request, 1024 * 1024)
+        if request is None:
             return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
         if not isinstance(data, dict):
@@ -194,7 +188,8 @@ async def auto_refresh_enabled_pose_repositories(request):
 
 async def refresh_pose_repositories(request):
     try:
-        if not expected_content_length(request, 1024 * 1024):
+        request = await limit_request_body(request, 1024 * 1024)
+        if request is None:
             return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
         if not isinstance(data, dict):
@@ -214,7 +209,8 @@ async def refresh_pose_repositories(request):
 
 async def publish_local_pose_repository(request):
     try:
-        if not expected_content_length(request, 16384):
+        request = await limit_request_body(request, 16384)
+        if request is None:
             return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
         if not isinstance(data, dict):
@@ -265,7 +261,8 @@ def register_routes(app):
 
 async def save_pose(request):
     try:
-        if not expected_content_length(request, library.MAX_LIBRARY_SAVE_REQUEST_BYTES):
+        request = await limit_request_body(request, library.MAX_LIBRARY_SAVE_REQUEST_BYTES)
+        if request is None:
             return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
     except Exception:

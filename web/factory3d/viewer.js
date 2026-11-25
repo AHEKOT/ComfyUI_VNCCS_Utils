@@ -32,7 +32,7 @@ const LIGHTING_BASE_RESPONSE = 0.65;
 const MAX_PLAN_GRID_LINES_PER_AXIS = 800;
 const CUTAWAY_MAX_VERTICAL_DOT = 0.7;
 const MIN_DIRECTIONAL_SHADOW_HALF_SPAN = 2;
-export const FACTORY_VIEWER_BUILD = "20261107.1";
+export const FACTORY_VIEWER_BUILD = "20261120.2";
 
 const MAX_OBJECT_AREA_LIGHTS = 32;
 const PLAN_BACKGROUND = "#0b0d14";
@@ -729,6 +729,44 @@ export function canonicalObjectPreviewCamera(
         near: Math.max(0.000001, faceDistance / 100000),
         far: Math.max(1000, distance + halfDepth + radius * 1000),
     };
+}
+
+export async function preparePlanarPlyBuffer(buffer, { signal } = {}) {
+    const header = new TextDecoder().decode(new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 16384)));
+    const end = /^end_header\r?\n/m.exec(header);
+    if (!end) throw new Error("Invalid 2DGS PLY header");
+    const lines = header.slice(0, end.index).split(/\r?\n/).filter(line => line && !line.startsWith("comment "));
+    const count = Number(/^element vertex ([1-9]\d*)$/.exec(lines[2])?.[1]);
+    const fields = lines.slice(3).map(line => /^property float (\w+)$/.exec(line)?.[1]);
+    const names = new Set(fields);
+    const required = ["x", "y", "z", "scale_0", "scale_1", "rot_0", "rot_1", "rot_2", "rot_3",
+        "opacity", "f_dc_0", "f_dc_1", "f_dc_2"];
+    const offset = end.index + end[0].length;
+    const stride = fields.length * 4;
+    if (lines[0] !== "ply" || lines[1] !== "format binary_little_endian 1.0" ||
+        !Number.isSafeInteger(count) || count < 1 || !/^[\x00-\x7f]*$/.test(header.slice(0, offset)) ||
+        names.has(undefined) || names.size !== fields.length || names.has("scale_2") ||
+        !required.every(name => names.has(name)) || buffer.byteLength !== offset + count * stride) {
+        throw new Error("Invalid native 2DGS PLY");
+    }
+    // Spark's PLY decoder expects three log-scales. The decoded zero selects its planar shader.
+    const outputHeader = new TextEncoder().encode(lines.join("\n") + "\nproperty float scale_2\nend_header\n");
+    const output = new Uint8Array(outputHeader.length + count * (stride + 4));
+    output.set(outputHeader);
+    const source = new Uint8Array(buffer);
+    const view = new DataView(output.buffer);
+    for (let start = 0; start < count; start += SPLAT_SCAN_CHUNK) {
+        if (signal?.aborted) throw abortError();
+        const stop = Math.min(start + SPLAT_SCAN_CHUNK, count);
+        for (let index = start; index < stop; index++) {
+            const from = offset + index * stride;
+            const to = outputHeader.length + index * (stride + 4);
+            output.set(source.subarray(from, from + stride), to);
+            view.setFloat32(to + stride, -1000, true);
+        }
+        if (stop < count) await yieldToMainThread();
+    }
+    return { buffer: output.buffer, count };
 }
 
 /**
@@ -4284,11 +4322,12 @@ export class Factory3DViewer {
         this.setLighting(this.sceneData.lighting);
         const skydomePromise = this.setSkydome(this.sceneData.skydome);
         const source = Array.isArray(sceneData?.objects) ? sceneData.objects : [];
+        this.spark.enable2DGS = source.some(item => item?.splat_format === "2dgs");
         const assetPathFor = item => item?.asset_kind === "primitive"
             ? primitiveAssetSignature(item)
             : item?.asset_kind === "mesh"
                 ? item.urls?.model
-                : item.urls?.splat;
+                : item?.splat_format === "2dgs" ? item.urls?.ply : item.urls?.splat;
         const needsAssetLoading = !incremental || source.some(item => {
             const entry = this.objects.get(item.object_id);
             return !entry || entry.assetPath !== assetPathFor(item);
@@ -4450,19 +4489,21 @@ export class Factory3DViewer {
                         + (detail ? ` — ${detail}` : ""),
                     );
                 }
-                const preparedAsset = await prepareSplatBufferAsync(
-                    await response.arrayBuffer(),
-                    `SPLAT object ${item.object_id}`,
-                    { signal: loadController.signal },
-                );
+                const planar = item.splat_format === "2dgs";
+                const buffer = await response.arrayBuffer();
+                const options = { signal: loadController.signal };
+                const preparedAsset = planar
+                    ? await preparePlanarPlyBuffer(buffer, options)
+                    : await prepareSplatBufferAsync(buffer, `SPLAT object ${item.object_id}`, options);
                 const fileBytes = preparedAsset.buffer;
-                const gaussianCount = fileBytes.byteLength / 32;
-                const emissionColor = averageSplatColor(fileBytes);
+                const gaussianCount = planar ? preparedAsset.count : fileBytes.byteLength / 32;
+                const emissionColor = planar ? null : averageSplatColor(fileBytes);
                 const createMesh = () => {
                     const value = new SplatMesh({
                         fileBytes,
-                        fileType: "splat",
-                        fileName: `${item.object_id}.splat`,
+                        fileType: planar ? "ply" : "splat",
+                        fileName: `${item.object_id}.${planar ? "ply" : "splat"}`,
+                        extSplats: planar,
                         // Runtime LoD generation is intentionally disabled.
                         // Spark's Bhatt builder can take tens of seconds per
                         // 524k object and expands it to roughly twice as many
@@ -4487,6 +4528,9 @@ export class Factory3DViewer {
                 objectRoot.add(mesh);
                 this.scene.add(objectRoot);
                 await mesh.initialized;
+                if (planar && mesh.splats.getSplat(0).scales.z !== 0) {
+                    throw new Error("The PLY decoder did not preserve the planar 2DGS axes");
+                }
                 if (!Number.isFinite(mesh.numSplats) || mesh.numSplats < 1) {
                     throw new Error(`SPLAT object ${item.object_id} decoded to zero Gaussians`);
                 }

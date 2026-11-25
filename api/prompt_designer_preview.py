@@ -4,12 +4,13 @@ import asyncio
 
 from aiohttp import web
 
-from .pose_capture_sync import expected_content_length
+from ..nodes.shared.request_body import limit_request_body
 from ..nodes.prompt_designer import MAX_STATE_CHARS, preview_block, resolve_prompt
 
 
 async def preview_prompt(request):
-    if not expected_content_length(request, MAX_STATE_CHARS * 4):
+    request = await limit_request_body(request, MAX_STATE_CHARS * 4)
+    if request is None:
         return web.json_response({"error": "Prompt Designer state is too large."}, status=413)
     try:
         raw = await request.read()

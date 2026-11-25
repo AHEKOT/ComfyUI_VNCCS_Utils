@@ -469,7 +469,7 @@ test("Factory production code contains no retired LLM integrations", () => {
 test("Viewer uses true splats, transform controls, adaptive clipping, and no implicit floor mesh", () => {
     assert.match(viewer, /SplatMesh/);
     assert.match(viewer, /SparkRenderer/);
-    assert.match(viewer, /fileType: "splat"/);
+    assert.match(viewer, /fileType: planar \? "ply" : "splat"/);
     assert.match(viewer, /fileBytes/);
     assert.match(viewer, /const createMesh = \(\) =>/);
     assert.match(viewer, /lod: false/);
@@ -1393,7 +1393,7 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.prepareSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBufferAsync, "function");
     assert.equal(typeof support.solveDropToSurface, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20261107.1");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20261120.2");
     const visiblePickRoot = new THREE.Group();
     const visiblePickMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
     visiblePickRoot.add(visiblePickMesh);
