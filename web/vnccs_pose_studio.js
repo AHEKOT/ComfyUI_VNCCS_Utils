@@ -10992,7 +10992,7 @@ class PoseStudioWidget {
         if (ok && this.viewer.fitCurrentPoseToSAMMeshOverlay) {
             return this.viewer.fitCurrentPoseToSAMMeshOverlay(
                 0,
-                { dispatchPoseChange: options.dispatchPoseChange !== false },
+                { poseData, dispatchPoseChange: options.dispatchPoseChange !== false },
             );
         }
         return ok;

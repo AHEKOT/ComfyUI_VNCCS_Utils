@@ -6282,7 +6282,8 @@ export class PoseViewerCore {
     }
 
     fitCurrentPoseToSAMMeshOverlay(shoulderYOffset = 0, options = {}) {
-        const worldKps = this._samMeshOverlayWorldKps;
+        const sourceWorldKps = this._samMeshOverlayWorldKps;
+        const worldKps = this._retargetSAM3DShoulderHeights(sourceWorldKps, options.poseData);
         const passCount = 6;
         for (let pass = 0; pass < passCount; pass++) {
             this.fitSAM3DJointRootLengthsToWorldKps(worldKps);
@@ -6295,13 +6296,47 @@ export class PoseViewerCore {
                 includeSpine: pass === 0,
                 normalizeLimbs: false,
                 footLocalRotations: this._sam3dImportedFootLocalRotations || null,
-                drawFigure: finalPass,
+                drawFigure: finalPass && worldKps === sourceWorldKps,
                 updateMarkers: finalPass,
                 dispatchPoseChange: finalPass && options.dispatchPoseChange !== false,
             });
             if (!applied) return false;
         }
         return true;
+    }
+
+    _retargetSAM3DShoulderHeights(worldKps, data) {
+        if (!worldKps?.neck || !worldKps.pelvis || !Array.isArray(data?.rest_joint_coords)) return worldKps;
+
+        const { Vector3 } = this.THREE;
+        const source = this._buildSAM3DNamedPoints({ joint_coords: data.rest_joint_coords });
+        const targetRest = (name) => this.bones[name]?.userData?.headPos;
+        const difference = (start, end) => start && end
+            ? new Vector3(...end).sub(new Vector3(...start))
+            : null;
+        const sourcePelvis = this._averageSAM3DPoint(source, ['left_hip', 'right_hip']) || source.pelvis;
+        const sourceUp = difference(sourcePelvis, source.neck);
+        const targetUp = difference(targetRest('pelvis'), targetRest('neck_01'));
+        const sourceLengthSq = sourceUp?.lengthSq();
+        const targetLengthSq = targetUp?.lengthSq();
+        if (!(sourceLengthSq > 1e-8 && targetLengthSq > 1e-8)) return worldKps;
+
+        const posedUp = worldKps.neck.clone().sub(worldKps.pelvis);
+        const retargeted = { ...worldKps };
+        for (const [side, shoulder] of [['l', 'left_shoulder'], ['r', 'right_shoulder']]) {
+            const sourceClavicle = difference(source[`clavicle_${side}`], source[shoulder]);
+            const targetClavicle = difference(targetRest(`clavicle_${side}`), targetRest(`upperarm_${side}`));
+            if (!worldKps[shoulder] || !sourceClavicle || !targetClavicle) continue;
+
+            // Remove the neutral rig difference along the posed torso, preserving
+            // the measured shrug and the elbow and wrist fitting targets.
+            const offset = targetClavicle.dot(targetUp) / targetLengthSq
+                - sourceClavicle.dot(sourceUp) / sourceLengthSq;
+            if (Number.isFinite(offset)) {
+                retargeted[shoulder] = worldKps[shoulder].clone().addScaledVector(posedUp, offset);
+            }
+        }
+        return retargeted;
     }
 
     fitSAM3DJointRootLengthsToWorldKps(worldKps) {
@@ -8715,7 +8750,7 @@ export class PoseViewerCore {
         }
 
         const importTargets = this._buildSAM3DImportTargets(data);
-        const worldKps = importTargets?.worldKps;
+        const worldKps = this._retargetSAM3DShoulderHeights(importTargets?.worldKps, data);
 
         const usedRotationImport = this._applySAM3DRotationImport(data);
         if (usedRotationImport) {

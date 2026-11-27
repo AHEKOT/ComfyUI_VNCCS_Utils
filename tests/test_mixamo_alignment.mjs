@@ -240,6 +240,43 @@ test("SAM mesh overlay fit preserves fitted limb lengths", () => {
     assert.equal(applyCount, 6);
 });
 
+test("SAM shoulder fitting removes neutral rig bias along the posed torso", () => {
+    const viewer = Object.create(PoseViewerCore.prototype);
+    viewer.THREE = THREE;
+    const sourceRest = [];
+    sourceRest[1] = [0, 0, 0];
+    sourceRest[38] = [-0.1, 1.8, 0];
+    sourceRest[39] = [-0.6, 2, 0];
+    sourceRest[74] = [0.1, 1.8, 0];
+    sourceRest[75] = [0.6, 2, 0];
+    sourceRest[110] = [0, 2, 0];
+    viewer.bones = Object.fromEntries(Object.entries({
+        pelvis: [0, 0, 0],
+        neck_01: [0, 4, 0],
+        clavicle_l: [0.2, 3.8, 0],
+        clavicle_r: [-0.2, 3.8, 0],
+        upperarm_l: [1.2, 3.4, 0],
+        upperarm_r: [-1.2, 3.4, 0],
+    }).map(([name, headPos]) => [name, { userData: { headPos } }]));
+    const worldKps = {
+        pelvis: new THREE.Vector3(0, 0, 0),
+        neck: new THREE.Vector3(0, 0, -4),
+        left_shoulder: new THREE.Vector3(1, 0, -4.4),
+        right_shoulder: new THREE.Vector3(-1, 0, -4),
+        left_elbow: new THREE.Vector3(1, 1, -4),
+        left_wrist: new THREE.Vector3(1, 2, -4),
+    };
+
+    const fitted = viewer._retargetSAM3DShoulderHeights(worldKps, { rest_joint_coords: sourceRest });
+
+    assert.ok(fitted.left_shoulder.distanceTo(new THREE.Vector3(1, 0, -3.6)) < 1e-8);
+    assert.ok(fitted.right_shoulder.distanceTo(new THREE.Vector3(-1, 0, -3.2)) < 1e-8);
+    assert.deepEqual(worldKps.left_shoulder.toArray(), [1, 0, -4.4]);
+    assert.equal(fitted.left_elbow, worldKps.left_elbow);
+    assert.equal(fitted.left_wrist, worldKps.left_wrist);
+    assert.equal(viewer._retargetSAM3DShoulderHeights(worldKps, {}), worldKps);
+});
+
 test("SAM normalization keeps a straight leg at full chain reach", () => {
     const solved = [];
     const restPositions = {
